@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState, useTransition } from "react";
 import { formatHebrewDate, formatHebrewWeekday, parseDateKey } from "@/lib/dates";
 import { cleanScheduleTitle } from "@/lib/schedule-title";
 import { ScheduleTimeGrid } from "@/lib/components/ScheduleTimeGrid";
+import { getScheduleGroupColorClass } from "@/lib/schedule-group-colors";
 import {
   getNoDutyStatusForRange,
   markNoDutyDate,
@@ -39,7 +40,9 @@ function renderScheduleCard(item: ScheduleItemView, compact = false) {
   return (
     <div
       key={item.id}
-      className={`rounded-xl border-2 border-border ${compact ? "p-2.5" : "p-4"}`}
+      className={`rounded-xl border-2 border-border ${getScheduleGroupColorClass(item.groupName)} ${
+        compact ? "p-2.5" : "p-4"
+      }`}
     >
       <div className="mb-1 flex flex-wrap items-center justify-between gap-1.5">
         <span

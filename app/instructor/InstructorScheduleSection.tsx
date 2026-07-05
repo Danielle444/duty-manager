@@ -10,6 +10,7 @@ import {
 import { todayDateKey } from "@/lib/dates";
 import { cleanScheduleTitle } from "@/lib/schedule-title";
 import { ScheduleTimeGrid } from "@/lib/components/ScheduleTimeGrid";
+import { getScheduleGroupColorClass } from "@/lib/schedule-group-colors";
 
 function isItemActiveNow(item: InstructorScheduleItem, now: Date): boolean {
   const todayKey = now.toISOString().slice(0, 10);
@@ -26,7 +27,7 @@ function renderScheduleCard(item: InstructorScheduleItem, active: boolean, compa
     <div
       key={item.id}
       className={`rounded-xl border-2 ${compact ? "p-2.5" : "p-4"} ${
-        active ? "border-accent bg-secondary" : "border-border"
+        active ? "border-accent bg-secondary" : `border-border ${getScheduleGroupColorClass(item.groupName)}`
       }`}
     >
       <div className="mb-1 flex flex-wrap items-center justify-between gap-1.5">

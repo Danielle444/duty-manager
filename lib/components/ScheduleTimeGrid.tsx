@@ -4,12 +4,6 @@ import { useMemo, type ReactNode } from "react";
 import { buildTimeGridLayout } from "@/lib/schedule-timegrid";
 import type { GroupableScheduleItem } from "@/lib/schedule-grouping";
 
-// Fixed height per time slot in pixels - a real table row, not a floating
-// element. No auto, no minmax: a cell spanning N slots is always exactly
-// N x SLOT_PX tall, so duration and visual height stay exactly proportional
-// (a 90-minute cell is always exactly 1.5x a 60-minute one).
-const SLOT_PX = 32;
-
 // Layout-only: renders a day's schedule items as a real timetable - fixed
 // time-slot rows and group א / group ב columns, with "שתי הקבוצות" items
 // spanning both group columns. No CSS grid auto/minmax rows, no grid gap
@@ -38,10 +32,19 @@ export function ScheduleTimeGrid<T extends GroupableScheduleItem>({
 
   return (
     <div
-      className="grid"
+      // --slot-px sets the fixed per-slot height via a CSS custom property
+      // instead of a hardcoded JS constant, so the browser (not JS/window
+      // measurement) can pick a different value per breakpoint - larger on
+      // mobile, where the narrow columns force more text-wrapping and short
+      // activities need more room to stay readable; unchanged on desktop/
+      // tablet (sm: and up), where the current approved layout stays as-is.
+      // Still a single fixed value at any given width, so every proportional
+      // guarantee (rowSpan math, no gap, exact duration ratios) holds at
+      // both sizes independently - only the overall scale differs.
+      className="grid [--slot-px:44px] sm:[--slot-px:32px]"
       style={{
         gridTemplateColumns: "1fr 1fr",
-        gridTemplateRows: `repeat(${totalSlots}, ${SLOT_PX}px)`,
+        gridTemplateRows: `repeat(${totalSlots}, var(--slot-px))`,
       }}
     >
       {positions.map(({ items: cellItems, column, startSlotIndex, rowSpan }) => {

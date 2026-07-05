@@ -7,7 +7,8 @@ export type MainTabId =
   | "booklet"
   | "profile"
   | "horses"
-  | "messages";
+  | "messages"
+  | "more";
 
 export const MAIN_TABS: { id: MainTabId; label: string }[] = [
   { id: "today", label: "היום" },

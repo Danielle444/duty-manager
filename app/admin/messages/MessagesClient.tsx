@@ -4,9 +4,11 @@ import { FormEvent, useMemo, useState, useTransition } from "react";
 import { Button } from "@/lib/components/Button";
 import { Modal } from "@/lib/components/Modal";
 import {
+  archiveMessageTask,
   createMessageTask,
   getMessageTaskRecipients,
   listMessageTasksForAdmin,
+  updateMessageTask,
   type MessageAudienceValue,
   type MessageTaskListItem,
   type MessageTaskRecipientRow,
@@ -60,11 +62,33 @@ export function MessagesClient({
   const [drillDownTask, setDrillDownTask] = useState<MessageTaskListItem | null>(null);
   const [recipients, setRecipients] = useState<MessageTaskRecipientRow[] | null>(null);
 
+  const [showArchived, setShowArchived] = useState(false);
+
+  const [editTask, setEditTask] = useState<MessageTaskListItem | null>(null);
+  const [editTitle, setEditTitle] = useState("");
+  const [editBody, setEditBody] = useState("");
+  const [editError, setEditError] = useState<string | null>(null);
+  const [isEditPending, startEditTransition] = useTransition();
+
+  const [deleteTarget, setDeleteTarget] = useState<MessageTaskListItem | null>(null);
+  const [isDeletePending, startDeleteTransition] = useTransition();
+
   const filteredStudents = useMemo(() => {
     const q = studentSearch.trim().toLowerCase();
     if (!q) return students;
     return students.filter((s) => s.fullName.toLowerCase().includes(q));
   }, [students, studentSearch]);
+
+  async function refreshList(includeArchived: boolean) {
+    const fresh = await listMessageTasksForAdmin(includeArchived);
+    setItems(fresh);
+  }
+
+  function toggleShowArchived() {
+    const next = !showArchived;
+    setShowArchived(next);
+    refreshList(next);
+  }
 
   function openCreate() {
     setType("MESSAGE");
@@ -100,8 +124,7 @@ export function MessagesClient({
         setError(result.error ?? "אירעה שגיאה");
         return;
       }
-      const fresh = await listMessageTasksForAdmin();
-      setItems(fresh);
+      await refreshList(showArchived);
       setIsCreateOpen(false);
     });
   }
@@ -112,10 +135,54 @@ export function MessagesClient({
     getMessageTaskRecipients(task.id).then(setRecipients);
   }
 
+  function openEdit(task: MessageTaskListItem) {
+    setEditTask(task);
+    setEditTitle(task.title);
+    setEditBody(task.body);
+    setEditError(null);
+  }
+
+  function handleEditSubmit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (!editTask) return;
+    setEditError(null);
+    const taskId = editTask.id;
+    startEditTransition(async () => {
+      const result = await updateMessageTask(taskId, { title: editTitle, body: editBody });
+      if (!result.success) {
+        setEditError(result.error ?? "אירעה שגיאה");
+        return;
+      }
+      await refreshList(showArchived);
+      setEditTask(null);
+    });
+  }
+
+  function handleConfirmArchive() {
+    if (!deleteTarget) return;
+    const taskId = deleteTarget.id;
+    startDeleteTransition(async () => {
+      await archiveMessageTask(taskId, true);
+      await refreshList(showArchived);
+      setDeleteTarget(null);
+    });
+  }
+
+  function handleRestore(task: MessageTaskListItem) {
+    startDeleteTransition(async () => {
+      await archiveMessageTask(task.id, false);
+      await refreshList(showArchived);
+    });
+  }
+
   return (
     <div className="flex flex-col gap-4">
-      <div>
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <Button onClick={openCreate}>+ יצירת הודעה/משימה</Button>
+        <label className="flex items-center gap-2 text-sm text-muted-foreground">
+          <input type="checkbox" checked={showArchived} onChange={toggleShowArchived} />
+          הצג מחוקים/מוסתרים
+        </label>
       </div>
 
       <div className="flex flex-col gap-3">
@@ -137,6 +204,11 @@ export function MessagesClient({
                 >
                   {TYPE_LABELS[item.type]}
                 </span>
+                {item.isArchived && (
+                  <span className="rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground">
+                    בארכיון
+                  </span>
+                )}
                 <p className="text-base font-bold text-card-foreground">{item.title}</p>
               </div>
               <p className="text-xs text-muted-foreground">
@@ -145,8 +217,11 @@ export function MessagesClient({
             </div>
             <p className="mb-2 whitespace-pre-wrap text-sm text-muted-foreground">{item.body}</p>
             <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
-              <span className="text-muted-foreground">{audienceSummary(item)}</span>
-              <div className="flex items-center gap-3">
+              <span className="text-muted-foreground">
+                {audienceSummary(item)}
+                {item.createdByName && ` · ${item.createdByName}`}
+              </span>
+              <div className="flex flex-wrap items-center gap-3">
                 {item.type === "MESSAGE" ? (
                   <span className="text-muted-foreground">
                     נקראו {item.readCount}/{item.totalCount}
@@ -156,13 +231,30 @@ export function MessagesClient({
                     הושלמו {item.completedCount}/{item.totalCount}
                   </span>
                 )}
-                <Button
-                  variant="ghost"
-                  className="!px-2 !py-1"
-                  onClick={() => openDrillDown(item)}
-                >
+                <Button variant="ghost" className="!px-2 !py-1" onClick={() => openDrillDown(item)}>
                   צפייה בסטטוס
                 </Button>
+                <Button variant="ghost" className="!px-2 !py-1" onClick={() => openEdit(item)}>
+                  עריכה
+                </Button>
+                {item.isArchived ? (
+                  <Button
+                    variant="secondary"
+                    className="!px-2 !py-1"
+                    disabled={isDeletePending}
+                    onClick={() => handleRestore(item)}
+                  >
+                    שחזור
+                  </Button>
+                ) : (
+                  <Button
+                    variant="danger"
+                    className="!px-2 !py-1"
+                    onClick={() => setDeleteTarget(item)}
+                  >
+                    מחיקה
+                  </Button>
+                )}
               </div>
             </div>
           </div>
@@ -343,6 +435,66 @@ export function MessagesClient({
             ))}
           </div>
         )}
+      </Modal>
+
+      <Modal
+        open={editTask !== null}
+        title={editTask ? `עריכת ${TYPE_LABELS[editTask.type]}` : ""}
+        onClose={() => setEditTask(null)}
+      >
+        <form onSubmit={handleEditSubmit} className="flex flex-col gap-3">
+          <label className="flex flex-col gap-1 text-sm">
+            כותרת
+            <input
+              value={editTitle}
+              onChange={(e) => setEditTitle(e.target.value)}
+              className="rounded-lg border border-border px-3 py-2 text-sm"
+              required
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-sm">
+            תוכן
+            <textarea
+              value={editBody}
+              onChange={(e) => setEditBody(e.target.value)}
+              rows={4}
+              className="rounded-lg border border-border px-3 py-2 text-sm"
+              required
+            />
+          </label>
+          {editError && <p className="text-sm text-danger">{editError}</p>}
+          <div className="mt-2 flex justify-end gap-2">
+            <Button type="button" variant="secondary" onClick={() => setEditTask(null)}>
+              ביטול
+            </Button>
+            <Button type="submit" disabled={isEditPending}>
+              {isEditPending ? "שומר..." : "שמירה"}
+            </Button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal
+        open={deleteTarget !== null}
+        title="מחיקת הודעה/משימה"
+        onClose={() => setDeleteTarget(null)}
+      >
+        <p className="text-sm text-card-foreground">
+          האם למחוק/להסתיר את ההודעה/משימה &quot;{deleteTarget?.title}&quot;? הפעולה ניתנת לשחזור.
+        </p>
+        <div className="mt-4 flex justify-end gap-2">
+          <Button type="button" variant="secondary" onClick={() => setDeleteTarget(null)}>
+            ביטול
+          </Button>
+          <Button
+            type="button"
+            variant="danger"
+            disabled={isDeletePending}
+            onClick={handleConfirmArchive}
+          >
+            {isDeletePending ? "מוחק..." : "מחיקה"}
+          </Button>
+        </div>
       </Modal>
     </div>
   );

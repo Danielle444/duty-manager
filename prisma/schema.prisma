@@ -165,6 +165,10 @@ model Instructor {
   // instructor is still view-only on the horse assignment tab this stage.
   canEditHorseAssignments Boolean @default(false)
 
+  // Grants permission to send messages/tasks to students from the instructor
+  // app; false by default so sending stays admin-only until explicitly granted.
+  canSendMessages Boolean @default(false)
+
   @@map("instructors")
 }
 
@@ -264,6 +268,7 @@ model MessageTask {
   audience      MessageAudience
   groupName     String?
   createdByName String?
+  isArchived    Boolean         @default(false)
   createdAt     DateTime        @default(now())
   updatedAt     DateTime        @updatedAt
 

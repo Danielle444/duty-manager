@@ -104,3 +104,16 @@ export async function setInstructorCanEditHorseAssignments(
   revalidatePath("/admin/instructors");
   return { success: true };
 }
+
+export async function setInstructorCanSendMessages(
+  instructorId: string,
+  canSendMessages: boolean
+): Promise<ActionResult> {
+  await requireAdmin();
+  await prisma.instructor.update({
+    where: { id: instructorId },
+    data: { canSendMessages },
+  });
+  revalidatePath("/admin/instructors");
+  return { success: true };
+}

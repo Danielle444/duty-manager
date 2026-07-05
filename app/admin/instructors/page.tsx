@@ -24,6 +24,7 @@ export default async function InstructorsPage() {
           identityNumber: i.identityNumber,
           isActive: i.isActive,
           canEditHorseAssignments: i.canEditHorseAssignments,
+          canSendMessages: i.canSendMessages,
         }))}
       />
     </div>

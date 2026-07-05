@@ -106,7 +106,7 @@ export function StudentMessagesSection({ studentId }: { studentId: string }) {
         <p className="mb-2 whitespace-pre-wrap text-sm text-muted-foreground">{item.body}</p>
         <div className="flex flex-wrap items-center justify-between gap-2">
           <p className="text-xs text-muted-foreground">
-            מנהלת · {formatHebrewDateTime(new Date(item.createdAt))}
+            {item.createdByName ?? "מנהלת"} · {formatHebrewDateTime(new Date(item.createdAt))}
           </p>
           {item.type === "MESSAGE" && !item.readAt && (
             <Button

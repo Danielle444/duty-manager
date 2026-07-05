@@ -24,6 +24,7 @@ export interface InstructorProfile {
   id: string;
   fullName: string;
   canEditHorseAssignments: boolean;
+  canSendMessages: boolean;
 }
 
 export interface InstructorLoginResult {
@@ -52,6 +53,7 @@ export async function verifyInstructorLogin(
       id: instructor.id,
       fullName: instructor.fullName,
       canEditHorseAssignments: instructor.canEditHorseAssignments,
+      canSendMessages: instructor.canSendMessages,
     },
   };
 }
@@ -69,5 +71,6 @@ export async function getInstructorProfile(
     id: instructor.id,
     fullName: instructor.fullName,
     canEditHorseAssignments: instructor.canEditHorseAssignments,
+    canSendMessages: instructor.canSendMessages,
   };
 }

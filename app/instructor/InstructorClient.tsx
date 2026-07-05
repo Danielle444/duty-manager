@@ -4,7 +4,7 @@ import { FormEvent, useEffect, useState, useTransition } from "react";
 import { Button } from "@/lib/components/Button";
 import { Logo } from "@/lib/components/Logo";
 import { WeekDayPicker, type WeekOption } from "@/lib/components/WeekDayPicker";
-import { BottomTabs, MAIN_TABS, type MainTabId } from "@/lib/components/BottomTabs";
+import { BottomTabs, type MainTabId } from "@/lib/components/BottomTabs";
 import { CourseBookletSection } from "@/lib/components/CourseBookletSection";
 import {
   getInstructorProfile,
@@ -16,19 +16,35 @@ import { getWeeklyScheduleSelection } from "@/lib/actions/weekly-schedule";
 import { InstructorScheduleSection } from "@/app/instructor/InstructorScheduleSection";
 import { InstructorDutiesSection } from "@/app/instructor/InstructorDutiesSection";
 import { InstructorHorsesSection } from "@/app/instructor/InstructorHorsesSection";
+import { InstructorMessagesSection } from "@/app/instructor/InstructorMessagesSection";
 import { formatHebrewDate, formatHebrewWeekday, parseDateKey, todayDateKey } from "@/lib/dates";
 
 const STORAGE_KEY = "duty-manager-instructor-v2";
 
-// Instructor gets a 6th tab ("horses") that students never see - BottomTabs'
-// default tabs prop (MAIN_TABS, 5 tabs) stays exactly as it is for the
-// student app; this array is instructor-only.
-const INSTRUCTOR_TABS = [...MAIN_TABS, { id: "horses" as const, label: "קבוצות וסוסים" }];
+// Instructor has its own 5 main bottom tabs (independent of the student
+// MAIN_TABS, which stays untouched) plus a "more" menu for lower-frequency
+// sections, so the bar doesn't keep growing as instructor features are added.
+const INSTRUCTOR_MAIN_TABS: { id: MainTabId; label: string }[] = [
+  { id: "today", label: "היום" },
+  { id: "schedule", label: 'לו"ז' },
+  { id: "duties", label: "תורנויות" },
+  { id: "horses", label: "סוסים" },
+  { id: "more", label: "עוד" },
+];
+
+const INSTRUCTOR_MORE_ITEMS: { id: MainTabId; label: string }[] = [
+  { id: "booklet", label: "חוברת קורס" },
+  { id: "profile", label: "פרופיל" },
+  { id: "messages", label: "הודעות ומשימות" },
+];
+
+const INSTRUCTOR_ALL_TABS = [...INSTRUCTOR_MAIN_TABS, ...INSTRUCTOR_MORE_ITEMS];
 
 interface StoredSession {
   id: string;
   fullName: string;
   canEditHorseAssignments: boolean;
+  canSendMessages: boolean;
 }
 
 interface StudentOption {
@@ -223,7 +239,9 @@ export function InstructorClient({
   const todayKey = todayDateKey();
   const todayWeek = weeks?.find((w) => w.startDate <= todayKey && todayKey <= w.endDate) ?? null;
 
-  const activeTabLabel = INSTRUCTOR_TABS.find((t) => t.id === activeTab)?.label ?? "";
+  const activeTabLabel = INSTRUCTOR_ALL_TABS.find((t) => t.id === activeTab)?.label ?? "";
+  const isMoreItem = INSTRUCTOR_MORE_ITEMS.some((item) => item.id === activeTab);
+  const bottomActiveTab: MainTabId = isMoreItem ? "more" : activeTab;
 
   return (
     <div className="flex flex-1 flex-col">
@@ -317,6 +335,39 @@ export function InstructorClient({
           </div>
         )}
 
+        {activeTab === "horses" && (
+          <InstructorHorsesSection
+            instructorId={session.id}
+            canEdit={session.canEditHorseAssignments}
+          />
+        )}
+
+        {activeTab === "more" && (
+          <div className="flex flex-col gap-3">
+            {INSTRUCTOR_MORE_ITEMS.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setActiveTab(item.id)}
+                className="flex items-center justify-between rounded-2xl border border-border bg-card p-5 text-right"
+              >
+                <span className="text-lg font-bold text-card-foreground">{item.label}</span>
+                <span className="text-muted-foreground">‹</span>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {isMoreItem && (
+          <button
+            type="button"
+            onClick={() => setActiveTab("more")}
+            className="mb-3 text-sm text-muted-foreground underline"
+          >
+            ‹ חזרה לתפריט
+          </button>
+        )}
+
         {activeTab === "booklet" && <CourseBookletSection />}
 
         {activeTab === "profile" && (
@@ -331,15 +382,16 @@ export function InstructorClient({
           </div>
         )}
 
-        {activeTab === "horses" && (
-          <InstructorHorsesSection
+        {activeTab === "messages" && (
+          <InstructorMessagesSection
             instructorId={session.id}
-            canEdit={session.canEditHorseAssignments}
+            canSend={session.canSendMessages}
+            students={students}
           />
         )}
       </main>
 
-      <BottomTabs active={activeTab} onChange={setActiveTab} tabs={INSTRUCTOR_TABS} />
+      <BottomTabs active={bottomActiveTab} onChange={setActiveTab} tabs={INSTRUCTOR_MAIN_TABS} />
     </div>
   );
 }

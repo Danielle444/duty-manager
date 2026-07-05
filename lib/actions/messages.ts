@@ -30,47 +30,55 @@ export interface CreateMessageTaskInput {
   studentIds?: string[];
 }
 
-// Recipients are resolved once here and materialized into MessageTaskRecipient
-// rows - later group/roster changes never retroactively change who this was
-// sent to.
-export async function createMessageTask(input: CreateMessageTaskInput): Promise<ActionResult> {
-  const admin = await requireAdmin();
+// Shared by the admin and instructor create actions - resolves the audience
+// into a concrete student id list at send time. Later group/roster changes
+// never retroactively change who this was sent to.
+async function resolveRecipientIds(
+  data: z.infer<typeof createSchema>
+): Promise<{ ids: string[] } | { error: string }> {
+  if (data.audience === "ALL") {
+    const students = await prisma.student.findMany({
+      where: { isActive: true },
+      select: { id: true },
+    });
+    return { ids: students.map((s) => s.id) };
+  }
+  if (data.audience === "GROUP") {
+    if (!data.groupName) {
+      return { error: "יש לבחור קבוצה" };
+    }
+    const students = await prisma.student.findMany({
+      where: { isActive: true, groupName: data.groupName },
+      select: { id: true },
+    });
+    return { ids: students.map((s) => s.id) };
+  }
+  const ids = data.studentIds ?? [];
+  if (ids.length === 0) {
+    return { error: "יש לבחור לפחות תלמיד/ה אחד/ת" };
+  }
+  const students = await prisma.student.findMany({
+    where: { isActive: true, id: { in: ids } },
+    select: { id: true },
+  });
+  return { ids: students.map((s) => s.id) };
+}
 
+async function createMessageTaskInternal(
+  input: CreateMessageTaskInput,
+  createdByName: string
+): Promise<ActionResult> {
   const parsed = createSchema.safeParse(input);
   if (!parsed.success) {
     return { success: false, error: parsed.error.issues[0]?.message ?? "קלט לא תקין" };
   }
   const data = parsed.data;
 
-  let recipientIds: string[];
-  if (data.audience === "ALL") {
-    const students = await prisma.student.findMany({
-      where: { isActive: true },
-      select: { id: true },
-    });
-    recipientIds = students.map((s) => s.id);
-  } else if (data.audience === "GROUP") {
-    if (!data.groupName) {
-      return { success: false, error: "יש לבחור קבוצה" };
-    }
-    const students = await prisma.student.findMany({
-      where: { isActive: true, groupName: data.groupName },
-      select: { id: true },
-    });
-    recipientIds = students.map((s) => s.id);
-  } else {
-    const ids = data.studentIds ?? [];
-    if (ids.length === 0) {
-      return { success: false, error: "יש לבחור לפחות תלמיד/ה אחד/ת" };
-    }
-    const students = await prisma.student.findMany({
-      where: { isActive: true, id: { in: ids } },
-      select: { id: true },
-    });
-    recipientIds = students.map((s) => s.id);
+  const resolved = await resolveRecipientIds(data);
+  if ("error" in resolved) {
+    return { success: false, error: resolved.error };
   }
-
-  if (recipientIds.length === 0) {
+  if (resolved.ids.length === 0) {
     return { success: false, error: "לא נמצאו נמענים מתאימים" };
   }
 
@@ -81,11 +89,78 @@ export async function createMessageTask(input: CreateMessageTaskInput): Promise<
       body: data.body,
       audience: data.audience,
       groupName: data.audience === "GROUP" ? data.groupName : null,
-      createdByName: admin.name ?? admin.email,
+      createdByName,
       recipients: {
-        create: recipientIds.map((studentId) => ({ studentId })),
+        create: resolved.ids.map((studentId) => ({ studentId })),
       },
     },
+  });
+
+  revalidatePath("/admin/messages");
+  return { success: true };
+}
+
+// Admin-created messages always show a fixed "מנהלת" sender label to
+// students, regardless of which admin account sent it.
+export async function createMessageTask(input: CreateMessageTaskInput): Promise<ActionResult> {
+  await requireAdmin();
+  return createMessageTaskInternal(input, "מנהלת");
+}
+
+// Instructors have no NextAuth session in this app (see requireAdmin), so
+// this re-reads canSendMessages from the DB by instructorId on every call -
+// it never trusts a client-supplied boolean.
+export async function createMessageTaskAsInstructor(
+  instructorId: string,
+  input: CreateMessageTaskInput
+): Promise<ActionResult> {
+  const instructor = await prisma.instructor.findUnique({ where: { id: instructorId } });
+  if (!instructor || !instructor.isActive || !instructor.canSendMessages) {
+    return { success: false, error: "אין הרשאה לשליחת הודעות ומשימות" };
+  }
+  return createMessageTaskInternal(input, instructor.fullName);
+}
+
+const updateSchema = z.object({
+  title: z.string().trim().min(1, "יש להזין כותרת"),
+  body: z.string().trim().min(1, "יש להזין תוכן"),
+});
+
+// Only title/body are editable after sending - type, audience, groupName and
+// recipients are fixed at creation time (see resolveRecipientIds) so editing
+// them post-send would create confusing, inconsistent history.
+export async function updateMessageTask(
+  messageTaskId: string,
+  data: { title: string; body: string }
+): Promise<ActionResult> {
+  await requireAdmin();
+
+  const parsed = updateSchema.safeParse(data);
+  if (!parsed.success) {
+    return { success: false, error: parsed.error.issues[0]?.message ?? "קלט לא תקין" };
+  }
+
+  await prisma.messageTask.update({
+    where: { id: messageTaskId },
+    data: { title: parsed.data.title, body: parsed.data.body },
+  });
+
+  revalidatePath("/admin/messages");
+  return { success: true };
+}
+
+// Soft delete only - recipient rows (and their readAt/completedAt history)
+// are never touched or deleted. isArchived=true just hides the item from the
+// default admin list and from all student views.
+export async function archiveMessageTask(
+  messageTaskId: string,
+  isArchived: boolean
+): Promise<ActionResult> {
+  await requireAdmin();
+
+  await prisma.messageTask.update({
+    where: { id: messageTaskId },
+    data: { isArchived },
   });
 
   revalidatePath("/admin/messages");
@@ -100,16 +175,20 @@ export interface MessageTaskListItem {
   audience: MessageAudienceValue;
   groupName: string | null;
   createdByName: string | null;
+  isArchived: boolean;
   createdAt: string;
   totalCount: number;
   readCount: number;
   completedCount: number;
 }
 
-export async function listMessageTasksForAdmin(): Promise<MessageTaskListItem[]> {
+export async function listMessageTasksForAdmin(
+  includeArchived = false
+): Promise<MessageTaskListItem[]> {
   await requireAdmin();
 
   const items = await prisma.messageTask.findMany({
+    where: includeArchived ? undefined : { isArchived: false },
     orderBy: { createdAt: "desc" },
     include: {
       recipients: { select: { readAt: true, completedAt: true } },
@@ -124,6 +203,7 @@ export async function listMessageTasksForAdmin(): Promise<MessageTaskListItem[]>
     audience: item.audience,
     groupName: item.groupName,
     createdByName: item.createdByName,
+    isArchived: item.isArchived,
     createdAt: item.createdAt.toISOString(),
     totalCount: item.recipients.length,
     readCount: item.recipients.filter((r) => r.readAt !== null).length,
@@ -165,6 +245,7 @@ export interface StudentMessageItem {
   type: MessageTaskTypeValue;
   title: string;
   body: string;
+  createdByName: string | null;
   createdAt: string;
   readAt: string | null;
   completedAt: string | null;
@@ -172,9 +253,11 @@ export interface StudentMessageItem {
 
 // Read-only, no permission gate - same convention as getStudentProfile /
 // getHorseAssignments, since students have no NextAuth session in this app.
+// Archived items are always excluded - a message archived after a student
+// already saw it disappears from their list too.
 export async function getStudentMessages(studentId: string): Promise<StudentMessageItem[]> {
   const recipients = await prisma.messageTaskRecipient.findMany({
-    where: { studentId },
+    where: { studentId, messageTask: { isArchived: false } },
     include: { messageTask: true },
     orderBy: { createdAt: "desc" },
   });
@@ -185,6 +268,7 @@ export async function getStudentMessages(studentId: string): Promise<StudentMess
     type: r.messageTask.type,
     title: r.messageTask.title,
     body: r.messageTask.body,
+    createdByName: r.messageTask.createdByName,
     createdAt: r.messageTask.createdAt.toISOString(),
     readAt: r.readAt ? r.readAt.toISOString() : null,
     completedAt: r.completedAt ? r.completedAt.toISOString() : null,

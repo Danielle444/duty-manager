@@ -20,6 +20,8 @@ export default async function CompletionPage() {
           id: a.id,
           dateKey: dateKey(a.date),
           studentName: a.student.fullName,
+          groupName: a.student.groupName,
+          subgroupNumber: a.student.subgroupNumber,
           dutyTypeName: a.dutyType.name,
           isPublished: a.isPublished,
           isCompleted: a.isCompleted,

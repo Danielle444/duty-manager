@@ -19,7 +19,14 @@ export function computeCoverageByDate(
   dateKeys: string[],
   activeStudentCount: number,
   cellByStudentAndDate: Map<string, Map<string, unknown>>,
-  noDutyDateKeys: Set<string>
+  noDutyDateKeys: Set<string>,
+  // Optional - when provided (currently only the admin schedule grid does),
+  // "is this day short" is judged against how many students were actually
+  // available that day, not the full active roster. A day where several
+  // students are legitimately unavailable/absent should not be flagged short
+  // just because of that. Callers that don't pass this (the Excel export,
+  // the diagnostics panel) keep their existing behavior unchanged.
+  availableCountByDate?: Map<string, number>
 ): Map<string, DateCoverage> {
   const assignedCounts = new Map<string, number>();
   for (const dk of dateKeys) assignedCounts.set(dk, 0);
@@ -36,12 +43,13 @@ export function computeCoverageByDate(
   for (const dk of dateKeys) {
     const assignedCount = assignedCounts.get(dk) ?? 0;
     const isNoDuty = noDutyDateKeys.has(dk);
+    const expectedCount = availableCountByDate?.get(dk) ?? activeStudentCount;
     result.set(dk, {
       dateKey: dk,
       assignedCount,
-      activeStudentCount,
+      activeStudentCount: expectedCount,
       isNoDuty,
-      isShort: !isNoDuty && assignedCount < activeStudentCount,
+      isShort: !isNoDuty && assignedCount < expectedCount,
     });
   }
   return result;

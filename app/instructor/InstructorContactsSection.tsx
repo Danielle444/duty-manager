@@ -128,7 +128,6 @@ export function InstructorContactsSection() {
   return (
     <div className="flex flex-col gap-4">
       <div className="rounded-2xl border border-border bg-card p-4">
-        <h2 className="mb-3 text-lg font-bold text-card-foreground">אנשי קשר</h2>
         <div className="flex flex-col gap-2">
           <div className="flex flex-wrap gap-2">
             <button

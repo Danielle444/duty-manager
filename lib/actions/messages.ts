@@ -239,6 +239,50 @@ export async function getMessageTaskRecipients(
   }));
 }
 
+export interface InstructorMessageTaskView {
+  id: string;
+  type: MessageTaskTypeValue;
+  title: string;
+  body: string;
+  audience: MessageAudienceValue;
+  groupName: string | null;
+  createdByName: string | null;
+  createdAt: string;
+}
+
+// Read-only, no permission gate - same convention as getHorseAssignments,
+// since instructors have no NextAuth session in this app. Every instructor
+// can see this list regardless of canSendMessages - it's content-only, no
+// per-recipient read/completed status is exposed here (that stays
+// admin-only via getMessageTaskRecipients).
+export async function getMessageTasksForInstructorView(): Promise<InstructorMessageTaskView[]> {
+  const items = await prisma.messageTask.findMany({
+    where: { isArchived: false },
+    orderBy: { createdAt: "desc" },
+    select: {
+      id: true,
+      type: true,
+      title: true,
+      body: true,
+      audience: true,
+      groupName: true,
+      createdByName: true,
+      createdAt: true,
+    },
+  });
+
+  return items.map((m) => ({
+    id: m.id,
+    type: m.type,
+    title: m.title,
+    body: m.body,
+    audience: m.audience,
+    groupName: m.groupName,
+    createdByName: m.createdByName,
+    createdAt: m.createdAt.toISOString(),
+  }));
+}
+
 export interface StudentMessageItem {
   recipientId: string;
   messageTaskId: string;

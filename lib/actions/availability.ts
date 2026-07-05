@@ -2,9 +2,36 @@
 
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
-import { parseDateKey } from "@/lib/dates";
+import { dateKey, parseDateKey } from "@/lib/dates";
 import { applyDateRangeAvailability } from "@/lib/availability-helpers";
+import { requireAdmin } from "@/lib/auth/require-admin";
 import type { ActionResult } from "@/lib/actions/students";
+
+export interface AvailabilityRow {
+  studentId: string;
+  dateKey: string;
+  isAvailable: boolean;
+}
+
+// Read-only. Used by the admin schedule grid to distinguish "student
+// legitimately unavailable that day" (not a problem) from "student
+// available but unassigned" (a genuine coverage gap) - mirrors the
+// scheduler's own default-available-unless-explicit-false rule
+// (see isAvailable() in lib/scheduler.ts).
+export async function getAvailabilityForRange(
+  startDateKey: string,
+  endDateKey: string
+): Promise<AvailabilityRow[]> {
+  await requireAdmin();
+  const rows = await prisma.studentAvailability.findMany({
+    where: { date: { gte: parseDateKey(startDateKey), lte: parseDateKey(endDateKey) } },
+  });
+  return rows.map((r) => ({
+    studentId: r.studentId,
+    dateKey: dateKey(r.date),
+    isAvailable: r.isAvailable,
+  }));
+}
 
 export async function setAvailability(
   studentId: string,

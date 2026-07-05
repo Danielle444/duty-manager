@@ -82,8 +82,15 @@ export function DutiesSection({
               ) : (
                 <div className="flex flex-col gap-2">
                   <p className="text-lg font-bold text-card-foreground">{day.dutyTypeName}</p>
+
+                  <p className="text-sm text-muted-foreground">
+                    {day.teammateNames.length > 0
+                      ? `איתך בתורנות: ${day.teammateNames.join(", ")}`
+                      : "אין חניכים נוספים בתורנות זו"}
+                  </p>
+
                   {day.dutyTypeDescription && (
-                    <div>
+                    <div className="border-t border-border pt-2">
                       <button
                         type="button"
                         onClick={() => toggleExpanded(day.dateKey)}
@@ -98,26 +105,24 @@ export function DutiesSection({
                       )}
                     </div>
                   )}
-                  <p className="text-sm text-muted-foreground">
-                    {day.teammateNames.length > 0
-                      ? `איתך בתורנות: ${day.teammateNames.join(", ")}`
-                      : "אין חניכים נוספים בתורנות זו"}
-                  </p>
-                  {day.isCompleted ? (
-                    <div className="rounded-lg bg-success-muted p-3 text-sm text-success">
-                      בוצע{" "}
-                      {day.completedAt
-                        ? formatHebrewDateTime(new Date(day.completedAt))
-                        : ""}
-                    </div>
-                  ) : (
-                    <Button
-                      disabled={isPending}
-                      onClick={() => handleMarkCompleted(day.assignmentId!)}
-                    >
-                      {isPending ? "מעדכן/ת..." : "סימון כבוצע"}
-                    </Button>
-                  )}
+
+                  <div className="border-t border-border pt-2">
+                    {day.isCompleted ? (
+                      <div className="rounded-lg bg-success-muted p-3 text-sm text-success">
+                        בוצע{" "}
+                        {day.completedAt
+                          ? formatHebrewDateTime(new Date(day.completedAt))
+                          : ""}
+                      </div>
+                    ) : (
+                      <Button
+                        disabled={isPending}
+                        onClick={() => handleMarkCompleted(day.assignmentId!)}
+                      >
+                        {isPending ? "מעדכן/ת..." : "סימון כבוצע"}
+                      </Button>
+                    )}
+                  </div>
                 </div>
               )}
             </div>

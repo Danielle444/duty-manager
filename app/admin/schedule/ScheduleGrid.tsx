@@ -34,6 +34,7 @@ export function ScheduleGrid({
   filterStudentId,
   filterDutyTypeId,
   searchQuery,
+  availabilityByStudentDate,
   onCellClick,
 }: {
   students: GridStudent[];
@@ -45,6 +46,11 @@ export function ScheduleGrid({
   filterStudentId: string;
   filterDutyTypeId: string;
   searchQuery?: string;
+  // Keyed "${studentId}|${dateKey}" -> isAvailable. Missing entries default
+  // to available, mirroring the scheduler's own rule (lib/scheduler.ts).
+  // Used so a student who is legitimately unavailable that day never reads
+  // as an alarming coverage gap.
+  availabilityByStudentDate?: Map<string, boolean>;
   onCellClick?: (args: { studentId: string; dateKey: string; assignment: GridAssignment | null }) => void;
 }) {
   const dateKeys = useMemo(
@@ -63,12 +69,32 @@ export function ScheduleGrid({
     return map;
   }, [assignments]);
 
+  function isStudentAvailable(studentId: string, dk: string): boolean {
+    return availabilityByStudentDate?.get(`${studentId}|${dk}`) ?? true;
+  }
+
+  // How many of the full active roster are actually available on each date -
+  // used instead of the raw roster size so a day with several legitimate
+  // absences isn't flagged short just because of them.
+  const availableCountByDate = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const dk of dateKeys) {
+      let count = 0;
+      for (const s of students) {
+        if (isStudentAvailable(s.id, dk)) count++;
+      }
+      map.set(dk, count);
+    }
+    return map;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dateKeys, students, availabilityByStudentDate]);
+
   // Coverage always reflects the full active roster, independent of the
   // student filter below - "is everyone covered" shouldn't change just
   // because the manager is looking at one student's row.
   const coverageByDate = useMemo(
-    () => computeCoverageByDate(dateKeys, students.length, cellMap, noDutyDateKeys),
-    [dateKeys, students.length, cellMap, noDutyDateKeys]
+    () => computeCoverageByDate(dateKeys, students.length, cellMap, noDutyDateKeys, availableCountByDate),
+    [dateKeys, students.length, cellMap, noDutyDateKeys, availableCountByDate]
   );
 
   // Same order as the Excel export: group -> subgroup -> last name (falls
@@ -192,11 +218,15 @@ export function ScheduleGrid({
                   : undefined;
 
                 if (!assignment || !matchesDutyFilter) {
+                  const isUnavailable = !isStudentAvailable(student.id, dk);
                   // A genuine coverage gap: an active (non-no-duty) day with
-                  // no assignment for this student, and no duty-type filter
-                  // narrowing the view (with a filter active, "blank" just
-                  // means "not this duty type", not a real gap).
-                  const isGenuineGap = !assignment && !isNoDuty && !filterDutyTypeId;
+                  // no assignment for this available student, and no
+                  // duty-type filter narrowing the view (with a filter
+                  // active, "blank" just means "not this duty type", not a
+                  // real gap). A student marked unavailable that day is
+                  // expected to have no duty - that's not a problem, so it
+                  // never counts as a genuine gap.
+                  const isGenuineGap = !assignment && !isNoDuty && !filterDutyTypeId && !isUnavailable;
                   return (
                     <td
                       key={dk}
@@ -206,7 +236,7 @@ export function ScheduleGrid({
                       } ${onCellClick ? "cursor-pointer hover:ring-1 hover:ring-inset hover:ring-primary" : ""}`}
                       style={isNoDuty ? { backgroundColor: getNoDutyColor().background } : undefined}
                     >
-                      {isNoDuty ? "אין תורנויות" : ""}
+                      {isNoDuty ? "אין תורנויות" : isUnavailable && !filterDutyTypeId ? "לא זמין/ה" : ""}
                     </td>
                   );
                 }

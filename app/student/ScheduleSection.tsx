@@ -11,6 +11,7 @@ import { todayDateKey } from "@/lib/dates";
 import { getStudentScheduleTitle } from "@/lib/schedule-title";
 import { ScheduleTimeGrid } from "@/lib/components/ScheduleTimeGrid";
 import { getScheduleGroupColorClass } from "@/lib/schedule-group-colors";
+import { coalesceAdjacentSameActivity } from "@/lib/schedule-grouping";
 
 function isItemActiveNow(item: ScheduleItemView, now: Date): boolean {
   const todayKey = now.toISOString().slice(0, 10);
@@ -155,9 +156,20 @@ export function ScheduleSection({
                 />
               ) : (
                 // Viewing only "הקבוצה שלי" - no cross-group layout needed,
-                // just render each item as its own simple card.
+                // just a simple stacked list, but a continuous activity can
+                // still arrive as multiple contiguous same-title rows (the
+                // source Excel timetable's fixed-slot rows), so it still
+                // needs the same coalescing step ScheduleTimeGrid applies
+                // internally, or it would render as separate cards here.
+                // coalesceAdjacentSameActivity buckets by groupName
+                // internally and concatenates each bucket's own chronological
+                // run in group-encounter order, not merged across buckets -
+                // so items from the student's own group and "שתי הקבוצות"
+                // items need an explicit re-sort by time afterward.
                 <div className="flex flex-col gap-3">
-                  {items.map((item) => renderScheduleCard(item, isItemActiveNow(item, now)))}
+                  {[...coalesceAdjacentSameActivity(items)]
+                    .sort((a, b) => a.startTime.localeCompare(b.startTime) || a.endTime.localeCompare(b.endTime))
+                    .map((item) => renderScheduleCard(item, isItemActiveNow(item, now)))}
                 </div>
               )}
             </div>

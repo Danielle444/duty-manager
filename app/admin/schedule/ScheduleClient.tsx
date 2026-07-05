@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, FormEvent, useMemo, useState, useTransition } from "react";
+import { Fragment, FormEvent, useEffect, useMemo, useState, useTransition } from "react";
 import { Button } from "@/lib/components/Button";
 import { SearchableSelect } from "@/lib/components/SearchableSelect";
 import {
@@ -10,6 +10,7 @@ import {
   runGenerateSchedule,
   setPublishStatus,
 } from "@/lib/actions/schedule";
+import { getAvailabilityForRange } from "@/lib/actions/availability";
 import {
   dateKey,
   enumerateDateKeys,
@@ -106,6 +107,7 @@ export function ScheduleClient({
   const [filterDate, setFilterDate] = useState("");
   const [filterStudent, setFilterStudent] = useState("");
   const [filterDuty, setFilterDuty] = useState("");
+  const [filterGroup, setFilterGroup] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
@@ -225,16 +227,23 @@ export function ScheduleClient({
     return false;
   }
 
+  const groups = useMemo(
+    () =>
+      Array.from(new Set(students.map((s) => s.groupName).filter((g): g is string => Boolean(g)))).sort(),
+    [students]
+  );
+
   const filtered = useMemo(() => {
     return assignments.filter((a) => {
       if (filterDate && a.dateKey !== filterDate) return false;
       if (filterStudent && a.studentId !== filterStudent) return false;
       if (filterDuty && a.dutyTypeId !== filterDuty) return false;
+      if (filterGroup && studentById.get(a.studentId)?.groupName !== filterGroup) return false;
       if (!matchesSearchQuery(a)) return false;
       return true;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [assignments, filterDate, filterStudent, filterDuty, normalizedSearchQuery, studentById]);
+  }, [assignments, filterDate, filterStudent, filterDuty, filterGroup, normalizedSearchQuery, studentById]);
 
   const availableDates = useMemo(
     () => Array.from(new Set(assignments.map((a) => a.dateKey))).sort(),
@@ -324,6 +333,28 @@ export function ScheduleClient({
 
   const exportHref = buildExportHref();
   const gridRange = resolveRange();
+  const gridRangeStartKey = gridRange ? dateKey(gridRange.startDate) : null;
+  const gridRangeEndKey = gridRange ? dateKey(gridRange.endDate) : null;
+
+  const [availabilityMap, setAvailabilityMap] = useState<Map<string, boolean>>(new Map());
+
+  useEffect(() => {
+    if (!gridRangeStartKey || !gridRangeEndKey) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setAvailabilityMap(new Map());
+      return;
+    }
+    let cancelled = false;
+    getAvailabilityForRange(gridRangeStartKey, gridRangeEndKey).then((rows) => {
+      if (cancelled) return;
+      const map = new Map<string, boolean>();
+      for (const row of rows) map.set(`${row.studentId}|${row.dateKey}`, row.isAvailable);
+      setAvailabilityMap(map);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [gridRangeStartKey, gridRangeEndKey]);
 
   return (
     <div className="flex flex-col gap-4">
@@ -511,6 +542,21 @@ export function ScheduleClient({
             ]}
           />
         </label>
+        <label className="flex flex-col gap-1 text-sm">
+          קבוצה
+          <select
+            value={filterGroup}
+            onChange={(e) => setFilterGroup(e.target.value)}
+            className="rounded-lg border border-border px-3 py-2 text-sm"
+          >
+            <option value="">הכל</option>
+            {groups.map((g) => (
+              <option key={g} value={g}>
+                קבוצה {g}
+              </option>
+            ))}
+          </select>
+        </label>
         <Button
           variant="secondary"
           onClick={() => {
@@ -603,6 +649,7 @@ export function ScheduleClient({
           filterStudentId={filterStudent}
           filterDutyTypeId={filterDuty}
           searchQuery={searchQuery}
+          availabilityByStudentDate={availabilityMap}
           onCellClick={(args) => setSelectedCell(args)}
         />
         {selectedCell && cellEditorContext && (
@@ -646,6 +693,8 @@ export function ScheduleClient({
               <th className="px-4 py-3 text-right font-medium">יום</th>
               <th className="px-4 py-3 text-right font-medium">סוג תורנות</th>
               <th className="px-4 py-3 text-right font-medium">תלמיד/ה</th>
+              <th className="px-4 py-3 text-right font-medium">קבוצה</th>
+              <th className="px-4 py-3 text-right font-medium">תת-קבוצה</th>
               <th className="px-4 py-3 text-right font-medium">מקור</th>
               <th className="px-4 py-3 text-right font-medium">פרסום</th>
               <th className="px-4 py-3 text-right font-medium">ביצוע</th>
@@ -660,7 +709,7 @@ export function ScheduleClient({
                   {isNewDay && (
                     <tr key={`${a.dateKey}-header`} className="bg-secondary">
                       <td
-                        colSpan={7}
+                        colSpan={9}
                         className="px-4 py-2 text-sm font-bold text-secondary-foreground"
                       >
                         {formatHebrewWeekday(parseDateKey(a.dateKey))} ·{" "}
@@ -688,6 +737,12 @@ export function ScheduleClient({
                           </option>
                         ))}
                       </select>
+                    </td>
+                    <td className="px-4 py-3 text-muted-foreground">
+                      {studentById.get(a.studentId)?.groupName ?? "-"}
+                    </td>
+                    <td className="px-4 py-3 text-muted-foreground">
+                      {studentById.get(a.studentId)?.subgroupNumber ?? "-"}
                     </td>
                     <td className="px-4 py-3">
                       <span
@@ -738,7 +793,7 @@ export function ScheduleClient({
             })}
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={7} className="px-4 py-8 text-center text-muted-foreground">
+                <td colSpan={9} className="px-4 py-8 text-center text-muted-foreground">
                   אין שיבוצים התואמים את הסינון
                 </td>
               </tr>

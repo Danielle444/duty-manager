@@ -9,11 +9,21 @@ interface CompletionRow {
   id: string;
   dateKey: string;
   studentName: string;
+  groupName: string | null;
+  subgroupNumber: number | null;
   dutyTypeName: string;
   isPublished: boolean;
   isCompleted: boolean;
   completedAt: string | null;
 }
+
+type SortBy = "name" | "group" | "status";
+
+const SORT_LABELS: Record<SortBy, string> = {
+  name: "שם",
+  group: "קבוצה",
+  status: "סטטוס",
+};
 
 export function CompletionClient({
   assignments,
@@ -30,11 +40,40 @@ export function CompletionClient({
   const [selectedDate, setSelectedDate] = useState(
     availableDates.includes(defaultDateKey) ? defaultDateKey : availableDates[0] ?? ""
   );
+  const [nameQuery, setNameQuery] = useState("");
+  const [groupFilter, setGroupFilter] = useState("");
+  const [sortBy, setSortBy] = useState<SortBy>("name");
 
-  const dayAssignments = useMemo(
-    () => assignments.filter((a) => a.dateKey === selectedDate),
-    [assignments, selectedDate]
+  const groups = useMemo(
+    () =>
+      Array.from(new Set(assignments.map((a) => a.groupName).filter((g): g is string => Boolean(g)))).sort(),
+    [assignments]
   );
+
+  const dayAssignments = useMemo(() => {
+    const q = nameQuery.trim().toLowerCase();
+    const rows = assignments.filter((a) => {
+      if (a.dateKey !== selectedDate) return false;
+      if (groupFilter && a.groupName !== groupFilter) return false;
+      if (q && !a.studentName.toLowerCase().includes(q)) return false;
+      return true;
+    });
+
+    const sorted = [...rows];
+    if (sortBy === "name") {
+      sorted.sort((a, b) => a.studentName.localeCompare(b.studentName));
+    } else if (sortBy === "group") {
+      sorted.sort((a, b) => {
+        const groupCompare = (a.groupName ?? "").localeCompare(b.groupName ?? "");
+        if (groupCompare !== 0) return groupCompare;
+        return (a.subgroupNumber ?? 0) - (b.subgroupNumber ?? 0);
+      });
+    } else {
+      // status: incomplete first, then completed
+      sorted.sort((a, b) => Number(a.isCompleted) - Number(b.isCompleted));
+    }
+    return sorted;
+  }, [assignments, selectedDate, nameQuery, groupFilter, sortBy]);
 
   const completedCount = dayAssignments.filter((a) => a.isCompleted).length;
 
@@ -62,6 +101,44 @@ export function CompletionClient({
             ))}
           </select>
         </label>
+        <label className="flex flex-col gap-1 text-sm">
+          חיפוש לפי שם
+          <input
+            value={nameQuery}
+            onChange={(e) => setNameQuery(e.target.value)}
+            placeholder="שם תלמיד/ה..."
+            className="rounded-lg border border-border px-3 py-2 text-sm"
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-sm">
+          קבוצה
+          <select
+            value={groupFilter}
+            onChange={(e) => setGroupFilter(e.target.value)}
+            className="rounded-lg border border-border px-3 py-2 text-sm"
+          >
+            <option value="">הכל</option>
+            {groups.map((g) => (
+              <option key={g} value={g}>
+                קבוצה {g}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex flex-col gap-1 text-sm">
+          מיון לפי
+          <select
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value as SortBy)}
+            className="rounded-lg border border-border px-3 py-2 text-sm"
+          >
+            {(Object.keys(SORT_LABELS) as SortBy[]).map((key) => (
+              <option key={key} value={key}>
+                {SORT_LABELS[key]}
+              </option>
+            ))}
+          </select>
+        </label>
         {dayAssignments.length > 0 && (
           <p className="text-sm text-muted-foreground">
             בוצעו {completedCount} מתוך {dayAssignments.length}
@@ -74,6 +151,8 @@ export function CompletionClient({
           <thead>
             <tr className="border-b border-border bg-muted text-muted-foreground">
               <th className="px-4 py-3 text-right font-medium">תלמיד/ה</th>
+              <th className="px-4 py-3 text-right font-medium">קבוצה</th>
+              <th className="px-4 py-3 text-right font-medium">תת-קבוצה</th>
               <th className="px-4 py-3 text-right font-medium">סוג תורנות</th>
               <th className="px-4 py-3 text-right font-medium">פרסום</th>
               <th className="px-4 py-3 text-right font-medium">סטטוס</th>
@@ -85,6 +164,8 @@ export function CompletionClient({
             {dayAssignments.map((a) => (
               <tr key={a.id} className="border-b border-border last:border-0">
                 <td className="px-4 py-2 font-medium text-card-foreground">{a.studentName}</td>
+                <td className="px-4 py-2 text-muted-foreground">{a.groupName ?? "-"}</td>
+                <td className="px-4 py-2 text-muted-foreground">{a.subgroupNumber ?? "-"}</td>
                 <td className="px-4 py-2 text-card-foreground">{a.dutyTypeName}</td>
                 <td className="px-4 py-2">
                   <span
@@ -125,8 +206,10 @@ export function CompletionClient({
             ))}
             {dayAssignments.length === 0 && (
               <tr>
-                <td colSpan={6} className="px-4 py-8 text-center text-muted-foreground">
-                  אין שיבוצים לתאריך זה
+                <td colSpan={8} className="px-4 py-8 text-center text-muted-foreground">
+                  {assignments.some((a) => a.dateKey === selectedDate)
+                    ? "אין שיבוצים התואמים את הסינון"
+                    : "אין שיבוצים לתאריך זה"}
                 </td>
               </tr>
             )}

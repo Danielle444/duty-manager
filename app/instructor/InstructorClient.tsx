@@ -17,7 +17,7 @@ import { InstructorScheduleSection } from "@/app/instructor/InstructorScheduleSe
 import { InstructorDutiesSection } from "@/app/instructor/InstructorDutiesSection";
 import { InstructorHorsesSection } from "@/app/instructor/InstructorHorsesSection";
 import { InstructorMessagesSection } from "@/app/instructor/InstructorMessagesSection";
-import { InstructorContactsSection } from "@/app/instructor/InstructorContactsSection";
+import { ContactsSection } from "@/lib/components/ContactsSection";
 import { formatHebrewDate, formatHebrewWeekday, parseDateKey, todayDateKey } from "@/lib/dates";
 
 const STORAGE_KEY = "duty-manager-instructor-v2";
@@ -292,26 +292,15 @@ export function InstructorClient({
               ))}
             </div>
 
-            {(session.canSendMessages || session.canEditHorseAssignments) && (
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                {session.canSendMessages && (
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab("messages")}
-                    className="rounded-xl border border-accent bg-secondary p-4 text-center text-sm font-semibold text-secondary-foreground hover:opacity-90"
-                  >
-                    שליחת הודעה/משימה
-                  </button>
-                )}
-                {session.canEditHorseAssignments && (
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab("horses")}
-                    className="rounded-xl border border-accent bg-secondary p-4 text-center text-sm font-semibold text-secondary-foreground hover:opacity-90"
-                  >
-                    עריכת חלוקת סוסים
-                  </button>
-                )}
+            {session.canSendMessages && (
+              <div className="grid grid-cols-1 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setActiveTab("messages")}
+                  className="rounded-xl border border-accent bg-secondary p-4 text-center text-sm font-semibold text-secondary-foreground hover:opacity-90"
+                >
+                  שליחת הודעה/משימה
+                </button>
               </div>
             )}
 
@@ -396,7 +385,7 @@ export function InstructorClient({
 
         {activeTab === "more" && (
           <div className="flex flex-col gap-3">
-            {INSTRUCTOR_MORE_ITEMS.map((item) => (
+            {INSTRUCTOR_ALL_TABS.filter((item) => item.id !== "more").map((item) => (
               <button
                 key={item.id}
                 type="button"
@@ -440,7 +429,7 @@ export function InstructorClient({
           />
         )}
 
-        {activeTab === "contacts" && <InstructorContactsSection />}
+        {activeTab === "contacts" && <ContactsSection />}
 
         {activeTab === "materials" && <CourseMaterialsSection role="instructor" />}
       </main>

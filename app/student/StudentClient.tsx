@@ -18,7 +18,7 @@ import { ScheduleSection } from "@/app/student/ScheduleSection";
 import { DutiesSection } from "@/app/student/DutiesSection";
 import { StudentMessagesSection } from "@/app/student/StudentMessagesSection";
 import { StudentMessagesSummary } from "@/app/student/StudentMessagesSummary";
-import { StudentInstructorContactsSection } from "@/app/student/StudentInstructorContactsSection";
+import { ContactsSection } from "@/lib/components/ContactsSection";
 import { formatHebrewDate, formatHebrewWeekday, parseDateKey, todayDateKey } from "@/lib/dates";
 import { getHorseDisplayInfo } from "@/lib/horse-info";
 
@@ -424,7 +424,7 @@ export function StudentClient() {
 
         {activeTab === "more" && (
           <div className="flex flex-col gap-3">
-            {STUDENT_MORE_ITEMS.map((item) => (
+            {STUDENT_ALL_TABS.filter((item) => item.id !== "more").map((item) => (
               <button
                 key={item.id}
                 type="button"
@@ -544,7 +544,7 @@ export function StudentClient() {
 
         {activeTab === "messages" && <StudentMessagesSection studentId={session.id} />}
 
-        {activeTab === "contacts" && <StudentInstructorContactsSection />}
+        {activeTab === "contacts" && <ContactsSection />}
 
         {activeTab === "materials" && <CourseMaterialsSection role="student" />}
       </main>

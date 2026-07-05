@@ -1,12 +1,15 @@
 "use client";
 
-import { FormEvent, useMemo, useState, useTransition } from "react";
+import { FormEvent, useEffect, useMemo, useState, useTransition } from "react";
 import { Button } from "@/lib/components/Button";
 import {
   createMessageTaskAsInstructor,
+  getMessageTasksForInstructorView,
+  type InstructorMessageTaskView,
   type MessageAudienceValue,
   type MessageTaskTypeValue,
 } from "@/lib/actions/messages";
+import { formatHebrewDateTime } from "@/lib/dates";
 
 interface StudentOption {
   id: string;
@@ -19,6 +22,16 @@ const AUDIENCE_LABELS: Record<MessageAudienceValue, string> = {
   GROUP: "קבוצה",
   SPECIFIC: "תלמידים ספציפיים",
 };
+
+const TYPE_LABELS: Record<MessageTaskTypeValue, string> = {
+  MESSAGE: "הודעה",
+  TASK: "משימה",
+};
+
+function audienceSummary(item: InstructorMessageTaskView): string {
+  if (item.audience === "GROUP") return `קבוצה ${item.groupName ?? "-"}`;
+  return AUDIENCE_LABELS[item.audience];
+}
 
 // Sending is gated on canSend, which InstructorClient refreshes from the DB
 // on every session load - but the real gate is server-side, inside
@@ -33,6 +46,18 @@ export function InstructorMessagesSection({
   canSend: boolean;
   students: StudentOption[];
 }) {
+  const [items, setItems] = useState<InstructorMessageTaskView[] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    getMessageTasksForInstructorView().then((result) => {
+      if (!cancelled) setItems(result);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const [type, setType] = useState<MessageTaskTypeValue>("MESSAGE");
   const [audience, setAudience] = useState<MessageAudienceValue>("ALL");
   const [groupName, setGroupName] = useState("");
@@ -94,16 +119,50 @@ export function InstructorMessagesSection({
     });
   }
 
-  if (!canSend) {
-    return (
-      <p className="rounded-2xl border border-border bg-card p-5 text-base text-muted-foreground">
-        אין הרשאה לשליחת הודעות ומשימות
-      </p>
-    );
-  }
-
   return (
     <div className="flex flex-col gap-4">
+      <div className="rounded-2xl border border-border bg-card p-4">
+        <h2 className="mb-3 text-lg font-bold text-card-foreground">הודעות ומשימות שנשלחו</h2>
+        {items === null ? (
+          <p className="text-base text-muted-foreground">טוען...</p>
+        ) : items.length === 0 ? (
+          <p className="text-base text-muted-foreground">עדיין לא נשלחו הודעות או משימות</p>
+        ) : (
+          <div className="flex flex-col gap-3">
+            {items.map((item) => (
+              <div key={item.id} className="rounded-xl border-2 border-border p-3">
+                <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`rounded-full px-2.5 py-1 text-xs font-medium ${
+                        item.type === "TASK"
+                          ? "bg-secondary text-secondary-foreground"
+                          : "bg-success-muted text-success"
+                      }`}
+                    >
+                      {TYPE_LABELS[item.type]}
+                    </span>
+                    <p className="text-base font-bold text-card-foreground">{item.title}</p>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    {formatHebrewDateTime(new Date(item.createdAt))}
+                  </p>
+                </div>
+                <p className="mb-1 whitespace-pre-wrap text-sm text-muted-foreground">{item.body}</p>
+                <p className="text-xs text-muted-foreground">
+                  {audienceSummary(item)} · {item.createdByName ?? "מנהלת"}
+                </p>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {!canSend ? (
+        <p className="rounded-2xl border border-border bg-card p-5 text-base text-muted-foreground">
+          אין הרשאה לשליחת הודעות ומשימות
+        </p>
+      ) : (
       <div className="rounded-2xl border border-border bg-card p-4">
         <h2 className="mb-3 text-lg font-bold text-card-foreground">יצירת הודעה/משימה</h2>
         <form onSubmit={handleSubmit} className="flex flex-col gap-3">
@@ -234,6 +293,7 @@ export function InstructorMessagesSection({
           </Button>
         </form>
       </div>
+      )}
     </div>
   );
 }

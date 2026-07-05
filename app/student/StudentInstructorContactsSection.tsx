@@ -10,6 +10,7 @@ import { formatPhoneDisplay, getPhoneHref, getWhatsAppHref } from "@/lib/phone-f
 export function StudentInstructorContactsSection() {
   const [rows, setRows] = useState<InstructorContactRow[] | null>(null);
   const [nameQuery, setNameQuery] = useState("");
+  const [phoneQuery, setPhoneQuery] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -23,21 +24,32 @@ export function StudentInstructorContactsSection() {
 
   const filteredRows = useMemo(() => {
     if (!rows) return [];
-    const q = nameQuery.trim().toLowerCase();
-    if (!q) return rows;
-    return rows.filter((r) => r.fullName.toLowerCase().includes(q));
-  }, [rows, nameQuery]);
+    const nameQ = nameQuery.trim().toLowerCase();
+    const phoneQ = phoneQuery.trim().toLowerCase();
+    return rows.filter((r) => {
+      if (nameQ && !r.fullName.toLowerCase().includes(nameQ)) return false;
+      if (phoneQ && !(r.phone ?? "").toLowerCase().includes(phoneQ)) return false;
+      return true;
+    });
+  }, [rows, nameQuery, phoneQuery]);
 
   return (
     <div className="flex flex-col gap-4">
       <div className="rounded-2xl border border-border bg-card p-4">
-        <h2 className="mb-3 text-lg font-bold text-card-foreground">אנשי קשר</h2>
-        <input
-          value={nameQuery}
-          onChange={(e) => setNameQuery(e.target.value)}
-          placeholder="חיפוש לפי שם מדריך/ה..."
-          className="w-full rounded-xl border border-border px-3 py-2.5 text-base"
-        />
+        <div className="flex flex-col gap-2">
+          <input
+            value={nameQuery}
+            onChange={(e) => setNameQuery(e.target.value)}
+            placeholder="חיפוש לפי שם מדריך/ה..."
+            className="w-full rounded-xl border border-border px-3 py-2.5 text-base"
+          />
+          <input
+            value={phoneQuery}
+            onChange={(e) => setPhoneQuery(e.target.value)}
+            placeholder="חיפוש לפי טלפון..."
+            className="w-full rounded-xl border border-border px-3 py-2.5 text-base"
+          />
+        </div>
       </div>
 
       {rows === null ? (

@@ -81,3 +81,23 @@ export function getLocalDateKey(date: Date = new Date()): string {
 export function todayDateKey(): string {
   return getLocalDateKey();
 }
+
+// Sunday-Saturday calendar week containing the given date, as all 7 date
+// keys in order - independent of any WeeklySchedule row, for views (like
+// daily-tracking's week toggle) that just need "this date's week" rather
+// than a specific uploaded schedule.
+export function getWeekDateKeys(dateKeyStr: string): string[] {
+  const date = parseDateKey(dateKeyStr);
+  const start = new Date(date);
+  start.setUTCDate(start.getUTCDate() - start.getUTCDay());
+  const end = new Date(start);
+  end.setUTCDate(end.getUTCDate() + 6);
+  return enumerateDateKeys(start, end);
+}
+
+export function formatHebrewWeekdayShort(date: Date): string {
+  return new Intl.DateTimeFormat("he-IL", {
+    weekday: "short",
+    timeZone: "UTC",
+  }).format(date);
+}

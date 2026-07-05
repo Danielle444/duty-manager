@@ -85,14 +85,6 @@ export interface AttendanceDayCell {
   hasWarnings: boolean;
 }
 
-export function toAttendanceDayCell(row: AttendanceTrackingRow): AttendanceDayCell {
-  return {
-    dateKey: row.dateKey,
-    status: row.attendance?.status ?? null,
-    hasWarnings: row.warnings.length > 0,
-  };
-}
-
 function toAttendanceRecord(row: {
   studentId: string;
   date: Date;
@@ -325,4 +317,22 @@ export async function markStudentUnavailableForDuty(
 ): Promise<ActionResult> {
   await requireAdmin();
   return setAvailability(studentId, dateKeyStr, false);
+}
+
+// Returns a student/date back to "no known absence" by deleting the
+// StudentAttendance row entirely (including its notes) rather than writing
+// a PRESENT row to represent the default state - a missing row is always
+// the default, never a stored status. deleteMany is a no-op (not an error)
+// if no row exists.
+export async function clearAttendanceAsAdmin(
+  studentId: string,
+  dateKeyStr: string
+): Promise<ActionResult> {
+  await requireAdmin();
+  const date = parseDateKey(dateKeyStr);
+  await prisma.studentAttendance.deleteMany({ where: { studentId, date } });
+
+  revalidatePath("/admin/daily-tracking");
+  revalidatePath("/instructor");
+  return { success: true };
 }

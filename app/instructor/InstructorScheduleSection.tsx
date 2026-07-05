@@ -9,6 +9,7 @@ import {
 } from "@/lib/actions/instructor-schedule";
 import { todayDateKey } from "@/lib/dates";
 import { cleanScheduleTitle } from "@/lib/schedule-title";
+import { buildScheduleSlots } from "@/lib/schedule-grouping";
 
 function isItemActiveNow(item: InstructorScheduleItem, now: Date): boolean {
   const todayKey = now.toISOString().slice(0, 10);
@@ -18,76 +19,6 @@ function isItemActiveNow(item: InstructorScheduleItem, now: Date): boolean {
   if (Number.isNaN(sh) || Number.isNaN(eh)) return false;
   const nowMinutes = now.getHours() * 60 + now.getMinutes();
   return nowMinutes >= sh * 60 + sm && nowMinutes < eh * 60 + em;
-}
-
-function mergeUnique(a: string | null, b: string | null): string | null {
-  const values = Array.from(new Set([a, b].filter((v): v is string => !!v && v.trim().length > 0)));
-  return values.length > 0 ? values.join(" / ") : null;
-}
-
-// Combines two same-time, opposite-group items (א + ב) into one synthetic
-// "שתי הקבוצות" item (groupName: null already renders that way) - display
-// only, nothing is written back to the DB.
-function mergeSameActivityItems(
-  a: InstructorScheduleItem,
-  b: InstructorScheduleItem
-): InstructorScheduleItem {
-  return {
-    ...a,
-    id: `${a.id}+${b.id}`,
-    groupName: null,
-    instructorName: mergeUnique(a.instructorName, b.instructorName),
-    location: mergeUnique(a.location, b.location),
-    description: mergeUnique(a.description, b.description),
-  };
-}
-
-type ScheduleSlot =
-  | { kind: "single"; item: InstructorScheduleItem }
-  | { kind: "merged"; item: InstructorScheduleItem }
-  | { kind: "pair"; items: [InstructorScheduleItem, InstructorScheduleItem] };
-
-// Groups same-time-slot, opposite-group (א/ב) items: identical activity ->
-// one merged "שתי הקבוצות" card; different activity -> two cards shown
-// side by side so it's clear at a glance the groups split for that slot.
-// Everything else renders exactly as before, one card per item.
-function buildScheduleSlots(items: InstructorScheduleItem[]): ScheduleSlot[] {
-  const slots: ScheduleSlot[] = [];
-  const consumed = new Set<string>();
-
-  for (const item of items) {
-    if (consumed.has(item.id)) continue;
-
-    if (item.groupName === "א" || item.groupName === "ב") {
-      const otherGroup = item.groupName === "א" ? "ב" : "א";
-      const partner = items.find(
-        (other) =>
-          !consumed.has(other.id) &&
-          other.id !== item.id &&
-          other.startTime === item.startTime &&
-          other.endTime === item.endTime &&
-          other.groupName === otherGroup
-      );
-      if (partner) {
-        consumed.add(item.id);
-        consumed.add(partner.id);
-        const sameActivity =
-          cleanScheduleTitle(item.title) === cleanScheduleTitle(partner.title);
-        if (sameActivity) {
-          slots.push({ kind: "merged", item: mergeSameActivityItems(item, partner) });
-        } else {
-          const [groupA, groupB] = item.groupName === "א" ? [item, partner] : [partner, item];
-          slots.push({ kind: "pair", items: [groupA, groupB] });
-        }
-        continue;
-      }
-    }
-
-    consumed.add(item.id);
-    slots.push({ kind: "single", item });
-  }
-
-  return slots;
 }
 
 function renderScheduleCard(item: InstructorScheduleItem, active: boolean, compact = false) {

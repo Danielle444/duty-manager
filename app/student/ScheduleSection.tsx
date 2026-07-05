@@ -9,6 +9,7 @@ import {
 } from "@/lib/actions/student-schedule";
 import { todayDateKey } from "@/lib/dates";
 import { getStudentScheduleTitle } from "@/lib/schedule-title";
+import { buildScheduleSlots } from "@/lib/schedule-grouping";
 
 function isItemActiveNow(item: ScheduleItemView, now: Date): boolean {
   const todayKey = now.toISOString().slice(0, 10);
@@ -18,6 +19,45 @@ function isItemActiveNow(item: ScheduleItemView, now: Date): boolean {
   if (Number.isNaN(sh) || Number.isNaN(eh)) return false;
   const nowMinutes = now.getHours() * 60 + now.getMinutes();
   return nowMinutes >= sh * 60 + sm && nowMinutes < eh * 60 + em;
+}
+
+// Students must never see instructorName here, and titles always go through
+// the student-facing shortening rule (e.g. "רכיבה - ישיבה יציבה" -> "רכיבה").
+function renderScheduleCard(item: ScheduleItemView, active: boolean, compact = false) {
+  return (
+    <div
+      key={item.id}
+      className={`rounded-xl border-2 ${compact ? "p-2.5" : "p-4"} ${
+        active ? "border-accent bg-secondary" : "border-border"
+      }`}
+    >
+      <div className="mb-1 flex flex-wrap items-center justify-between gap-1.5">
+        <span className={`font-semibold text-card-foreground ${compact ? "text-sm" : "text-base"}`}>
+          {item.startTime}-{item.endTime}
+        </span>
+        <span
+          className={`rounded-full bg-muted text-muted-foreground ${
+            compact ? "px-2 py-0.5 text-xs" : "px-3 py-1 text-sm"
+          }`}
+        >
+          {item.groupName ? `קבוצה ${item.groupName}` : "שתי הקבוצות"}
+        </span>
+      </div>
+      <p className={`font-bold text-card-foreground ${compact ? "text-base" : "text-lg"}`}>
+        {getStudentScheduleTitle(item.title)}
+      </p>
+      {item.location && (
+        <p className={`mt-1 text-muted-foreground ${compact ? "text-xs" : "text-sm"}`}>
+          מיקום: {item.location}
+        </p>
+      )}
+      {active && (
+        <span className="mt-2 inline-block rounded-full bg-accent px-3 py-1 text-sm font-medium text-accent-foreground">
+          מתקיים עכשיו
+        </span>
+      )}
+    </div>
+  );
 }
 
 export function ScheduleSection({
@@ -108,37 +148,22 @@ export function ScheduleSection({
                 {dk === todayKey && <span className="mr-2 text-sm font-normal">(היום)</span>}
               </div>
               <div className="flex flex-col gap-3">
-                {items.map((item) => {
-                  const active = isItemActiveNow(item, now);
-                  return (
-                    <div
-                      key={item.id}
-                      className={`rounded-xl border-2 p-4 ${
-                        active ? "border-accent bg-secondary" : "border-border"
-                      }`}
-                    >
-                      <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
-                        <span className="text-base font-semibold text-card-foreground">
-                          {item.startTime}-{item.endTime}
-                        </span>
-                        <span className="rounded-full bg-muted px-3 py-1 text-sm text-muted-foreground">
-                          {item.groupName ? `קבוצה ${item.groupName}` : "שתי הקבוצות"}
-                        </span>
-                      </div>
-                      <p className="text-lg font-bold text-card-foreground">
-                        {getStudentScheduleTitle(item.title)}
-                      </p>
-                      {item.location && (
-                        <p className="mt-1 text-sm text-muted-foreground">מיקום: {item.location}</p>
-                      )}
-                      {active && (
-                        <span className="mt-2 inline-block rounded-full bg-accent px-3 py-1 text-sm font-medium text-accent-foreground">
-                          מתקיים עכשיו
-                        </span>
-                      )}
-                    </div>
-                  );
-                })}
+                {groupFilter === "both"
+                  ? buildScheduleSlots(items).map((slot) => {
+                      if (slot.kind === "pair") {
+                        const [groupA, groupB] = slot.items;
+                        return (
+                          <div key={`${groupA.id}|${groupB.id}`} className="grid grid-cols-2 gap-2">
+                            {renderScheduleCard(groupA, isItemActiveNow(groupA, now), true)}
+                            {renderScheduleCard(groupB, isItemActiveNow(groupB, now), true)}
+                          </div>
+                        );
+                      }
+                      return renderScheduleCard(slot.item, isItemActiveNow(slot.item, now));
+                    })
+                  : // Viewing only "הקבוצה שלי" - no cross-group pairing needed,
+                    // just render each item as its own simple card.
+                    items.map((item) => renderScheduleCard(item, isItemActiveNow(item, now)))}
               </div>
             </div>
           ))}

@@ -7,6 +7,7 @@ import {
   formatHebrewWeekday,
   parseDateKey,
 } from "@/lib/dates";
+import { cleanScheduleTitle } from "@/lib/schedule-title";
 
 export interface InstructorScheduleItem {
   id: string;
@@ -63,6 +64,20 @@ function isInstructorMatch(
   );
 }
 
+// Meal slots always concern every instructor regardless of who the
+// instructorName column names, so they always show up under "מהשיעורים שלי".
+// Real schedules abbreviate the meal marker ("א. צהריים", "א. ערב + ...")
+// as often as they spell it out ("ארוחת צהריים"/"ארוחת ערב"), so a meal
+// marker plus a "צהריים"/"ערב" mention is required together, rather than
+// matching the full phrase literally (which would miss the abbreviation).
+const MEAL_MARKER_PATTERN = /(ארוחה|ארוחת|א\.)/;
+const LUNCH_OR_DINNER_PATTERN = /(צהריים|ערב)/;
+
+function isMealItem(title: string): boolean {
+  const cleaned = cleanScheduleTitle(title);
+  return MEAL_MARKER_PATTERN.test(cleaned) && LUNCH_OR_DINNER_PATTERN.test(cleaned);
+}
+
 // dayKey: a specific date within the week, or "all" for the whole week.
 export async function getScheduleForInstructor(
   instructorId: string,
@@ -80,7 +95,11 @@ export async function getScheduleForInstructor(
   if (!week) return { hasSchedule: false, weekName: null, items: [] };
 
   const items = week.items.filter((i) => {
-    if (filter === "mine" && !isInstructorMatch(i.instructorName, instructor)) {
+    if (
+      filter === "mine" &&
+      !isInstructorMatch(i.instructorName, instructor) &&
+      !isMealItem(i.title)
+    ) {
       return false;
     }
     if (dayKey !== "all" && dateKey(i.date) !== dayKey) return false;

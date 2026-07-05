@@ -20,6 +20,120 @@ function isItemActiveNow(item: InstructorScheduleItem, now: Date): boolean {
   return nowMinutes >= sh * 60 + sm && nowMinutes < eh * 60 + em;
 }
 
+function mergeUnique(a: string | null, b: string | null): string | null {
+  const values = Array.from(new Set([a, b].filter((v): v is string => !!v && v.trim().length > 0)));
+  return values.length > 0 ? values.join(" / ") : null;
+}
+
+// Combines two same-time, opposite-group items (א + ב) into one synthetic
+// "שתי הקבוצות" item (groupName: null already renders that way) - display
+// only, nothing is written back to the DB.
+function mergeSameActivityItems(
+  a: InstructorScheduleItem,
+  b: InstructorScheduleItem
+): InstructorScheduleItem {
+  return {
+    ...a,
+    id: `${a.id}+${b.id}`,
+    groupName: null,
+    instructorName: mergeUnique(a.instructorName, b.instructorName),
+    location: mergeUnique(a.location, b.location),
+    description: mergeUnique(a.description, b.description),
+  };
+}
+
+type ScheduleSlot =
+  | { kind: "single"; item: InstructorScheduleItem }
+  | { kind: "merged"; item: InstructorScheduleItem }
+  | { kind: "pair"; items: [InstructorScheduleItem, InstructorScheduleItem] };
+
+// Groups same-time-slot, opposite-group (א/ב) items: identical activity ->
+// one merged "שתי הקבוצות" card; different activity -> two cards shown
+// side by side so it's clear at a glance the groups split for that slot.
+// Everything else renders exactly as before, one card per item.
+function buildScheduleSlots(items: InstructorScheduleItem[]): ScheduleSlot[] {
+  const slots: ScheduleSlot[] = [];
+  const consumed = new Set<string>();
+
+  for (const item of items) {
+    if (consumed.has(item.id)) continue;
+
+    if (item.groupName === "א" || item.groupName === "ב") {
+      const otherGroup = item.groupName === "א" ? "ב" : "א";
+      const partner = items.find(
+        (other) =>
+          !consumed.has(other.id) &&
+          other.id !== item.id &&
+          other.startTime === item.startTime &&
+          other.endTime === item.endTime &&
+          other.groupName === otherGroup
+      );
+      if (partner) {
+        consumed.add(item.id);
+        consumed.add(partner.id);
+        const sameActivity =
+          cleanScheduleTitle(item.title) === cleanScheduleTitle(partner.title);
+        if (sameActivity) {
+          slots.push({ kind: "merged", item: mergeSameActivityItems(item, partner) });
+        } else {
+          const [groupA, groupB] = item.groupName === "א" ? [item, partner] : [partner, item];
+          slots.push({ kind: "pair", items: [groupA, groupB] });
+        }
+        continue;
+      }
+    }
+
+    consumed.add(item.id);
+    slots.push({ kind: "single", item });
+  }
+
+  return slots;
+}
+
+function renderScheduleCard(item: InstructorScheduleItem, active: boolean, compact = false) {
+  return (
+    <div
+      key={item.id}
+      className={`rounded-xl border-2 ${compact ? "p-2.5" : "p-4"} ${
+        active ? "border-accent bg-secondary" : "border-border"
+      }`}
+    >
+      <div className="mb-1 flex flex-wrap items-center justify-between gap-1.5">
+        <span
+          className={`font-semibold text-card-foreground ${compact ? "text-sm" : "text-base"}`}
+        >
+          {item.startTime}-{item.endTime}
+        </span>
+        <span
+          className={`rounded-full bg-muted text-muted-foreground ${
+            compact ? "px-2 py-0.5 text-xs" : "px-3 py-1 text-sm"
+          }`}
+        >
+          {item.groupName ? `קבוצה ${item.groupName}` : "שתי הקבוצות"}
+        </span>
+      </div>
+      <p className={`font-bold text-card-foreground ${compact ? "text-base" : "text-lg"}`}>
+        {cleanScheduleTitle(item.title)}
+      </p>
+      {item.instructorName && (
+        <p className={`mt-1 text-muted-foreground ${compact ? "text-xs" : "text-sm"}`}>
+          מדריך/ה: {item.instructorName}
+        </p>
+      )}
+      {item.location && (
+        <p className={`text-muted-foreground ${compact ? "text-xs" : "text-sm"}`}>
+          מיקום: {item.location}
+        </p>
+      )}
+      {active && (
+        <span className="mt-2 inline-block rounded-full bg-accent px-3 py-1 text-sm font-medium text-accent-foreground">
+          מתקיים עכשיו
+        </span>
+      )}
+    </div>
+  );
+}
+
 export function InstructorScheduleSection({
   instructorId,
   weeklyScheduleId,
@@ -116,41 +230,17 @@ export function InstructorScheduleSection({
                 {dk === todayKey && <span className="mr-2 text-sm font-normal">(היום)</span>}
               </div>
               <div className="flex flex-col gap-3">
-                {items.map((item) => {
-                  const active = isItemActiveNow(item, now);
-                  return (
-                    <div
-                      key={item.id}
-                      className={`rounded-xl border-2 p-4 ${
-                        active ? "border-accent bg-secondary" : "border-border"
-                      }`}
-                    >
-                      <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
-                        <span className="text-base font-semibold text-card-foreground">
-                          {item.startTime}-{item.endTime}
-                        </span>
-                        <span className="rounded-full bg-muted px-3 py-1 text-sm text-muted-foreground">
-                          {item.groupName ? `קבוצה ${item.groupName}` : "שתי הקבוצות"}
-                        </span>
+                {buildScheduleSlots(items).map((slot) => {
+                  if (slot.kind === "pair") {
+                    const [groupA, groupB] = slot.items;
+                    return (
+                      <div key={`${groupA.id}|${groupB.id}`} className="grid grid-cols-2 gap-2">
+                        {renderScheduleCard(groupA, isItemActiveNow(groupA, now), true)}
+                        {renderScheduleCard(groupB, isItemActiveNow(groupB, now), true)}
                       </div>
-                      <p className="text-lg font-bold text-card-foreground">
-                        {cleanScheduleTitle(item.title)}
-                      </p>
-                      {item.instructorName && (
-                        <p className="mt-1 text-sm text-muted-foreground">
-                          מדריך/ה: {item.instructorName}
-                        </p>
-                      )}
-                      {item.location && (
-                        <p className="text-sm text-muted-foreground">מיקום: {item.location}</p>
-                      )}
-                      {active && (
-                        <span className="mt-2 inline-block rounded-full bg-accent px-3 py-1 text-sm font-medium text-accent-foreground">
-                          מתקיים עכשיו
-                        </span>
-                      )}
-                    </div>
-                  );
+                    );
+                  }
+                  return renderScheduleCard(slot.item, isItemActiveNow(slot.item, now));
                 })}
               </div>
             </div>

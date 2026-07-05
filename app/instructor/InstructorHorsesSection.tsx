@@ -1,7 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { getHorseAssignments, type HorseAssignmentRow } from "@/lib/actions/horses";
+import { FormEvent, useEffect, useMemo, useState, useTransition } from "react";
+import { Button } from "@/lib/components/Button";
+import { Modal } from "@/lib/components/Modal";
+import {
+  getHorseAssignments,
+  updateStudentHorseInfoAsInstructor,
+  type HorseAssignmentRow,
+} from "@/lib/actions/horses";
 import { getHorseDisplayInfo, type HorseBadgeType } from "@/lib/horse-info";
 
 type HorseTypeFilter = "all" | HorseBadgeType;
@@ -88,15 +94,28 @@ function buildSections(rows: HorseAssignmentRow[]): GroupSection[] {
   return sections;
 }
 
-// View-only for Stage A - every instructor can see this tab, none can edit
-// from it yet (canEditHorseAssignments exists on the model but nothing
-// reads it in this stage).
-export function InstructorHorsesSection() {
+// Stage B: every instructor can see this tab; only instructors whose
+// canEditHorseAssignments is true (re-verified server-side on every save,
+// never trusted from this prop alone) get edit controls.
+export function InstructorHorsesSection({
+  instructorId,
+  canEdit,
+}: {
+  instructorId: string;
+  canEdit: boolean;
+}) {
   const [rows, setRows] = useState<HorseAssignmentRow[] | null>(null);
   const [groupTab, setGroupTab] = useState("all");
   const [nameQuery, setNameQuery] = useState("");
   const [horseQuery, setHorseQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState<HorseTypeFilter>("all");
+
+  const [modalStudent, setModalStudent] = useState<HorseAssignmentRow | null>(null);
+  const [hasPrivateHorse, setHasPrivateHorse] = useState(false);
+  const [privateHorseName, setPrivateHorseName] = useState("");
+  const [assignedHorseName, setAssignedHorseName] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [isPending, startTransition] = useTransition();
 
   useEffect(() => {
     let cancelled = false;
@@ -128,6 +147,35 @@ export function InstructorHorsesSection() {
   }, [rows, groupTab, nameQuery, horseQuery, typeFilter]);
 
   const sections = useMemo(() => buildSections(filteredRows), [filteredRows]);
+
+  function openModal(student: HorseAssignmentRow) {
+    setError(null);
+    setModalStudent(student);
+    setHasPrivateHorse(student.hasPrivateHorse);
+    setPrivateHorseName(student.privateHorseName ?? "");
+    setAssignedHorseName(student.assignedHorseName ?? "");
+  }
+
+  function handleSubmit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (!modalStudent) return;
+    setError(null);
+    const studentId = modalStudent.id;
+    const data = {
+      hasPrivateHorse,
+      privateHorseName: hasPrivateHorse ? privateHorseName : null,
+      assignedHorseName: !hasPrivateHorse ? assignedHorseName : null,
+    };
+    startTransition(async () => {
+      const result = await updateStudentHorseInfoAsInstructor(instructorId, studentId, data);
+      if (!result.success) {
+        setError(result.error ?? "אירעה שגיאה");
+        return;
+      }
+      setRows((prev) => (prev ? prev.map((r) => (r.id === studentId ? { ...r, ...data } : r)) : prev));
+      setModalStudent(null);
+    });
+  }
 
   return (
     <div className="flex flex-col gap-4">
@@ -238,6 +286,15 @@ export function InstructorHorsesSection() {
                                   >
                                     {info.horseNameDisplay}
                                   </span>
+                                  {canEdit && (
+                                    <Button
+                                      variant="ghost"
+                                      className="!px-2 !py-1 !text-xs"
+                                      onClick={() => openModal(row)}
+                                    >
+                                      עריכה
+                                    </Button>
+                                  )}
                                 </div>
                               </div>
                             );
@@ -251,6 +308,67 @@ export function InstructorHorsesSection() {
             );
           })}
         </div>
+      )}
+
+      {canEdit && (
+        <Modal
+          open={modalStudent !== null}
+          title={modalStudent ? `עריכת סוס - ${modalStudent.fullName}` : ""}
+          onClose={() => setModalStudent(null)}
+        >
+          <form onSubmit={handleSubmit} className="flex flex-col gap-3">
+            <div className="flex flex-col gap-2 text-sm">
+              <label className="flex items-center gap-2">
+                <input
+                  type="radio"
+                  name="hasPrivateHorse"
+                  checked={!hasPrivateHorse}
+                  onChange={() => setHasPrivateHorse(false)}
+                />
+                סוס קורס
+              </label>
+              <label className="flex items-center gap-2">
+                <input
+                  type="radio"
+                  name="hasPrivateHorse"
+                  checked={hasPrivateHorse}
+                  onChange={() => setHasPrivateHorse(true)}
+                />
+                סוס פרטי
+              </label>
+            </div>
+
+            {hasPrivateHorse ? (
+              <label className="flex flex-col gap-1 text-sm">
+                שם הסוס הפרטי
+                <input
+                  value={privateHorseName}
+                  onChange={(e) => setPrivateHorseName(e.target.value)}
+                  className="rounded-lg border border-border px-3 py-2 text-sm"
+                />
+              </label>
+            ) : (
+              <label className="flex flex-col gap-1 text-sm">
+                שם סוס הקורס המשובץ
+                <input
+                  value={assignedHorseName}
+                  onChange={(e) => setAssignedHorseName(e.target.value)}
+                  className="rounded-lg border border-border px-3 py-2 text-sm"
+                />
+              </label>
+            )}
+
+            {error && <p className="text-sm text-danger">{error}</p>}
+            <div className="mt-2 flex justify-end gap-2">
+              <Button type="button" variant="secondary" onClick={() => setModalStudent(null)}>
+                ביטול
+              </Button>
+              <Button type="submit" disabled={isPending}>
+                {isPending ? "שומר..." : "שמירה"}
+              </Button>
+            </div>
+          </form>
+        </Modal>
       )}
     </div>
   );

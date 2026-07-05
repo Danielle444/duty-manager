@@ -3,6 +3,7 @@
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
+import { requireAdmin } from "@/lib/auth/require-admin";
 import type { ActionResult } from "@/lib/actions/students";
 
 const instructorSchema = z.object({
@@ -87,6 +88,19 @@ export async function setInstructorActive(
   isActive: boolean
 ): Promise<ActionResult> {
   await prisma.instructor.update({ where: { id: instructorId }, data: { isActive } });
+  revalidatePath("/admin/instructors");
+  return { success: true };
+}
+
+export async function setInstructorCanEditHorseAssignments(
+  instructorId: string,
+  canEditHorseAssignments: boolean
+): Promise<ActionResult> {
+  await requireAdmin();
+  await prisma.instructor.update({
+    where: { id: instructorId },
+    data: { canEditHorseAssignments },
+  });
   revalidatePath("/admin/instructors");
   return { success: true };
 }

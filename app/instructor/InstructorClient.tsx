@@ -7,6 +7,7 @@ import { WeekDayPicker, type WeekOption } from "@/lib/components/WeekDayPicker";
 import { BottomTabs, MAIN_TABS, type MainTabId } from "@/lib/components/BottomTabs";
 import { CourseBookletSection } from "@/lib/components/CourseBookletSection";
 import {
+  getInstructorProfile,
   searchInstructors,
   verifyInstructorLogin,
   type InstructorSearchResult,
@@ -27,6 +28,7 @@ const INSTRUCTOR_TABS = [...MAIN_TABS, { id: "horses" as const, label: "קבוצ
 interface StoredSession {
   id: string;
   fullName: string;
+  canEditHorseAssignments: boolean;
 }
 
 interface StudentOption {
@@ -74,6 +76,24 @@ export function InstructorClient({
     }
     setHydrated(true);
   }, []);
+
+  useEffect(() => {
+    // Refresh the profile fields from the DB whenever a session is active -
+    // a long-remembered session (or one saved before canEditHorseAssignments
+    // existed, or whose permission an admin just changed) would otherwise
+    // keep showing stale data. Mirrors StudentClient's profile-refresh effect.
+    if (!session) return;
+    let cancelled = false;
+    getInstructorProfile(session.id).then((profile) => {
+      if (cancelled || !profile) return;
+      setSession(profile);
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(profile));
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.id]);
 
   useEffect(() => {
     if (!session) return;
@@ -311,7 +331,12 @@ export function InstructorClient({
           </div>
         )}
 
-        {activeTab === "horses" && <InstructorHorsesSection />}
+        {activeTab === "horses" && (
+          <InstructorHorsesSection
+            instructorId={session.id}
+            canEdit={session.canEditHorseAssignments}
+          />
+        )}
       </main>
 
       <BottomTabs active={activeTab} onChange={setActiveTab} tabs={INSTRUCTOR_TABS} />

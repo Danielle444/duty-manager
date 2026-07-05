@@ -6,6 +6,7 @@ import { Modal } from "@/lib/components/Modal";
 import {
   createInstructor,
   setInstructorActive,
+  setInstructorCanEditHorseAssignments,
   updateInstructor,
 } from "@/lib/actions/instructors";
 import { maskIdentityNumber } from "@/lib/format";
@@ -17,6 +18,7 @@ interface InstructorRow {
   fullName: string;
   identityNumber: string;
   isActive: boolean;
+  canEditHorseAssignments: boolean;
 }
 
 export function InstructorsClient({ instructors }: { instructors: InstructorRow[] }) {
@@ -47,6 +49,15 @@ export function InstructorsClient({ instructors }: { instructors: InstructorRow[
     });
   }
 
+  function handleToggleCanEditHorseAssignments(instructor: InstructorRow) {
+    startTransition(async () => {
+      await setInstructorCanEditHorseAssignments(
+        instructor.id,
+        !instructor.canEditHorseAssignments
+      );
+    });
+  }
+
   return (
     <div className="flex flex-col gap-4">
       <div>
@@ -67,6 +78,7 @@ export function InstructorsClient({ instructors }: { instructors: InstructorRow[
               <th className="px-4 py-3 text-right font-medium">שם מלא</th>
               <th className="px-4 py-3 text-right font-medium">ת.ז.</th>
               <th className="px-4 py-3 text-right font-medium">סטטוס</th>
+              <th className="px-4 py-3 text-right font-medium">עריכת חלוקת סוסים</th>
               <th className="px-4 py-3 text-right font-medium">פעולות</th>
             </tr>
           </thead>
@@ -89,6 +101,17 @@ export function InstructorsClient({ instructors }: { instructors: InstructorRow[
                   >
                     {instructor.isActive ? "פעיל/ה" : "לא פעיל/ה"}
                   </span>
+                </td>
+                <td className="px-4 py-3">
+                  <label className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <input
+                      type="checkbox"
+                      checked={instructor.canEditHorseAssignments}
+                      disabled={isPending}
+                      onChange={() => handleToggleCanEditHorseAssignments(instructor)}
+                    />
+                    יכול/ה לערוך חלוקת סוסים
+                  </label>
                 </td>
                 <td className="px-4 py-3">
                   <div className="flex flex-wrap gap-2">
@@ -116,7 +139,7 @@ export function InstructorsClient({ instructors }: { instructors: InstructorRow[
             ))}
             {instructors.length === 0 && (
               <tr>
-                <td colSpan={4} className="px-4 py-8 text-center text-muted-foreground">
+                <td colSpan={5} className="px-4 py-8 text-center text-muted-foreground">
                   אין מדריכים עדיין
                 </td>
               </tr>

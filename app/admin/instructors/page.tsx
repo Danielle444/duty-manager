@@ -23,6 +23,7 @@ export default async function InstructorsPage() {
           fullName: i.fullName,
           identityNumber: i.identityNumber,
           isActive: i.isActive,
+          canEditHorseAssignments: i.canEditHorseAssignments,
         }))}
       />
     </div>

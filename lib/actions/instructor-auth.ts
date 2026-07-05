@@ -20,10 +20,16 @@ export async function searchInstructors(query: string): Promise<InstructorSearch
   return instructors;
 }
 
+export interface InstructorProfile {
+  id: string;
+  fullName: string;
+  canEditHorseAssignments: boolean;
+}
+
 export interface InstructorLoginResult {
   success: boolean;
   error?: string;
-  instructor?: { id: string; fullName: string };
+  instructor?: InstructorProfile;
 }
 
 export async function verifyInstructorLogin(
@@ -40,5 +46,28 @@ export async function verifyInstructorLogin(
     return { success: false, error: "מספר תעודת זהות שגוי" };
   }
 
-  return { success: true, instructor: { id: instructor.id, fullName: instructor.fullName } };
+  return {
+    success: true,
+    instructor: {
+      id: instructor.id,
+      fullName: instructor.fullName,
+      canEditHorseAssignments: instructor.canEditHorseAssignments,
+    },
+  };
+}
+
+// Refreshes the remembered session's profile fields from the DB - mirrors
+// getStudentProfile in lib/actions/auth.ts. A long-lived "remember me"
+// session must not keep trusting a stale/absent canEditHorseAssignments
+// value once an admin changes it.
+export async function getInstructorProfile(
+  instructorId: string
+): Promise<InstructorProfile | null> {
+  const instructor = await prisma.instructor.findUnique({ where: { id: instructorId } });
+  if (!instructor || !instructor.isActive) return null;
+  return {
+    id: instructor.id,
+    fullName: instructor.fullName,
+    canEditHorseAssignments: instructor.canEditHorseAssignments,
+  };
 }

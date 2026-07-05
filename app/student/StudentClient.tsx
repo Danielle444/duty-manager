@@ -13,6 +13,7 @@ import {
   type StudentSearchResult,
 } from "@/lib/actions/auth";
 import { getWeeklyScheduleSelection } from "@/lib/actions/weekly-schedule";
+import { updateOwnPrivateHorseName } from "@/lib/actions/horses";
 import { ScheduleSection } from "@/app/student/ScheduleSection";
 import { DutiesSection } from "@/app/student/DutiesSection";
 import { formatHebrewDate, formatHebrewWeekday, parseDateKey, todayDateKey } from "@/lib/dates";
@@ -44,6 +45,11 @@ export function StudentClient() {
   const [weeks, setWeeks] = useState<WeekOption[] | null>(null);
   const [selectedWeekId, setSelectedWeekId] = useState<string | null>(null);
   const [dayFilter, setDayFilter] = useState<string | "all">("all");
+
+  const [isEditingHorseName, setIsEditingHorseName] = useState(false);
+  const [horseNameDraft, setHorseNameDraft] = useState("");
+  const [horseSaveError, setHorseSaveError] = useState<string | null>(null);
+  const [horseSavePending, startHorseSaveTransition] = useTransition();
 
   useEffect(() => {
     // One-time sync from localStorage (an external system unavailable during
@@ -127,6 +133,34 @@ export function StudentClient() {
     setSelected(null);
     setQuery("");
     setActiveTab("today");
+  }
+
+  function startEditingHorseName() {
+    if (!session) return;
+    setHorseSaveError(null);
+    setHorseNameDraft(session.privateHorseName ?? "");
+    setIsEditingHorseName(true);
+  }
+
+  function handleSaveHorseName() {
+    if (!session) return;
+    setHorseSaveError(null);
+    const studentId = session.id;
+    const trimmed = horseNameDraft.trim();
+    startHorseSaveTransition(async () => {
+      const result = await updateOwnPrivateHorseName(studentId, trimmed);
+      if (!result.success) {
+        setHorseSaveError(result.error ?? "אירעה שגיאה");
+        return;
+      }
+      setSession((prev) => {
+        if (!prev) return prev;
+        const updated = { ...prev, privateHorseName: trimmed || null };
+        window.localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+        return updated;
+      });
+      setIsEditingHorseName(false);
+    });
   }
 
   if (!hydrated) return null;
@@ -341,6 +375,48 @@ export function StudentClient() {
                   </div>
                 );
               })()}
+
+              {session.hasPrivateHorse &&
+                (isEditingHorseName ? (
+                  <div className="mt-3 flex flex-col gap-2">
+                    <input
+                      value={horseNameDraft}
+                      onChange={(e) => setHorseNameDraft(e.target.value)}
+                      placeholder="שם הסוס הפרטי"
+                      className="rounded-xl border border-border px-3 py-2.5 text-base"
+                      autoFocus
+                    />
+                    {horseSaveError && <p className="text-sm text-danger">{horseSaveError}</p>}
+                    <div className="flex gap-2">
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        className="!py-2 !text-sm"
+                        disabled={horseSavePending}
+                        onClick={() => setIsEditingHorseName(false)}
+                      >
+                        ביטול
+                      </Button>
+                      <Button
+                        type="button"
+                        className="!py-2 !text-sm"
+                        disabled={horseSavePending}
+                        onClick={handleSaveHorseName}
+                      >
+                        {horseSavePending ? "שומר..." : "שמירה"}
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    className="mt-3 !py-2 !text-sm"
+                    onClick={startEditingHorseName}
+                  >
+                    {session.privateHorseName ? "עדכון שם הסוס" : "הוספת שם הסוס"}
+                  </Button>
+                ))}
             </div>
             <Button variant="secondary" onClick={handleSwitchStudent} className="!py-3 !text-base">
               החלפת תלמיד/ה

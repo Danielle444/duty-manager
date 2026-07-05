@@ -45,8 +45,6 @@ export interface HorseInfoUpdate {
   assignedHorseName: string | null;
 }
 
-// Admin-only for Stage A - instructor and student edit actions are
-// deliberately not implemented yet.
 export async function updateStudentHorseInfo(
   studentId: string,
   data: HorseInfoUpdate
@@ -60,6 +58,61 @@ export async function updateStudentHorseInfo(
       privateHorseName: data.privateHorseName?.trim() || null,
       assignedHorseName: data.assignedHorseName?.trim() || null,
     },
+  });
+
+  revalidatePath("/admin/horses");
+  return { success: true };
+}
+
+// Instructors have no NextAuth session in this app (see requireAdmin), so the
+// permission check here re-reads canEditHorseAssignments from the DB by
+// instructorId on every call - it never trusts a client-supplied boolean.
+// This is the only gate; the UI hiding edit controls is not relied upon.
+export async function updateStudentHorseInfoAsInstructor(
+  instructorId: string,
+  studentId: string,
+  data: HorseInfoUpdate
+): Promise<ActionResult> {
+  const instructor = await prisma.instructor.findUnique({ where: { id: instructorId } });
+
+  if (!instructor || !instructor.isActive || !instructor.canEditHorseAssignments) {
+    return { success: false, error: "אין הרשאה לערוך חלוקת סוסים" };
+  }
+
+  await prisma.student.update({
+    where: { id: studentId },
+    data: {
+      hasPrivateHorse: data.hasPrivateHorse,
+      privateHorseName: data.privateHorseName?.trim() || null,
+      assignedHorseName: data.assignedHorseName?.trim() || null,
+    },
+  });
+
+  revalidatePath("/admin/horses");
+  return { success: true };
+}
+
+// Students have no NextAuth session in this app (see requireAdmin), so this
+// re-reads hasPrivateHorse from the DB by studentId on every call - it never
+// trusts a client-supplied flag. A student may only ever set their own
+// privateHorseName, and only while marked as having a private horse;
+// hasPrivateHorse and assignedHorseName are never touched here.
+export async function updateOwnPrivateHorseName(
+  studentId: string,
+  privateHorseName: string
+): Promise<ActionResult> {
+  const student = await prisma.student.findUnique({ where: { id: studentId } });
+
+  if (!student || !student.isActive) {
+    return { success: false, error: "תלמיד/ה לא נמצא/ה" };
+  }
+  if (!student.hasPrivateHorse) {
+    return { success: false, error: "לא סומן/ה כבעל/ת סוס פרטי" };
+  }
+
+  await prisma.student.update({
+    where: { id: studentId },
+    data: { privateHorseName: privateHorseName.trim() || null },
   });
 
   revalidatePath("/admin/horses");

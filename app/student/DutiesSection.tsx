@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useTransition } from "react";
 import { Button } from "@/lib/components/Button";
+import { DutyDescriptionText } from "@/lib/components/DutyDescriptionText";
 import {
   getStudentDutiesForRange,
   type StudentDutyDayInfo,
@@ -99,9 +100,10 @@ export function DutiesSection({
                         {expandedDates.has(day.dateKey) ? "הסתר הסבר" : "הצג הסבר"}
                       </button>
                       {expandedDates.has(day.dateKey) && (
-                        <p className="mt-1 text-sm text-muted-foreground">
-                          {day.dutyTypeDescription}
-                        </p>
+                        <DutyDescriptionText
+                          description={day.dutyTypeDescription}
+                          className="mt-1 text-sm text-muted-foreground"
+                        />
                       )}
                     </div>
                   )}

@@ -3,6 +3,7 @@
 import { FormEvent, useState, useTransition } from "react";
 import { Button } from "@/lib/components/Button";
 import { Modal } from "@/lib/components/Modal";
+import { DutyDescriptionText } from "@/lib/components/DutyDescriptionText";
 import { createDutyType, setDutyTypeActive, updateDutyType } from "@/lib/actions/duties";
 
 type AllocationMode = "FIXED_COUNT" | "ONE_PER_SUBGROUP";
@@ -79,7 +80,11 @@ export function DutiesClient({ dutyTypes }: { dutyTypes: DutyTypeRow[] }) {
               <tr key={duty.id} className="border-b border-border last:border-0">
                 <td className="px-4 py-3 font-medium text-card-foreground">{duty.name}</td>
                 <td className="max-w-xs px-4 py-3 text-muted-foreground">
-                  {duty.description ?? "-"}
+                  {duty.description ? (
+                    <DutyDescriptionText description={duty.description} />
+                  ) : (
+                    "-"
+                  )}
                 </td>
                 <td className="px-4 py-3 text-muted-foreground">
                   {duty.allocationMode === "ONE_PER_SUBGROUP" ? "-" : duty.defaultRequiredCount}

@@ -54,9 +54,11 @@ function buildWarnings(diagnostics: ScheduleDiagnostics): string[] {
 export function ScheduleDiagnosticsPanel({
   startDate,
   endDate,
+  refreshKey,
 }: {
   startDate: Date | null;
   endDate: Date | null;
+  refreshKey?: number;
 }) {
   const [diagnostics, setDiagnostics] = useState<ScheduleDiagnostics | null>(null);
   const [expanded, setExpanded] = useState(false);
@@ -79,7 +81,7 @@ export function ScheduleDiagnosticsPanel({
     return () => {
       cancelled = true;
     };
-  }, [startDate, endDate]);
+  }, [startDate, endDate, refreshKey]);
 
   if (!startDate || !endDate || !diagnostics) return null;
 

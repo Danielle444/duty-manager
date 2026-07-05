@@ -8,9 +8,11 @@ import type { FairnessWarning } from "@/lib/schedule-fairness";
 export function ScheduleFairnessPanel({
   startDate,
   endDate,
+  refreshKey,
 }: {
   startDate: Date | null;
   endDate: Date | null;
+  refreshKey?: number;
 }) {
   const [warnings, setWarnings] = useState<FairnessWarning[] | null>(null);
   const [open, setOpen] = useState(false);
@@ -33,7 +35,7 @@ export function ScheduleFairnessPanel({
     return () => {
       cancelled = true;
     };
-  }, [startDate, endDate]);
+  }, [startDate, endDate, refreshKey]);
 
   if (!startDate || !endDate || warnings === null) return null;
 

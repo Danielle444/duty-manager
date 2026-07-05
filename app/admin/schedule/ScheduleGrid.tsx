@@ -14,10 +14,12 @@ export interface GridStudent {
 }
 
 export interface GridAssignment {
+  id: string;
   dateKey: string;
   studentId: string;
   dutyTypeId: string;
   dutyTypeName: string;
+  isManual: boolean;
   isPublished: boolean;
   isCompleted: boolean;
 }
@@ -31,6 +33,7 @@ export function ScheduleGrid({
   noDutyDateKeys,
   filterStudentId,
   filterDutyTypeId,
+  onCellClick,
 }: {
   students: GridStudent[];
   assignments: GridAssignment[];
@@ -40,6 +43,7 @@ export function ScheduleGrid({
   noDutyDateKeys: Set<string>;
   filterStudentId: string;
   filterDutyTypeId: string;
+  onCellClick?: (args: { studentId: string; dateKey: string; assignment: GridAssignment | null }) => void;
 }) {
   const dateKeys = useMemo(
     () => (startDate && endDate ? enumerateDateKeys(startDate, endDate) : []),
@@ -156,6 +160,10 @@ export function ScheduleGrid({
                 const matchesDutyFilter =
                   !filterDutyTypeId || assignment?.dutyTypeId === filterDutyTypeId;
 
+                const handleClick = onCellClick
+                  ? () => onCellClick({ studentId: student.id, dateKey: dk, assignment: assignment ?? null })
+                  : undefined;
+
                 if (!assignment || !matchesDutyFilter) {
                   // A genuine coverage gap: an active (non-no-duty) day with
                   // no assignment for this student, and no duty-type filter
@@ -165,9 +173,10 @@ export function ScheduleGrid({
                   return (
                     <td
                       key={dk}
+                      onClick={handleClick}
                       className={`border-b border-border px-2 py-2 text-center text-xs text-muted-foreground ${
                         isGenuineGap ? "bg-warning-muted" : ""
-                      }`}
+                      } ${onCellClick ? "cursor-pointer hover:ring-1 hover:ring-inset hover:ring-primary" : ""}`}
                       style={isNoDuty ? { backgroundColor: getNoDutyColor().background } : undefined}
                     >
                       {isNoDuty ? "אין תורנויות" : ""}
@@ -179,7 +188,10 @@ export function ScheduleGrid({
                 return (
                   <td
                     key={dk}
-                    className="border-b px-2 py-2 text-center align-top text-xs"
+                    onClick={handleClick}
+                    className={`border-b px-2 py-2 text-center align-top text-xs ${
+                      onCellClick ? "cursor-pointer hover:ring-1 hover:ring-inset hover:ring-primary" : ""
+                    }`}
                     style={
                       color
                         ? { backgroundColor: color.background, borderColor: color.border }

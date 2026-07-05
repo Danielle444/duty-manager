@@ -17,10 +17,12 @@ import {
   parseDateKey,
   weekKey,
 } from "@/lib/dates";
+import { subgroupKey } from "@/lib/subgroup-identity";
 import type { GenerateMode } from "@/lib/scheduler";
 import { ScheduleGrid } from "@/app/admin/schedule/ScheduleGrid";
 import { ScheduleDiagnosticsPanel } from "@/app/admin/schedule/ScheduleDiagnosticsPanel";
 import { ScheduleFairnessPanel } from "@/app/admin/schedule/ScheduleFairnessPanel";
+import { ScheduleCellEditor } from "@/app/admin/schedule/ScheduleCellEditor";
 
 interface AssignmentRow {
   id: string;
@@ -41,6 +43,22 @@ interface Option {
   lastName?: string;
   groupName?: string | null;
   subgroupNumber?: number | null;
+  allocationMode?: string;
+}
+
+interface SelectedCellAssignment {
+  id: string;
+  dutyTypeId: string;
+  dutyTypeName: string;
+  isManual: boolean;
+  isPublished: boolean;
+  isCompleted: boolean;
+}
+
+interface SelectedCell {
+  studentId: string;
+  dateKey: string;
+  assignment: SelectedCellAssignment | null;
 }
 
 type ViewMode = "list" | "grid";
@@ -72,6 +90,7 @@ export function ScheduleClient({
   courseRange,
   weeklySchedules,
   noDutyDateKeys,
+  blockedGroupsByDate,
 }: {
   assignments: AssignmentRow[];
   students: Option[];
@@ -79,6 +98,7 @@ export function ScheduleClient({
   courseRange: CourseRange | null;
   weeklySchedules: WeeklyScheduleOption[];
   noDutyDateKeys: string[];
+  blockedGroupsByDate: Record<string, Record<string, string[]>>;
 }) {
   const [isPending, startTransition] = useTransition();
   const [view, setView] = useState<ViewMode>("list");
@@ -87,6 +107,8 @@ export function ScheduleClient({
   const [filterDuty, setFilterDuty] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
+  const [selectedCell, setSelectedCell] = useState<SelectedCell | null>(null);
+  const [diagnosticsRefreshKey, setDiagnosticsRefreshKey] = useState(0);
 
   const [rangeSource, setRangeSource] = useState<RangeSource>("weeklySchedule");
   const [selectedWeekKey, setSelectedWeekKey] = useState("");
@@ -196,6 +218,49 @@ export function ScheduleClient({
   );
 
   const noDutyDateSet = useMemo(() => new Set(noDutyDateKeys), [noDutyDateKeys]);
+
+  const studentById = useMemo(() => new Map(students.map((s) => [s.id, s])), [students]);
+
+  // Which duty types are constraint-blocked or already taken by another
+  // student in the same subgroup, for whichever cell the editor is
+  // currently open on - both are advisory here (the server action
+  // re-validates authoritatively on save).
+  const cellEditorContext = useMemo(() => {
+    if (!selectedCell) return null;
+    const student = studentById.get(selectedCell.studentId);
+    if (!student) return null;
+
+    const blockedDutyTypeIds = new Set<string>();
+    if (student.groupName) {
+      const blockedForDate = blockedGroupsByDate[selectedCell.dateKey] ?? {};
+      for (const dutyType of dutyTypes) {
+        const blockedGroups = blockedForDate[dutyType.id] ?? [];
+        if (blockedGroups.includes(student.groupName)) blockedDutyTypeIds.add(dutyType.id);
+      }
+    }
+
+    const subgroupConflictDutyTypeIds = new Set<string>();
+    if (student.subgroupNumber != null) {
+      const key = subgroupKey(student.groupName ?? null, student.subgroupNumber);
+      for (const a of assignments) {
+        if (a.dateKey !== selectedCell.dateKey) continue;
+        if (a.studentId === selectedCell.studentId) continue;
+        const dutyType = dutyTypes.find((d) => d.id === a.dutyTypeId);
+        if (dutyType?.allocationMode !== "ONE_PER_SUBGROUP") continue;
+        const otherStudent = studentById.get(a.studentId);
+        if (!otherStudent || otherStudent.subgroupNumber == null) continue;
+        const otherKey = subgroupKey(otherStudent.groupName ?? null, otherStudent.subgroupNumber);
+        if (otherKey === key) subgroupConflictDutyTypeIds.add(a.dutyTypeId);
+      }
+    }
+
+    return { student, blockedDutyTypeIds, subgroupConflictDutyTypeIds };
+  }, [selectedCell, studentById, dutyTypes, assignments, blockedGroupsByDate]);
+
+  function handleCellSaved() {
+    setSelectedCell(null);
+    setDiagnosticsRefreshKey((v) => v + 1);
+  }
 
   function handleReassign(assignmentId: string, newStudentId: string) {
     setError(null);
@@ -485,10 +550,12 @@ export function ScheduleClient({
         <ScheduleDiagnosticsPanel
           startDate={gridRange?.startDate ?? null}
           endDate={gridRange?.endDate ?? null}
+          refreshKey={diagnosticsRefreshKey}
         />
         <ScheduleFairnessPanel
           startDate={gridRange?.startDate ?? null}
           endDate={gridRange?.endDate ?? null}
+          refreshKey={diagnosticsRefreshKey}
         />
         <ScheduleGrid
           students={students.map((s) => ({
@@ -505,7 +572,40 @@ export function ScheduleClient({
           noDutyDateKeys={noDutyDateSet}
           filterStudentId={filterStudent}
           filterDutyTypeId={filterDuty}
+          onCellClick={(args) => setSelectedCell(args)}
         />
+        {selectedCell && cellEditorContext && (
+          <ScheduleCellEditor
+            key={`${selectedCell.studentId}-${selectedCell.dateKey}`}
+            studentId={selectedCell.studentId}
+            studentName={cellEditorContext.student.fullName ?? ""}
+            groupName={cellEditorContext.student.groupName ?? null}
+            subgroupNumber={cellEditorContext.student.subgroupNumber ?? null}
+            dateKey={selectedCell.dateKey}
+            existingAssignment={
+              selectedCell.assignment
+                ? {
+                    id: selectedCell.assignment.id,
+                    dutyTypeId: selectedCell.assignment.dutyTypeId,
+                    dutyTypeName: selectedCell.assignment.dutyTypeName,
+                    isManual: selectedCell.assignment.isManual,
+                    isPublished: selectedCell.assignment.isPublished,
+                    isCompleted: selectedCell.assignment.isCompleted,
+                  }
+                : null
+            }
+            dutyTypes={dutyTypes.map((d) => ({
+              id: d.id,
+              name: d.name ?? "",
+              allocationMode: d.allocationMode ?? "FIXED_COUNT",
+            }))}
+            blockedDutyTypeIds={cellEditorContext.blockedDutyTypeIds}
+            subgroupConflictDutyTypeIds={cellEditorContext.subgroupConflictDutyTypeIds}
+            isNoDutyDate={noDutyDateSet.has(selectedCell.dateKey)}
+            onClose={() => setSelectedCell(null)}
+            onSaved={handleCellSaved}
+          />
+        )}
         </>
       ) : (
       <div className="overflow-x-auto rounded-xl border border-border bg-card">

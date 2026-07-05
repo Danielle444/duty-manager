@@ -94,6 +94,7 @@ export function ImportStudentsClient({ presets }: { presets: PresetOption[] }) {
           groupName: c.groupName,
           subgroupNumber: c.subgroupNumber,
           identityNumber: c.identityNumber,
+          phone: c.phone,
           action: c.action,
           matchedStudentId: c.matchedStudentId,
         })),
@@ -125,7 +126,7 @@ export function ImportStudentsClient({ presets }: { presets: PresetOption[] }) {
           {!candidates && (
             <form onSubmit={handleParse} className="flex flex-col gap-3">
               <p className="text-sm text-muted-foreground">
-                העמודות הנדרשות בקובץ: קבוצה, מס קבוצה, שם משפחה, שם פרטי, ת.ז.
+                העמודות הנדרשות בקובץ: קבוצה, מס קבוצה, שם משפחה, שם פרטי, ת.ז. (טלפון אופציונלי)
               </p>
               <input
                 type="file"
@@ -192,6 +193,12 @@ export function ImportStudentsClient({ presets }: { presets: PresetOption[] }) {
                         type="number"
                         min={1}
                         placeholder="מס קבוצה"
+                        className="rounded-lg border border-border px-2 py-1 text-sm"
+                      />
+                      <input
+                        value={c.phone}
+                        onChange={(e) => updateCandidate(c.key, { phone: e.target.value })}
+                        placeholder="טלפון"
                         className="rounded-lg border border-border px-2 py-1 text-sm"
                       />
                     </div>

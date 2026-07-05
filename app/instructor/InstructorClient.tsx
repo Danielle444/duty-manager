@@ -17,6 +17,7 @@ import { InstructorScheduleSection } from "@/app/instructor/InstructorScheduleSe
 import { InstructorDutiesSection } from "@/app/instructor/InstructorDutiesSection";
 import { InstructorHorsesSection } from "@/app/instructor/InstructorHorsesSection";
 import { InstructorMessagesSection } from "@/app/instructor/InstructorMessagesSection";
+import { InstructorContactsSection } from "@/app/instructor/InstructorContactsSection";
 import { formatHebrewDate, formatHebrewWeekday, parseDateKey, todayDateKey } from "@/lib/dates";
 
 const STORAGE_KEY = "duty-manager-instructor-v2";
@@ -36,6 +37,7 @@ const INSTRUCTOR_MORE_ITEMS: { id: MainTabId; label: string }[] = [
   { id: "booklet", label: "חוברת קורס" },
   { id: "profile", label: "פרופיל" },
   { id: "messages", label: "הודעות ומשימות" },
+  { id: "contacts", label: "אנשי קשר" },
 ];
 
 const INSTRUCTOR_ALL_TABS = [...INSTRUCTOR_MAIN_TABS, ...INSTRUCTOR_MORE_ITEMS];
@@ -389,6 +391,8 @@ export function InstructorClient({
             students={students}
           />
         )}
+
+        {activeTab === "contacts" && <InstructorContactsSection />}
       </main>
 
       <BottomTabs active={bottomActiveTab} onChange={setActiveTab} tabs={INSTRUCTOR_MAIN_TABS} />

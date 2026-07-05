@@ -22,6 +22,7 @@ export default async function InstructorsPage() {
           lastName: i.lastName,
           fullName: i.fullName,
           identityNumber: i.identityNumber,
+          phone: i.phone,
           isActive: i.isActive,
           canEditHorseAssignments: i.canEditHorseAssignments,
           canSendMessages: i.canSendMessages,

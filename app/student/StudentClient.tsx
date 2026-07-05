@@ -4,7 +4,7 @@ import { FormEvent, useEffect, useState, useTransition } from "react";
 import { Button } from "@/lib/components/Button";
 import { Logo } from "@/lib/components/Logo";
 import { WeekDayPicker, type WeekOption } from "@/lib/components/WeekDayPicker";
-import { BottomTabs, MAIN_TABS, type MainTabId } from "@/lib/components/BottomTabs";
+import { BottomTabs, type MainTabId } from "@/lib/components/BottomTabs";
 import { CourseBookletSection } from "@/lib/components/CourseBookletSection";
 import {
   getStudentProfile,
@@ -17,15 +17,32 @@ import { updateOwnPrivateHorseName } from "@/lib/actions/horses";
 import { ScheduleSection } from "@/app/student/ScheduleSection";
 import { DutiesSection } from "@/app/student/DutiesSection";
 import { StudentMessagesSection } from "@/app/student/StudentMessagesSection";
+import { StudentInstructorContactsSection } from "@/app/student/StudentInstructorContactsSection";
 import { formatHebrewDate, formatHebrewWeekday, parseDateKey, todayDateKey } from "@/lib/dates";
 import { getHorseDisplayInfo } from "@/lib/horse-info";
 
 const STORAGE_KEY = "duty-manager-student";
 
-// Student gets a 6th tab ("messages") for admin-sent messages/tasks -
-// BottomTabs' default tabs prop (MAIN_TABS, 5 tabs) is unaffected since
-// instructor builds its own separate INSTRUCTOR_TABS off the same base.
-const STUDENT_TABS = [...MAIN_TABS, { id: "messages" as const, label: "הודעות ומשימות" }];
+// Student has its own 5 main bottom tabs (independent of the shared
+// MAIN_TABS default, which BottomTabs still falls back to elsewhere) plus a
+// "more" menu for lower-frequency sections, mirroring the instructor nav.
+// Messages stays a main tab (not under "more") so new tasks/messages are
+// noticeable.
+const STUDENT_MAIN_TABS: { id: MainTabId; label: string }[] = [
+  { id: "today", label: "היום" },
+  { id: "schedule", label: 'לו"ז' },
+  { id: "duties", label: "תורנויות" },
+  { id: "messages", label: "הודעות" },
+  { id: "more", label: "עוד" },
+];
+
+const STUDENT_MORE_ITEMS: { id: MainTabId; label: string }[] = [
+  { id: "booklet", label: "חוברת קורס" },
+  { id: "profile", label: "פרופיל" },
+  { id: "contacts", label: "אנשי קשר" },
+];
+
+const STUDENT_ALL_TABS = [...STUDENT_MAIN_TABS, ...STUDENT_MORE_ITEMS];
 
 interface StoredSession {
   id: string;
@@ -254,7 +271,9 @@ export function StudentClient() {
     : null;
   const rangeEnd = selectedWeek ? (dayFilter === "all" ? selectedWeek.endDate : dayFilter) : null;
 
-  const activeTabLabel = STUDENT_TABS.find((t) => t.id === activeTab)?.label ?? "";
+  const activeTabLabel = STUDENT_ALL_TABS.find((t) => t.id === activeTab)?.label ?? "";
+  const isMoreItem = STUDENT_MORE_ITEMS.some((item) => item.id === activeTab);
+  const bottomActiveTab: MainTabId = isMoreItem ? "more" : activeTab;
 
   return (
     <div className="flex flex-1 flex-col">
@@ -332,6 +351,32 @@ export function StudentClient() {
             )}
             <DutiesSection studentId={session.id} startDateKey={rangeStart} endDateKey={rangeEnd} />
           </div>
+        )}
+
+        {activeTab === "more" && (
+          <div className="flex flex-col gap-3">
+            {STUDENT_MORE_ITEMS.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setActiveTab(item.id)}
+                className="flex items-center justify-between rounded-2xl border border-border bg-card p-5 text-right"
+              >
+                <span className="text-lg font-bold text-card-foreground">{item.label}</span>
+                <span className="text-muted-foreground">‹</span>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {isMoreItem && (
+          <button
+            type="button"
+            onClick={() => setActiveTab("more")}
+            className="mb-3 text-sm text-muted-foreground underline"
+          >
+            ‹ חזרה לתפריט
+          </button>
         )}
 
         {activeTab === "booklet" && <CourseBookletSection />}
@@ -431,9 +476,11 @@ export function StudentClient() {
         )}
 
         {activeTab === "messages" && <StudentMessagesSection studentId={session.id} />}
+
+        {activeTab === "contacts" && <StudentInstructorContactsSection />}
       </main>
 
-      <BottomTabs active={activeTab} onChange={setActiveTab} tabs={STUDENT_TABS} />
+      <BottomTabs active={bottomActiveTab} onChange={setActiveTab} tabs={STUDENT_MAIN_TABS} />
     </div>
   );
 }

@@ -13,6 +13,7 @@ const instructorSchema = z.object({
     .string()
     .trim()
     .regex(/^\d{5,9}$/, "מספר תעודת זהות לא תקין"),
+  phone: z.string().trim().optional(),
 });
 
 function fullNameOf(firstName: string, lastName: string): string {
@@ -24,6 +25,7 @@ export async function createInstructor(formData: FormData): Promise<ActionResult
     firstName: formData.get("firstName"),
     lastName: formData.get("lastName"),
     identityNumber: formData.get("identityNumber"),
+    phone: formData.get("phone") || undefined,
   });
   if (!parsed.success) {
     return { success: false, error: parsed.error.issues[0]?.message ?? "קלט לא תקין" };
@@ -42,6 +44,7 @@ export async function createInstructor(formData: FormData): Promise<ActionResult
       lastName: parsed.data.lastName,
       fullName: fullNameOf(parsed.data.firstName, parsed.data.lastName),
       identityNumber: parsed.data.identityNumber,
+      phone: parsed.data.phone || null,
     },
   });
 
@@ -57,6 +60,7 @@ export async function updateInstructor(
     firstName: formData.get("firstName"),
     lastName: formData.get("lastName"),
     identityNumber: formData.get("identityNumber"),
+    phone: formData.get("phone") || undefined,
   });
   if (!parsed.success) {
     return { success: false, error: parsed.error.issues[0]?.message ?? "קלט לא תקין" };
@@ -76,6 +80,7 @@ export async function updateInstructor(
       lastName: parsed.data.lastName,
       fullName: fullNameOf(parsed.data.firstName, parsed.data.lastName),
       identityNumber: parsed.data.identityNumber,
+      phone: parsed.data.phone || null,
     },
   });
 

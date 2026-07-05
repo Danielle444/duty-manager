@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useState, useTransition } from "react";
+import { FormEvent, useMemo, useState, useTransition } from "react";
 import { Button } from "@/lib/components/Button";
 import { Modal } from "@/lib/components/Modal";
 import {
@@ -11,6 +11,7 @@ import {
   updateInstructor,
 } from "@/lib/actions/instructors";
 import { maskIdentityNumber } from "@/lib/format";
+import { formatPhoneDisplay } from "@/lib/phone-format";
 
 interface InstructorRow {
   id: string;
@@ -18,6 +19,7 @@ interface InstructorRow {
   lastName: string;
   fullName: string;
   identityNumber: string;
+  phone: string | null;
   isActive: boolean;
   canEditHorseAssignments: boolean;
   canSendMessages: boolean;
@@ -27,6 +29,15 @@ export function InstructorsClient({ instructors }: { instructors: InstructorRow[
   const [isPending, startTransition] = useTransition();
   const [modalInstructor, setModalInstructor] = useState<InstructorRow | "new" | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+
+  const filteredInstructors = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return instructors;
+    return instructors.filter(
+      (i) => i.fullName.toLowerCase().includes(q) || (i.phone ?? "").toLowerCase().includes(q)
+    );
+  }, [instructors, search]);
 
   function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -68,7 +79,7 @@ export function InstructorsClient({ instructors }: { instructors: InstructorRow[
 
   return (
     <div className="flex flex-col gap-4">
-      <div>
+      <div className="flex flex-wrap gap-2">
         <Button
           onClick={() => {
             setError(null);
@@ -77,6 +88,12 @@ export function InstructorsClient({ instructors }: { instructors: InstructorRow[
         >
           + הוספת מדריך/ה
         </Button>
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="חיפוש לפי שם או טלפון..."
+          className="flex-1 rounded-lg border border-border px-3 py-2 text-sm"
+        />
       </div>
 
       <div className="overflow-x-auto rounded-xl border border-border bg-card">
@@ -85,6 +102,7 @@ export function InstructorsClient({ instructors }: { instructors: InstructorRow[
             <tr className="border-b border-border bg-muted text-muted-foreground">
               <th className="px-4 py-3 text-right font-medium">שם מלא</th>
               <th className="px-4 py-3 text-right font-medium">ת.ז.</th>
+              <th className="px-4 py-3 text-right font-medium">טלפון</th>
               <th className="px-4 py-3 text-right font-medium">סטטוס</th>
               <th className="px-4 py-3 text-right font-medium">עריכת חלוקת סוסים</th>
               <th className="px-4 py-3 text-right font-medium">שליחת הודעות ומשימות</th>
@@ -92,13 +110,20 @@ export function InstructorsClient({ instructors }: { instructors: InstructorRow[
             </tr>
           </thead>
           <tbody>
-            {instructors.map((instructor) => (
+            {filteredInstructors.map((instructor) => (
               <tr key={instructor.id} className="border-b border-border last:border-0">
                 <td className="px-4 py-3 font-medium text-card-foreground">
                   {instructor.fullName}
                 </td>
                 <td className="px-4 py-3 font-mono text-muted-foreground">
                   {maskIdentityNumber(instructor.identityNumber)}
+                </td>
+                <td
+                  className={`px-4 py-3 ${
+                    instructor.phone ? "text-muted-foreground" : "italic text-muted-foreground/70"
+                  }`}
+                >
+                  {formatPhoneDisplay(instructor.phone)}
                 </td>
                 <td className="px-4 py-3">
                   <span
@@ -112,26 +137,24 @@ export function InstructorsClient({ instructors }: { instructors: InstructorRow[
                   </span>
                 </td>
                 <td className="px-4 py-3">
-                  <label className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <input
-                      type="checkbox"
-                      checked={instructor.canEditHorseAssignments}
-                      disabled={isPending}
-                      onChange={() => handleToggleCanEditHorseAssignments(instructor)}
-                    />
-                    יכול/ה לערוך חלוקת סוסים
-                  </label>
+                  <input
+                    type="checkbox"
+                    checked={instructor.canEditHorseAssignments}
+                    disabled={isPending}
+                    onChange={() => handleToggleCanEditHorseAssignments(instructor)}
+                    aria-label={`יכול/ה לערוך חלוקת סוסים עבור ${instructor.fullName}`}
+                    title="יכול/ה לערוך חלוקת סוסים"
+                  />
                 </td>
                 <td className="px-4 py-3">
-                  <label className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <input
-                      type="checkbox"
-                      checked={instructor.canSendMessages}
-                      disabled={isPending}
-                      onChange={() => handleToggleCanSendMessages(instructor)}
-                    />
-                    יכול/ה לשלוח הודעות ומשימות
-                  </label>
+                  <input
+                    type="checkbox"
+                    checked={instructor.canSendMessages}
+                    disabled={isPending}
+                    onChange={() => handleToggleCanSendMessages(instructor)}
+                    aria-label={`יכול/ה לשלוח הודעות ומשימות עבור ${instructor.fullName}`}
+                    title="יכול/ה לשלוח הודעות ומשימות"
+                  />
                 </td>
                 <td className="px-4 py-3">
                   <div className="flex flex-wrap gap-2">
@@ -157,10 +180,10 @@ export function InstructorsClient({ instructors }: { instructors: InstructorRow[
                 </td>
               </tr>
             ))}
-            {instructors.length === 0 && (
+            {filteredInstructors.length === 0 && (
               <tr>
-                <td colSpan={6} className="px-4 py-8 text-center text-muted-foreground">
-                  אין מדריכים עדיין
+                <td colSpan={7} className="px-4 py-8 text-center text-muted-foreground">
+                  {instructors.length === 0 ? "אין מדריכים עדיין" : "אין מדריכים התואמים את החיפוש"}
                 </td>
               </tr>
             )}
@@ -200,6 +223,14 @@ export function InstructorsClient({ instructors }: { instructors: InstructorRow[
               defaultValue={modalInstructor !== "new" ? modalInstructor?.identityNumber : ""}
               className="rounded-lg border border-border px-3 py-2 text-sm"
               required
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-sm">
+            טלפון (אופציונלי)
+            <input
+              name="phone"
+              defaultValue={modalInstructor !== "new" ? modalInstructor?.phone ?? "" : ""}
+              className="rounded-lg border border-border px-3 py-2 text-sm"
             />
           </label>
           {error && <p className="text-sm text-danger">{error}</p>}

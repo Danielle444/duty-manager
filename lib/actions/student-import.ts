@@ -15,6 +15,7 @@ export interface StudentImportCandidate {
   groupName: string;
   subgroupNumber: number | null;
   identityNumber: string;
+  phone: string;
   matchedStudentId: string | null;
 }
 
@@ -31,17 +32,20 @@ const HEADER_SYNONYMS: Record<string, string[]> = {
   groupName: ["קבוצה"],
   subgroupNumber: ["מס קבוצה", "מספר קבוצה", "תת קבוצה", "תת־קבוצה"],
   identityNumber: ["תז", "ת.ז", "תעודת זהות", "מספר זהות"],
+  phone: ["טלפון", "מספר טלפון", "פלאפון", "נייד", "phone", "mobile"],
 };
 
 // Strips zero-width/bidi-control characters (common in Hebrew Excel exports),
-// trims, drops punctuation, and collapses whitespace so header matching is
-// resilient to invisible characters and inconsistent spacing.
+// trims, drops punctuation, collapses whitespace, and lowercases (safe no-op
+// on Hebrew) so header matching is resilient to invisible characters,
+// inconsistent spacing, and English header casing (e.g. "Phone"/"Mobile").
 function normalizeHeader(h: string): string {
   return h
     .replace(/[​-‏‪-‮﻿]/g, "") // zero-width & bidi control chars
     .trim()
     .replace(/[."'׳״]/g, "") // periods/quotes/geresh/gershayim
-    .replace(/\s+/g, "");
+    .replace(/\s+/g, "")
+    .toLowerCase();
 }
 
 function columnLetter(col: number): string {
@@ -198,6 +202,10 @@ export async function parseStudentsExcel(
     const identityNumber = normalizeIdentityNumber(row, columnIndex.identityNumber);
     const groupName = cellText(row, columnIndex.groupName);
     const subgroupNumber = parseIntCell(row, columnIndex.subgroupNumber);
+    // cellText() already stringifies numeric cells (e.g. a phone typed as a
+    // number becomes "541234567") without further coercion - phone-format.ts
+    // reconstructs the leading 0 for display from that string.
+    const phone = cellText(row, columnIndex.phone);
 
     if (!firstName && !lastName && !identityNumber) return;
 
@@ -210,6 +218,7 @@ export async function parseStudentsExcel(
       groupName,
       subgroupNumber,
       identityNumber,
+      phone,
       matchedStudentId: matched?.id ?? null,
     });
   });
@@ -233,6 +242,7 @@ export interface StudentImportSelection {
   groupName: string;
   subgroupNumber: number | null;
   identityNumber: string;
+  phone: string;
   action: StudentImportRowAction;
   matchedStudentId: string | null;
 }
@@ -262,6 +272,12 @@ export async function commitStudentImport(
     const fullName = `${sel.firstName} ${sel.lastName}`.trim();
 
     if (sel.action === "update" && sel.matchedStudentId) {
+      // Phone is the one field an empty Excel cell must NOT clear - an
+      // admin-entered phone number is often more reliable than a
+      // re-imported roster that simply lacks a phone column value for that
+      // row. Every other field keeps the existing "overwrite from Excel"
+      // behavior.
+      const phoneUpdate = sel.phone.trim() ? { phone: sel.phone.trim() } : {};
       await prisma.student.update({
         where: { id: sel.matchedStudentId },
         data: {
@@ -271,6 +287,7 @@ export async function commitStudentImport(
           groupName: sel.groupName || null,
           subgroupNumber: sel.subgroupNumber,
           identityNumber: sel.identityNumber,
+          ...phoneUpdate,
         },
       });
       affectedStudentIds.push(sel.matchedStudentId);
@@ -284,6 +301,7 @@ export async function commitStudentImport(
           groupName: sel.groupName || null,
           subgroupNumber: sel.subgroupNumber,
           identityNumber: sel.identityNumber,
+          phone: sel.phone || null,
         },
       });
       affectedStudentIds.push(created.id);

@@ -1,12 +1,13 @@
 "use client";
 
-import { FormEvent, useState, useTransition } from "react";
+import { FormEvent, useMemo, useState, useTransition } from "react";
 import { Button } from "@/lib/components/Button";
 import { Modal } from "@/lib/components/Modal";
 import { createStudent, setStudentActive, updateStudent } from "@/lib/actions/students";
 import { setStudentAvailabilityScheme } from "@/lib/actions/availability";
 import { maskIdentityNumber } from "@/lib/format";
 import { formatHebrewDate, parseDateKey } from "@/lib/dates";
+import { formatPhoneDisplay } from "@/lib/phone-format";
 import { ImportStudentsClient } from "@/app/admin/students/ImportStudentsClient";
 
 interface StudentRow {
@@ -51,6 +52,16 @@ export function StudentsClient({
   const [availabilityPending, startAvailabilityTransition] = useTransition();
   const [availabilityMessage, setAvailabilityMessage] = useState<string | null>(null);
   const [availabilityError, setAvailabilityError] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+
+  const filteredStudents = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return students;
+    return students.filter(
+      (s) =>
+        s.fullName.toLowerCase().includes(q) || (s.phone ?? "").toLowerCase().includes(q)
+    );
+  }, [students, search]);
 
   function openModal(student: StudentRow | "new") {
     setError(null);
@@ -110,6 +121,12 @@ export function StudentsClient({
       <div className="flex flex-wrap gap-2">
         <Button onClick={() => openModal("new")}>+ הוספת תלמיד/ה</Button>
         <ImportStudentsClient presets={presets} />
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="חיפוש לפי שם או טלפון..."
+          className="flex-1 rounded-lg border border-border px-3 py-2 text-sm"
+        />
       </div>
 
       <div className="overflow-x-auto rounded-xl border border-border bg-card">
@@ -120,12 +137,13 @@ export function StudentsClient({
               <th className="px-4 py-3 text-right font-medium">קבוצה</th>
               <th className="px-4 py-3 text-right font-medium">מס קבוצה</th>
               <th className="px-4 py-3 text-right font-medium">ת.ז.</th>
+              <th className="px-4 py-3 text-right font-medium">טלפון</th>
               <th className="px-4 py-3 text-right font-medium">סטטוס</th>
               <th className="px-4 py-3 text-right font-medium">פעולות</th>
             </tr>
           </thead>
           <tbody>
-            {students.map((student) => (
+            {filteredStudents.map((student) => (
               <tr key={student.id} className="border-b border-border last:border-0">
                 <td className="px-4 py-3 font-medium text-card-foreground">
                   {student.fullName}
@@ -138,6 +156,13 @@ export function StudentsClient({
                 </td>
                 <td className="px-4 py-3 font-mono text-muted-foreground">
                   {maskIdentityNumber(student.identityNumber)}
+                </td>
+                <td
+                  className={`px-4 py-3 ${
+                    student.phone ? "text-muted-foreground" : "italic text-muted-foreground/70"
+                  }`}
+                >
+                  {formatPhoneDisplay(student.phone)}
                 </td>
                 <td className="px-4 py-3">
                   <span
@@ -171,10 +196,10 @@ export function StudentsClient({
                 </td>
               </tr>
             ))}
-            {students.length === 0 && (
+            {filteredStudents.length === 0 && (
               <tr>
-                <td colSpan={6} className="px-4 py-8 text-center text-muted-foreground">
-                  אין תלמידים עדיין
+                <td colSpan={7} className="px-4 py-8 text-center text-muted-foreground">
+                  {students.length === 0 ? "אין תלמידים עדיין" : "אין תלמידים התואמים את החיפוש"}
                 </td>
               </tr>
             )}

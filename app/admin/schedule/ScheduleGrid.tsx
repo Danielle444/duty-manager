@@ -33,6 +33,7 @@ export function ScheduleGrid({
   noDutyDateKeys,
   filterStudentId,
   filterDutyTypeId,
+  searchQuery,
   onCellClick,
 }: {
   students: GridStudent[];
@@ -43,6 +44,7 @@ export function ScheduleGrid({
   noDutyDateKeys: Set<string>;
   filterStudentId: string;
   filterDutyTypeId: string;
+  searchQuery?: string;
   onCellClick?: (args: { studentId: string; dateKey: string; assignment: GridAssignment | null }) => void;
 }) {
   const dateKeys = useMemo(
@@ -81,10 +83,35 @@ export function ScheduleGrid({
     });
   }, [students]);
 
-  const rows = useMemo(
-    () => (filterStudentId ? sortedStudents.filter((s) => s.id === filterStudentId) : sortedStudents),
-    [sortedStudents, filterStudentId]
-  );
+  const normalizedSearchQuery = (searchQuery ?? "").trim().toLowerCase();
+
+  const rows = useMemo(() => {
+    let base = filterStudentId
+      ? sortedStudents.filter((s) => s.id === filterStudentId)
+      : sortedStudents;
+
+    if (normalizedSearchQuery) {
+      base = base.filter((s) => {
+        if (s.fullName.toLowerCase().includes(normalizedSearchQuery)) return true;
+        if (s.groupName?.toLowerCase().includes(normalizedSearchQuery)) return true;
+        if (s.subgroupNumber != null && String(s.subgroupNumber).includes(normalizedSearchQuery)) {
+          return true;
+        }
+        // Also keep the row if any of this student's visible assignments'
+        // duty type matches - a text search should find "who has X duty"
+        // just as well as "who is student X".
+        const studentAssignments = cellMap.get(s.id);
+        if (studentAssignments) {
+          for (const a of studentAssignments.values()) {
+            if (a.dutyTypeName.toLowerCase().includes(normalizedSearchQuery)) return true;
+          }
+        }
+        return false;
+      });
+    }
+
+    return base;
+  }, [sortedStudents, filterStudentId, normalizedSearchQuery, cellMap]);
 
   if (dateKeys.length === 0) {
     return (

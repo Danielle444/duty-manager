@@ -5,6 +5,7 @@ import {
   getDutyAssignmentsForInstructor,
   type InstructorDutyRow,
 } from "@/lib/actions/instructor-schedule";
+import { getNoDutyStatusForRange } from "@/lib/actions/no-duty-dates";
 
 interface StudentOption {
   id: string;
@@ -32,6 +33,10 @@ export function InstructorDutiesSection({
   const [studentFilter, setStudentFilter] = useState("");
   const [dutyTypeFilter, setDutyTypeFilter] = useState("");
   const [rows, setRows] = useState<InstructorDutyRow[] | null>(null);
+  // Only meaningful for a specific selected day (dayFilter !== "all") - the
+  // whole-week view keeps its existing behavior for Stage A (see
+  // InstructorDutiesSection's known limitation, documented where it's used).
+  const [isNoDutyDay, setIsNoDutyDay] = useState(false);
 
   useEffect(() => {
     // A specific day is self-sufficient (start/end date is all the query
@@ -42,17 +47,23 @@ export function InstructorDutiesSection({
     // request never leaves the previous (unfiltered) rows frozen on screen.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setRows(null);
+    setIsNoDutyDay(false);
     const filters =
       dayFilter === "all"
         ? { weeklyScheduleId: weeklyScheduleId! }
         : { startDateKey: dayFilter, endDateKey: dayFilter };
-    getDutyAssignmentsForInstructor({
-      ...filters,
-      studentId: studentFilter || undefined,
-      dutyTypeId: dutyTypeFilter || undefined,
-    })
-      .then((r) => {
-        if (!cancelled) setRows(r);
+    Promise.all([
+      getDutyAssignmentsForInstructor({
+        ...filters,
+        studentId: studentFilter || undefined,
+        dutyTypeId: dutyTypeFilter || undefined,
+      }),
+      dayFilter === "all" ? Promise.resolve(null) : getNoDutyStatusForRange(dayFilter, dayFilter),
+    ])
+      .then(([r, noDutyStatus]) => {
+        if (cancelled) return;
+        setRows(r);
+        setIsNoDutyDay(noDutyStatus?.[0]?.isNoDuty ?? false);
       })
       .catch(() => {
         if (!cancelled) setRows([]);
@@ -113,6 +124,13 @@ export function InstructorDutiesSection({
         <p className="text-base text-muted-foreground">בחרו שבוע כדי לצפות בתורנויות</p>
       ) : !rows ? (
         <p className="text-base text-muted-foreground">טוען...</p>
+      ) : dayFilter !== "all" && isNoDutyDay ? (
+        // Overrides even if rows exist for this specific day - the day is
+        // marked no-duty, so nothing is shown as "the day's duty" regardless
+        // (assignments, if any, are preserved in the DB, just not displayed
+        // here). Stage A scope: only applies when a single day is selected,
+        // not the whole-week ("all") view.
+        <p className="text-base text-muted-foreground">אין תורנויות ביום זה</p>
       ) : groupedByDay.length === 0 ? (
         <p className="text-base text-muted-foreground">אין תורנויות התואמות את הסינון</p>
       ) : (

@@ -71,7 +71,9 @@ export function DutiesSection({
                 {day.dayLabel} · {day.dateLabel}
               </p>
 
-              {day.status === "not-published" ? (
+              {day.status === "no-duty-day" ? (
+                <p className="text-base text-muted-foreground">אין תורנויות ביום זה</p>
+              ) : day.status === "not-published" ? (
                 <p className="text-base text-muted-foreground">
                   שיבוץ התורנויות לשבוע זה עדיין לא פורסם
                 </p>

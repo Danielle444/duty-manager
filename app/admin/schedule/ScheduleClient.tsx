@@ -101,10 +101,11 @@ export function ScheduleClient({
   blockedGroupsByDate: Record<string, Record<string, string[]>>;
 }) {
   const [isPending, startTransition] = useTransition();
-  const [view, setView] = useState<ViewMode>("list");
+  const [view, setView] = useState<ViewMode>("grid");
   const [filterDate, setFilterDate] = useState("");
   const [filterStudent, setFilterStudent] = useState("");
   const [filterDuty, setFilterDuty] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
   const [selectedCell, setSelectedCell] = useState<SelectedCell | null>(null);
@@ -203,14 +204,34 @@ export function ScheduleClient({
     });
   }
 
+  const studentById = useMemo(() => new Map(students.map((s) => [s.id, s])), [students]);
+
+  // Free-text search on top of the exact-match dropdown filters above -
+  // matches student name, duty type name, group, or subgroup number. Applied
+  // in both list and grid view; never replaces the dropdowns.
+  const normalizedSearchQuery = searchQuery.trim().toLowerCase();
+  function matchesSearchQuery(a: { studentId: string; studentName: string; dutyTypeName: string }) {
+    if (!normalizedSearchQuery) return true;
+    if (a.studentName.toLowerCase().includes(normalizedSearchQuery)) return true;
+    if (a.dutyTypeName.toLowerCase().includes(normalizedSearchQuery)) return true;
+    const student = studentById.get(a.studentId);
+    if (student?.groupName?.toLowerCase().includes(normalizedSearchQuery)) return true;
+    if (student?.subgroupNumber != null && String(student.subgroupNumber).includes(normalizedSearchQuery)) {
+      return true;
+    }
+    return false;
+  }
+
   const filtered = useMemo(() => {
     return assignments.filter((a) => {
       if (filterDate && a.dateKey !== filterDate) return false;
       if (filterStudent && a.studentId !== filterStudent) return false;
       if (filterDuty && a.dutyTypeId !== filterDuty) return false;
+      if (!matchesSearchQuery(a)) return false;
       return true;
     });
-  }, [assignments, filterDate, filterStudent, filterDuty]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [assignments, filterDate, filterStudent, filterDuty, normalizedSearchQuery, studentById]);
 
   const availableDates = useMemo(
     () => Array.from(new Set(assignments.map((a) => a.dateKey))).sort(),
@@ -218,8 +239,6 @@ export function ScheduleClient({
   );
 
   const noDutyDateSet = useMemo(() => new Set(noDutyDateKeys), [noDutyDateKeys]);
-
-  const studentById = useMemo(() => new Map(students.map((s) => [s.id, s])), [students]);
 
   // Which duty types are constraint-blocked or already taken by another
   // student in the same subgroup, for whichever cell the editor is
@@ -438,6 +457,16 @@ export function ScheduleClient({
 
       <div className="flex flex-wrap items-end gap-3 rounded-xl border border-border bg-card p-4">
         <label className="flex flex-col gap-1 text-sm">
+          חיפוש חופשי
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="שם תלמיד/ה, סוג תורנות, קבוצה..."
+            className="rounded-lg border border-border px-3 py-2 text-sm"
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-sm">
           תאריך
           <select
             value={filterDate}
@@ -572,6 +601,7 @@ export function ScheduleClient({
           noDutyDateKeys={noDutyDateSet}
           filterStudentId={filterStudent}
           filterDutyTypeId={filterDuty}
+          searchQuery={searchQuery}
           onCellClick={(args) => setSelectedCell(args)}
         />
         {selectedCell && cellEditorContext && (

@@ -85,10 +85,14 @@ export interface StudentDutyDayInfo {
   // never includes the current student. Only populated when status is
   // "has-duty" (there's nothing to pair up on a day with no duty of ours).
   teammateNames: string[];
+  // "no-duty-day": the date is marked in NoDutyDate - always wins over the
+  // other statuses below, even if an assignment happens to still exist for
+  // this student that day (it's preserved in the DB, just not shown as the
+  // day's duty - see NoDutyDate's admin-facing docs for why one might exist).
   // "not-published": no published assignment exists for anyone on this date.
   // "no-duty": the day is published, this student just has no duty that day.
   // "has-duty": a published assignment exists for this student that day.
-  status: "has-duty" | "no-duty" | "not-published";
+  status: "has-duty" | "no-duty" | "not-published" | "no-duty-day";
 }
 
 export async function getStudentDutiesForRange(
@@ -102,7 +106,7 @@ export async function getStudentDutiesForRange(
   const start = parseDateKey(startDateKey);
   const end = parseDateKey(endDateKey);
 
-  const [mine, publishedAll] = await Promise.all([
+  const [mine, publishedAll, noDutyDates] = await Promise.all([
     prisma.dutyAssignment.findMany({
       where: { studentId, date: { gte: start, lte: end }, isPublished: true },
       include: { dutyType: true },
@@ -118,10 +122,12 @@ export async function getStudentDutiesForRange(
         student: { select: { fullName: true } },
       },
     }),
+    prisma.noDutyDate.findMany({ where: { date: { gte: start, lte: end } } }),
   ]);
 
   const mineByDate = new Map(mine.map((a) => [dateKey(a.date), a]));
   const publishedDates = new Set(publishedAll.map((a) => dateKey(a.date)));
+  const noDutyDateKeys = new Set(noDutyDates.map((n) => dateKey(n.date)));
 
   const teammatesByDateAndDuty = new Map<string, string[]>();
   for (const a of publishedAll) {
@@ -134,11 +140,13 @@ export async function getStudentDutiesForRange(
   return enumerateDateKeys(start, end).map((dk) => {
     const date = parseDateKey(dk);
     const assignment = mineByDate.get(dk);
-    const status: StudentDutyDayInfo["status"] = assignment
-      ? "has-duty"
-      : publishedDates.has(dk)
-        ? "no-duty"
-        : "not-published";
+    const status: StudentDutyDayInfo["status"] = noDutyDateKeys.has(dk)
+      ? "no-duty-day"
+      : assignment
+        ? "has-duty"
+        : publishedDates.has(dk)
+          ? "no-duty"
+          : "not-published";
     const teammateNames = assignment
       ? teammatesByDateAndDuty.get(`${dk}|${assignment.dutyTypeId}`) ?? []
       : [];

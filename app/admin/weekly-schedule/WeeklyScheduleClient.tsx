@@ -29,12 +29,18 @@ interface ScheduleItemView {
   location: string | null;
 }
 
+interface DutyStatus {
+  total: number;
+  published: number;
+}
+
 interface WeeklyScheduleView {
   id: string;
   name: string;
   startDate: string;
   endDate: string;
   uploadedFileName: string;
+  dutyStatus: DutyStatus;
   items: ScheduleItemView[];
 }
 
@@ -457,6 +463,12 @@ export function WeeklyScheduleClient({
         size="large"
       >
         <div className="flex h-full flex-col gap-4">
+          {uploadTarget && (
+            <p className="shrink-0 rounded-lg bg-muted p-3 text-xs text-muted-foreground">
+              החלפת הלו&quot;ז מעדכנת את פריטי הלו&quot;ז בלבד - שיבוצי תורנות קיימים, סטטוס
+              הפרסום שלהם, וסימוני ביצוע אינם נמחקים או משתנים.
+            </p>
+          )}
           <div className="grid shrink-0 grid-cols-1 gap-2 sm:grid-cols-3">
             <label className="flex flex-col gap-1 text-sm">
               שם השבוע
@@ -848,6 +860,34 @@ export function WeeklyScheduleClient({
   );
 }
 
+// Purely a display summary of DutyAssignment.isPublished for this week's
+// date range - does not change publish logic, just makes the current state
+// visible at a glance instead of only learning it after clicking a button.
+function dutyStatusBadge(status: DutyStatus): { label: string; className: string } {
+  if (status.total === 0) {
+    return {
+      label: "טרם נוצרו שיבוצי תורנות",
+      className: "bg-muted text-muted-foreground",
+    };
+  }
+  if (status.published === status.total) {
+    return {
+      label: "תורנויות פורסמו לתלמידים",
+      className: "bg-success-muted text-success",
+    };
+  }
+  if (status.published === 0) {
+    return {
+      label: "טיוטה - תורנויות לא פורסמו",
+      className: "bg-muted text-muted-foreground",
+    };
+  }
+  return {
+    label: `פרסום חלקי (${status.published} מתוך ${status.total})`,
+    className: "bg-warning-muted text-warning",
+  };
+}
+
 function WeekCard({
   week,
   onReplace,
@@ -891,7 +931,14 @@ function WeekCard({
     <div className="rounded-xl border border-border bg-card p-4">
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
         <div>
-          <p className="font-bold text-card-foreground">{week.name}</p>
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="font-bold text-card-foreground">{week.name}</p>
+            <span
+              className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${dutyStatusBadge(week.dutyStatus).className}`}
+            >
+              {dutyStatusBadge(week.dutyStatus).label}
+            </span>
+          </div>
           <p className="text-xs text-muted-foreground">
             {formatHebrewDate(parseDateKey(week.startDate))} -{" "}
             {formatHebrewDate(parseDateKey(week.endDate))} · {week.items.length} פריטי לו&quot;ז ·{" "}

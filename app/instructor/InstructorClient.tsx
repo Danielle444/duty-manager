@@ -18,7 +18,7 @@ import { InstructorDutiesSection } from "@/app/instructor/InstructorDutiesSectio
 import { InstructorHorsesSection } from "@/app/instructor/InstructorHorsesSection";
 import { InstructorMessagesSection } from "@/app/instructor/InstructorMessagesSection";
 import { ContactsSection } from "@/lib/components/ContactsSection";
-import { formatHebrewDate, formatHebrewWeekday, parseDateKey, todayDateKey } from "@/lib/dates";
+import { formatHebrewDate, formatHebrewWeekday, getLocalDateKey, parseDateKey } from "@/lib/dates";
 
 const STORAGE_KEY = "duty-manager-instructor-v2";
 
@@ -95,6 +95,15 @@ export function InstructorClient({
   const [weeks, setWeeks] = useState<WeekOption[] | null>(null);
   const [selectedWeekId, setSelectedWeekId] = useState<string | null>(null);
   const [dayFilter, setDayFilter] = useState<string | "all">("all");
+
+  // Recomputed every minute (not just once at mount) so "today" rolls over
+  // to the new local day on its own if the app is left open across
+  // midnight, instead of staying frozen on the day the page first loaded.
+  const [now, setNow] = useState<Date>(() => new Date());
+  useEffect(() => {
+    const interval = setInterval(() => setNow(new Date()), 60_000);
+    return () => clearInterval(interval);
+  }, []);
 
   useEffect(() => {
     const raw = window.localStorage.getItem(STORAGE_KEY);
@@ -252,7 +261,7 @@ export function InstructorClient({
     );
   }
 
-  const todayKey = todayDateKey();
+  const todayKey = getLocalDateKey(now);
   const todayWeek = weeks?.find((w) => w.startDate <= todayKey && todayKey <= w.endDate) ?? null;
 
   const activeTabLabel = INSTRUCTOR_ALL_TABS.find((t) => t.id === activeTab)?.label ?? "";

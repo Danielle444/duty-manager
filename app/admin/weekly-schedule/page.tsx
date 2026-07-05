@@ -8,10 +8,25 @@ export const dynamic = "force-dynamic";
 export default async function WeeklySchedulePage() {
   await requireAdmin();
 
-  const weeklySchedules = await prisma.weeklySchedule.findMany({
-    include: { items: true },
-    orderBy: { startDate: "asc" },
-  });
+  const [weeklySchedules, dutyAssignments] = await Promise.all([
+    prisma.weeklySchedule.findMany({
+      include: { items: true },
+      orderBy: { startDate: "asc" },
+    }),
+    prisma.dutyAssignment.findMany({ select: { date: true, isPublished: true } }),
+  ]);
+
+  // Duty assignments have no relation to a WeeklySchedule/ScheduleItem at
+  // all, so bucketing them by each week's own date range (rather than a
+  // real join) is the only way to summarize "are this week's duties
+  // published" - and it's exactly why editing/replacing a week's schedule
+  // items can never affect them.
+  function dutyStatusForRange(start: Date, end: Date) {
+    const inRange = dutyAssignments.filter((a) => a.date >= start && a.date <= end);
+    const total = inRange.length;
+    const published = inRange.filter((a) => a.isPublished).length;
+    return { total, published };
+  }
 
   return (
     <div className="flex flex-col gap-4">
@@ -28,6 +43,7 @@ export default async function WeeklySchedulePage() {
           startDate: dateKey(w.startDate),
           endDate: dateKey(w.endDate),
           uploadedFileName: w.uploadedFileName,
+          dutyStatus: dutyStatusForRange(w.startDate, w.endDate),
           items: w.items.map((i) => ({
             id: i.id,
             dateKey: dateKey(i.date),

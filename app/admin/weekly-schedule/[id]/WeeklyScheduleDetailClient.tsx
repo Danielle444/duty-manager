@@ -1,11 +1,20 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState, useTransition } from "react";
+import { FormEvent, useEffect, useMemo, useState, useTransition } from "react";
+import { Button } from "@/lib/components/Button";
+import { Modal } from "@/lib/components/Modal";
 import { formatHebrewDate, formatHebrewWeekday, parseDateKey } from "@/lib/dates";
 import { cleanScheduleTitle } from "@/lib/schedule-title";
 import { ScheduleTimeGrid } from "@/lib/components/ScheduleTimeGrid";
 import { getScheduleGroupColorClass } from "@/lib/schedule-group-colors";
+import {
+  createScheduleItem,
+  deleteScheduleItem,
+  updateScheduleItem,
+  type ScheduleItemInput,
+  type ScheduleItemRow,
+} from "@/lib/actions/schedule-items";
 import {
   getNoDutyStatusForRange,
   markNoDutyDate,
@@ -13,17 +22,7 @@ import {
   type NoDutyDayStatus,
 } from "@/lib/actions/no-duty-dates";
 
-interface ScheduleItemView {
-  id: string;
-  dateKey: string;
-  startTime: string;
-  endTime: string;
-  title: string;
-  description: string | null;
-  groupName: string | null;
-  instructorName: string | null;
-  location: string | null;
-}
+type ScheduleItemView = ScheduleItemRow;
 
 interface WeeklyScheduleView {
   id: string;
@@ -34,9 +33,25 @@ interface WeeklyScheduleView {
   items: ScheduleItemView[];
 }
 
+const EMPTY_FORM: ScheduleItemInput = {
+  dateKey: "",
+  startTime: "",
+  endTime: "",
+  title: "",
+  groupName: "",
+  instructorName: "",
+  location: "",
+  description: "",
+};
+
 // Admin always sees the full (time-cleaned) title and instructorName - no
 // student-facing shortening or hiding here.
-function renderScheduleCard(item: ScheduleItemView, compact = false) {
+function renderScheduleCard(
+  item: ScheduleItemView,
+  onEdit: (item: ScheduleItemView) => void,
+  onDelete: (item: ScheduleItemView) => void,
+  compact = false
+) {
   return (
     <div
       key={item.id}
@@ -71,15 +86,41 @@ function renderScheduleCard(item: ScheduleItemView, compact = false) {
           מיקום: {item.location}
         </p>
       )}
+      <div className="mt-2 flex gap-2">
+        <Button variant="ghost" className="!px-2 !py-1 !text-xs" onClick={() => onEdit(item)}>
+          עריכה
+        </Button>
+        <Button variant="danger" className="!px-2 !py-1 !text-xs" onClick={() => onDelete(item)}>
+          מחיקה
+        </Button>
+      </div>
     </div>
   );
 }
 
 export function WeeklyScheduleDetailClient({ week }: { week: WeeklyScheduleView }) {
+  const [items, setItems] = useState(week.items);
   const [groupFilter, setGroupFilter] = useState<"all" | string>("all");
   const [dayFilter, setDayFilter] = useState<"all" | string>("all");
   const [noDutyStatus, setNoDutyStatus] = useState<Map<string, NoDutyDayStatus> | null>(null);
   const [isPending, startTransition] = useTransition();
+
+  const [modalItem, setModalItem] = useState<ScheduleItemView | "new" | null>(null);
+  const [form, setForm] = useState<ScheduleItemInput>(EMPTY_FORM);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [isSaving, startSaveTransition] = useTransition();
+
+  const [deleteTarget, setDeleteTarget] = useState<ScheduleItemView | null>(null);
+  const [isDeleting, startDeleteTransition] = useTransition();
+
+  useEffect(() => {
+    // Resyncs local editable state when the server-provided week prop
+    // changes (e.g. a revalidated refetch from elsewhere) - local
+    // edit/create/delete handlers already patch `items` directly for
+    // immediate feedback, this only covers the external-update case.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setItems(week.items);
+  }, [week.items]);
 
   function loadNoDutyStatus() {
     getNoDutyStatusForRange(week.startDate, week.endDate).then((rows) => {
@@ -104,24 +145,18 @@ export function WeeklyScheduleDetailClient({ week }: { week: WeeklyScheduleView 
   }
 
   const groups = useMemo(
-    () =>
-      Array.from(
-        new Set(week.items.map((i) => i.groupName).filter((g): g is string => Boolean(g)))
-      ).sort(),
-    [week.items]
+    () => Array.from(new Set(items.map((i) => i.groupName).filter((g): g is string => Boolean(g)))).sort(),
+    [items]
   );
 
-  const dayOptions = useMemo(
-    () => Array.from(new Set(week.items.map((i) => i.dateKey))).sort(),
-    [week.items]
-  );
+  const dayOptions = useMemo(() => Array.from(new Set(items.map((i) => i.dateKey))).sort(), [items]);
 
   const filteredItems = useMemo(() => {
-    return week.items
+    return items
       .filter((i) => groupFilter === "all" || !i.groupName || i.groupName === groupFilter)
       .filter((i) => dayFilter === "all" || i.dateKey === dayFilter)
       .sort((a, b) => (a.dateKey + a.startTime).localeCompare(b.dateKey + b.startTime));
-  }, [week.items, groupFilter, dayFilter]);
+  }, [items, groupFilter, dayFilter]);
 
   const itemsByDay = useMemo(() => {
     const map = new Map<string, ScheduleItemView[]>();
@@ -131,6 +166,64 @@ export function WeeklyScheduleDetailClient({ week }: { week: WeeklyScheduleView 
     }
     return Array.from(map.entries());
   }, [filteredItems]);
+
+  function openEdit(item: ScheduleItemView) {
+    setModalItem(item);
+    setForm({
+      dateKey: item.dateKey,
+      startTime: item.startTime,
+      endTime: item.endTime,
+      title: item.title,
+      groupName: item.groupName ?? "",
+      instructorName: item.instructorName ?? "",
+      location: item.location ?? "",
+      description: item.description ?? "",
+    });
+    setFormError(null);
+  }
+
+  function openCreate() {
+    setModalItem("new");
+    setForm({
+      ...EMPTY_FORM,
+      dateKey: dayFilter !== "all" ? dayFilter : "",
+    });
+    setFormError(null);
+  }
+
+  function handleFormSubmit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setFormError(null);
+    startSaveTransition(async () => {
+      const result =
+        modalItem && modalItem !== "new"
+          ? await updateScheduleItem(modalItem.id, form)
+          : await createScheduleItem(week.id, form);
+      if (!result.success || !result.item) {
+        setFormError(result.error ?? "אירעה שגיאה");
+        return;
+      }
+      const savedItem = result.item;
+      setItems((prev) => {
+        if (modalItem && modalItem !== "new") {
+          return prev.map((i) => (i.id === savedItem.id ? savedItem : i));
+        }
+        return [...prev, savedItem];
+      });
+      setModalItem(null);
+    });
+  }
+
+  function handleConfirmDelete() {
+    if (!deleteTarget) return;
+    const itemId = deleteTarget.id;
+    startDeleteTransition(async () => {
+      const result = await deleteScheduleItem(itemId);
+      if (!result.success) return;
+      setItems((prev) => prev.filter((i) => i.id !== itemId));
+      setDeleteTarget(null);
+    });
+  }
 
   return (
     <div className="flex flex-col gap-4">
@@ -145,16 +238,19 @@ export function WeeklyScheduleDetailClient({ week }: { week: WeeklyScheduleView 
           <h1 className="mt-1 text-xl font-bold text-card-foreground">{week.name}</h1>
           <p className="text-sm text-muted-foreground">
             {formatHebrewDate(parseDateKey(week.startDate))} -{" "}
-            {formatHebrewDate(parseDateKey(week.endDate))} · {week.items.length} פריטי לו&quot;ז ·{" "}
+            {formatHebrewDate(parseDateKey(week.endDate))} · {items.length} פריטי לו&quot;ז ·{" "}
             {week.uploadedFileName}
           </p>
         </div>
-        <a
-          href={`/api/admin/schedule/export?weeklyScheduleId=${week.id}`}
-          className="rounded-lg bg-secondary px-4 py-2 text-sm font-medium text-secondary-foreground transition-colors hover:opacity-80"
-        >
-          ייצוא לאקסל
-        </a>
+        <div className="flex flex-wrap gap-2">
+          <Button onClick={openCreate}>+ הוספת פריט</Button>
+          <a
+            href={`/api/admin/schedule/export?weeklyScheduleId=${week.id}`}
+            className="rounded-lg bg-secondary px-4 py-2 text-sm font-medium text-secondary-foreground transition-colors hover:opacity-80"
+          >
+            ייצוא לאקסל
+          </a>
+        </div>
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
@@ -219,7 +315,7 @@ export function WeeklyScheduleDetailClient({ week }: { week: WeeklyScheduleView 
         </p>
       ) : (
         <div className="flex flex-col gap-5">
-          {itemsByDay.map(([dk, items]) => {
+          {itemsByDay.map(([dk, dayItems]) => {
             const status = noDutyStatus?.get(dk);
             const isNoDuty = status?.isNoDuty ?? false;
             return (
@@ -253,10 +349,13 @@ export function WeeklyScheduleDetailClient({ week }: { week: WeeklyScheduleView 
               )}
 
               {groupFilter === "all" ? (
-                <ScheduleTimeGrid items={items} renderCard={(item) => renderScheduleCard(item, true)} />
+                <ScheduleTimeGrid
+                  items={dayItems}
+                  renderCard={(item) => renderScheduleCard(item, openEdit, setDeleteTarget, true)}
+                />
               ) : (
                 <div className="flex flex-col gap-3">
-                  {items.map((item) => renderScheduleCard(item))}
+                  {dayItems.map((item) => renderScheduleCard(item, openEdit, setDeleteTarget))}
                 </div>
               )}
             </div>
@@ -264,6 +363,131 @@ export function WeeklyScheduleDetailClient({ week }: { week: WeeklyScheduleView 
           })}
         </div>
       )}
+
+      <Modal
+        open={modalItem !== null}
+        title={modalItem === "new" ? 'הוספת פריט לו"ז' : 'עריכת פריט לו"ז'}
+        onClose={() => setModalItem(null)}
+      >
+        <form onSubmit={handleFormSubmit} className="flex flex-col gap-3">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            <label className="flex flex-col gap-1 text-sm">
+              תאריך
+              <input
+                type="date"
+                value={form.dateKey}
+                onChange={(e) => setForm((f) => ({ ...f, dateKey: e.target.value }))}
+                className="rounded-lg border border-border px-3 py-2 text-sm"
+                required
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-sm">
+              שעת התחלה
+              <input
+                value={form.startTime}
+                onChange={(e) => setForm((f) => ({ ...f, startTime: e.target.value }))}
+                placeholder="HH:MM"
+                className="rounded-lg border border-border px-3 py-2 text-sm"
+                required
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-sm">
+              שעת סיום
+              <input
+                value={form.endTime}
+                onChange={(e) => setForm((f) => ({ ...f, endTime: e.target.value }))}
+                placeholder="HH:MM"
+                className="rounded-lg border border-border px-3 py-2 text-sm"
+                required
+              />
+            </label>
+          </div>
+
+          <label className="flex flex-col gap-1 text-sm">
+            קבוצה (ריק = שתי הקבוצות)
+            <input
+              value={form.groupName}
+              onChange={(e) => setForm((f) => ({ ...f, groupName: e.target.value }))}
+              placeholder="א / ב"
+              className="rounded-lg border border-border px-3 py-2 text-sm"
+            />
+          </label>
+
+          <label className="flex flex-col gap-1 text-sm">
+            כותרת פעילות
+            <input
+              value={form.title}
+              onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
+              className="rounded-lg border border-border px-3 py-2 text-sm"
+              required
+            />
+          </label>
+
+          <div className="grid grid-cols-2 gap-3">
+            <label className="flex flex-col gap-1 text-sm">
+              מדריך/ה
+              <input
+                value={form.instructorName}
+                onChange={(e) => setForm((f) => ({ ...f, instructorName: e.target.value }))}
+                className="rounded-lg border border-border px-3 py-2 text-sm"
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-sm">
+              מיקום
+              <input
+                value={form.location}
+                onChange={(e) => setForm((f) => ({ ...f, location: e.target.value }))}
+                className="rounded-lg border border-border px-3 py-2 text-sm"
+              />
+            </label>
+          </div>
+
+          <label className="flex flex-col gap-1 text-sm">
+            תיאור (אופציונלי)
+            <textarea
+              value={form.description}
+              onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
+              rows={2}
+              className="rounded-lg border border-border px-3 py-2 text-sm"
+            />
+          </label>
+
+          {formError && <p className="text-sm text-danger">{formError}</p>}
+          <div className="mt-2 flex justify-end gap-2">
+            <Button type="button" variant="secondary" onClick={() => setModalItem(null)}>
+              ביטול
+            </Button>
+            <Button type="submit" disabled={isSaving}>
+              {isSaving ? "שומר..." : "שמירה"}
+            </Button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal
+        open={deleteTarget !== null}
+        title='מחיקת פריט לו"ז'
+        onClose={() => setDeleteTarget(null)}
+      >
+        <p className="text-sm text-card-foreground">
+          האם למחוק את הפריט &quot;{deleteTarget ? cleanScheduleTitle(deleteTarget.title) : ""}&quot;
+          ({deleteTarget?.startTime}-{deleteTarget?.endTime})? הפעולה אינה הפיכה. שיבוצי תורנות
+          קיימים אינם מושפעים.
+        </p>
+        <div className="mt-4 flex justify-end gap-2">
+          <Button type="button" variant="secondary" onClick={() => setDeleteTarget(null)}>
+            ביטול
+          </Button>
+          <Button
+            type="button"
+            variant="danger"
+            disabled={isDeleting}
+            onClick={handleConfirmDelete}
+          >
+            {isDeleting ? "מוחק..." : "מחיקה"}
+          </Button>
+        </div>
+      </Modal>
     </div>
   );
 }

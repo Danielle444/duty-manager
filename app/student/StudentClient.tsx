@@ -19,7 +19,7 @@ import { DutiesSection } from "@/app/student/DutiesSection";
 import { StudentMessagesSection } from "@/app/student/StudentMessagesSection";
 import { StudentMessagesSummary } from "@/app/student/StudentMessagesSummary";
 import { ContactsSection } from "@/lib/components/ContactsSection";
-import { formatHebrewDate, formatHebrewWeekday, parseDateKey, todayDateKey } from "@/lib/dates";
+import { formatHebrewDate, formatHebrewWeekday, getLocalDateKey, parseDateKey } from "@/lib/dates";
 import { getHorseDisplayInfo } from "@/lib/horse-info";
 
 const STORAGE_KEY = "duty-manager-student";
@@ -81,6 +81,15 @@ export function StudentClient() {
   const [weeks, setWeeks] = useState<WeekOption[] | null>(null);
   const [selectedWeekId, setSelectedWeekId] = useState<string | null>(null);
   const [dayFilter, setDayFilter] = useState<string | "all">("all");
+
+  // Recomputed every minute (not just once at mount) so "today" rolls over
+  // to the new local day on its own if the app is left open across
+  // midnight, instead of staying frozen on the day the page first loaded.
+  const [now, setNow] = useState<Date>(() => new Date());
+  useEffect(() => {
+    const interval = setInterval(() => setNow(new Date()), 60_000);
+    return () => clearInterval(interval);
+  }, []);
 
   const [isEditingHorseName, setIsEditingHorseName] = useState(false);
   const [horseNameDraft, setHorseNameDraft] = useState("");
@@ -273,7 +282,7 @@ export function StudentClient() {
     );
   }
 
-  const todayKey = todayDateKey();
+  const todayKey = getLocalDateKey(now);
   const todayWeek = weeks?.find((w) => w.startDate <= todayKey && todayKey <= w.endDate) ?? null;
 
   const selectedWeek = weeks?.find((w) => w.id === selectedWeekId) ?? null;
@@ -325,44 +334,6 @@ export function StudentClient() {
               studentId={session.id}
               onOpen={() => setActiveTab("messages")}
             />
-
-            <div className="rounded-2xl border border-border bg-card p-5">
-              <p className="mb-2 text-sm font-semibold text-muted-foreground">סוס</p>
-              {(() => {
-                const horseInfo = getHorseDisplayInfo(session);
-                return (
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span
-                        className={`rounded-full px-3 py-1 text-sm font-medium ${
-                          horseInfo.badgeType === "private"
-                            ? "bg-success-muted text-success"
-                            : horseInfo.badgeType === "assigned"
-                              ? "bg-secondary text-secondary-foreground"
-                              : "bg-muted text-muted-foreground"
-                        }`}
-                      >
-                        {horseInfo.badgeLabel}
-                      </span>
-                      <span
-                        className={`text-lg font-bold ${
-                          horseInfo.horseName ? "text-card-foreground" : "italic text-muted-foreground"
-                        }`}
-                      >
-                        {horseInfo.horseNameDisplay}
-                      </span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setActiveTab("profile")}
-                      className="text-sm font-medium text-primary underline"
-                    >
-                      עריכה בפרופיל
-                    </button>
-                  </div>
-                );
-              })()}
-            </div>
 
             <DutiesSection studentId={session.id} startDateKey={todayKey} endDateKey={todayKey} />
 
@@ -435,6 +406,9 @@ export function StudentClient() {
                 <span className="text-muted-foreground">‹</span>
               </button>
             ))}
+            <Button variant="secondary" onClick={handleSwitchStudent} className="!py-3 !text-base">
+              התנתקות
+            </Button>
           </div>
         )}
 

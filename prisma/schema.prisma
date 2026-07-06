@@ -34,6 +34,7 @@ model Student {
   assignments           DutyAssignment[]
   messageTaskRecipients MessageTaskRecipient[]
   attendance            StudentAttendance[]
+  ridingLessonNotes     RidingLessonNote[]
 
   @@map("students")
 }
@@ -211,6 +212,14 @@ model Instructor {
   // All instructors can still view attendance regardless of this flag.
   canEditAttendance Boolean @default(false)
 
+  // Grants permission to edit RidingLessonNote (notes + ratings) from the
+  // instructor app; false by default. Blanket permission - not scoped to
+  // only the riding slots this instructor is assigned to. All instructors
+  // can still view riding slots/assignments regardless of this flag.
+  canEditRidingNotes Boolean @default(false)
+
+  ridingSlotAssignments RidingSlotAssignment[]
+
   @@map("instructors")
 }
 
@@ -283,9 +292,75 @@ model ScheduleItem {
   updatedAt        DateTime @updatedAt
 
   weeklySchedule WeeklySchedule @relation(fields: [weeklyScheduleId], references: [id], onDelete: Cascade)
+  ridingSlot     RidingSlot?
 
   @@index([date])
   @@map("schedule_items")
+}
+
+// Presence of a row = this ScheduleItem is a riding slot - never a field on
+// ScheduleItem itself, and never inferred from title/description text (that
+// stays a UI-only suggestion elsewhere). Deleting the ScheduleItem cascades
+// here, taking its assignments/notes with it.
+model RidingSlot {
+  id                       String   @id @default(cuid())
+  scheduleItemId           String   @unique
+  // Deferred to a later stage - default false (hidden) until student
+  // visibility is deliberately implemented and enabled per slot.
+  showInstructorToStudents Boolean  @default(false)
+  showArenaToStudents      Boolean  @default(false)
+  showSubgroupToStudents   Boolean  @default(false)
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  scheduleItem ScheduleItem           @relation(fields: [scheduleItemId], references: [id], onDelete: Cascade)
+  assignments  RidingSlotAssignment[]
+  notes        RidingLessonNote[]
+
+  @@map("riding_slots")
+}
+
+// One row per group/subgroup split within a slot. groupName/subgroupNumber
+// both null = applies to the whole slot (no split needed) - a slot with
+// different instructors/arenas per subgroup gets one row per split instead.
+model RidingSlotAssignment {
+  id             String   @id @default(cuid())
+  ridingSlotId   String
+  groupName      String?
+  subgroupNumber Int?
+  instructorId   String?
+  arena          String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  ridingSlot RidingSlot  @relation(fields: [ridingSlotId], references: [id], onDelete: Cascade)
+  instructor Instructor? @relation(fields: [instructorId], references: [id])
+
+  @@unique([ridingSlotId, groupName, subgroupNumber])
+  @@map("riding_slot_assignments")
+}
+
+// One row per student per riding slot - a missing row means no note/rating
+// entered yet, not a zero/blank rating. Single shared note field (no
+// separate admin/instructor tracks) and no history: each save overwrites
+// the previous value, same upsert convention as StudentAttendance.
+model RidingLessonNote {
+  id               String   @id @default(cuid())
+  ridingSlotId     String
+  studentId        String
+  note             String?
+  // 1.0-5.0 in 0.5 steps, stored as half-points (2-10) - validated in the
+  // action layer, not the schema.
+  ratingHalfPoints Int?
+  updatedByName    String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  ridingSlot RidingSlot @relation(fields: [ridingSlotId], references: [id], onDelete: Cascade)
+  student    Student    @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@unique([ridingSlotId, studentId])
+  @@map("riding_lesson_notes")
 }
 
 enum MessageTaskType {

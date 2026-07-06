@@ -4,7 +4,7 @@ import { FormEvent, useEffect, useState, useTransition } from "react";
 import { Button } from "@/lib/components/Button";
 import { Logo } from "@/lib/components/Logo";
 import { WeekDayPicker, type WeekOption } from "@/lib/components/WeekDayPicker";
-import { BottomTabs, type MainTabId } from "@/lib/components/BottomTabs";
+import { BottomTabs, TabIcon, type MainTabId } from "@/lib/components/BottomTabs";
 import { CourseMaterialsSection } from "@/lib/components/CourseMaterialsSection";
 import {
   getInstructorProfile,
@@ -30,21 +30,23 @@ import {
 
 const STORAGE_KEY = "duty-manager-instructor-v2";
 
-// Instructor has its own 5 main bottom tabs (independent of the student
+// Instructor has its own 6 main bottom tabs (independent of the student
 // MAIN_TABS, which stays untouched) plus a "more" menu for lower-frequency
-// sections, so the bar doesn't keep growing as instructor features are added.
+// sections. "riding" ("רכיבות") was promoted from "more" to a main tab since
+// instructors use it often enough that burying it under "עוד" was
+// inconvenient - it's used here, never redefined or duplicated.
 const INSTRUCTOR_MAIN_TABS: { id: MainTabId; label: string }[] = [
   { id: "today", label: "היום" },
   { id: "schedule", label: 'לו"ז' },
   { id: "duties", label: "תורנויות" },
   { id: "horses", label: "סוסים" },
+  { id: "riding", label: "רכיבות" },
   { id: "more", label: "עוד" },
 ];
 
 const INSTRUCTOR_MORE_ITEMS: { id: MainTabId; label: string }[] = [
   { id: "profile", label: "פרופיל" },
   { id: "attendance", label: "נוכחות" },
-  { id: "riding", label: "רכיבות" },
   { id: "messages", label: "הודעות ומשימות" },
   { id: "contacts", label: "אנשי קשר" },
   { id: "materials", label: "חומרי קורס" },
@@ -52,18 +54,29 @@ const INSTRUCTOR_MORE_ITEMS: { id: MainTabId; label: string }[] = [
 
 const INSTRUCTOR_ALL_TABS = [...INSTRUCTOR_MAIN_TABS, ...INSTRUCTOR_MORE_ITEMS];
 
-// Quick-action shortcuts shown on the "today" home screen - each just calls
-// setActiveTab, exactly like the "more" menu buttons already do. These are
-// navigation shortcuts only; they unlock nothing new and the destination
-// sections enforce their own permissions server-side regardless of how the
-// instructor got there.
-const INSTRUCTOR_QUICK_ACTIONS: { id: MainTabId; label: string }[] = [
+// Shortcut grid shown on the "today" home screen - covers every instructor
+// section except "today" itself (navigating to the screen you're already on
+// would be a dead click) and "more" (that's a menu, not a destination).
+// Each button just calls setActiveTab, exactly like the bottom tabs and the
+// "more" menu buttons already do - these are navigation shortcuts only,
+// they unlock nothing new, and the destination sections enforce their own
+// permissions server-side regardless of how the instructor got there.
+// Kept as two constants purely for readability of this file - both render
+// together in one flat, compact grid (see homeShortcuts below), not as
+// separate labeled sections, to keep the home screen's quick-nav area small.
+const INSTRUCTOR_ACTIVITY_SHORTCUTS: { id: MainTabId; label: string }[] = [
+  { id: "riding", label: "רכיבות" },
   { id: "schedule", label: 'לו"ז' },
   { id: "duties", label: "תורנויות" },
-  { id: "horses", label: "קבוצות וסוסים" },
-  { id: "contacts", label: "אנשי קשר" },
+  { id: "horses", label: "סוסים" },
+];
+
+const INSTRUCTOR_INFO_SHORTCUTS: { id: MainTabId; label: string }[] = [
   { id: "messages", label: "הודעות ומשימות" },
+  { id: "contacts", label: "אנשי קשר" },
   { id: "materials", label: "חומרי קורס" },
+  { id: "attendance", label: "נוכחות" },
+  { id: "profile", label: "פרופיל" },
 ];
 
 interface StoredSession {
@@ -282,6 +295,16 @@ export function InstructorClient({
   const isMoreItem = INSTRUCTOR_MORE_ITEMS.some((item) => item.id === activeTab);
   const bottomActiveTab: MainTabId = isMoreItem ? "more" : activeTab;
 
+  // One flat, compact quick-nav grid instead of two labeled groups - "שליחת
+  // הודעה/משימה" navigates to the exact same "messages" tab as "הודעות
+  // ומשימות" and is just one more entry here, gated behind the same
+  // canSendMessages permission the old standalone button used.
+  const homeShortcuts: { id: MainTabId; label: string }[] = [
+    ...INSTRUCTOR_ACTIVITY_SHORTCUTS,
+    ...INSTRUCTOR_INFO_SHORTCUTS,
+    ...(session.canSendMessages ? [{ id: "messages" as MainTabId, label: "שליחת הודעה/משימה" }] : []),
+  ];
+
   return (
     <div className="flex flex-1 flex-col">
       <header className="sticky top-0 z-20 flex items-center gap-2 border-b border-border bg-card px-4 py-3">
@@ -302,30 +325,24 @@ export function InstructorClient({
               </p>
             </div>
 
-            <div className="grid grid-cols-3 gap-2">
-              {INSTRUCTOR_QUICK_ACTIONS.map((action) => (
-                <button
-                  key={action.id}
-                  type="button"
-                  onClick={() => setActiveTab(action.id)}
-                  className="rounded-xl border border-border bg-card p-3 text-center text-sm font-semibold text-card-foreground hover:bg-muted"
-                >
-                  {action.label}
-                </button>
-              ))}
-            </div>
-
-            {session.canSendMessages && (
-              <div className="grid grid-cols-1 gap-2">
-                <button
-                  type="button"
-                  onClick={() => setActiveTab("messages")}
-                  className="rounded-xl border border-accent bg-secondary p-4 text-center text-sm font-semibold text-secondary-foreground hover:opacity-90"
-                >
-                  שליחת הודעה/משימה
-                </button>
+            <div className="rounded-xl border border-border bg-card p-3">
+              <p className="mb-2 text-xs font-semibold text-muted-foreground">מעבר מהיר</p>
+              <div className="grid grid-cols-3 gap-1.5">
+                {homeShortcuts.map((action) => (
+                  <button
+                    key={`${action.id}-${action.label}`}
+                    type="button"
+                    onClick={() => setActiveTab(action.id)}
+                    className="flex items-center gap-1.5 rounded-lg border border-border bg-card px-2 py-2 text-right hover:bg-muted"
+                  >
+                    <TabIcon id={action.id} className="h-4 w-4 shrink-0 text-muted-foreground" />
+                    <span className="min-w-0 flex-1 truncate text-xs font-semibold text-card-foreground">
+                      {action.label}
+                    </span>
+                  </button>
+                ))}
               </div>
-            )}
+            </div>
 
             <InstructorDutiesSection
               weeklyScheduleId={todayWeek?.id ?? null}

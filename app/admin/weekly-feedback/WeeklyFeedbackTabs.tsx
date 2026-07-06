@@ -62,6 +62,17 @@ function getAvailabilityInfo(form: AvailabilityInput): { label: string; classNam
   return { label: "פתוח לחניכים", className: "bg-success-muted text-success" };
 }
 
+// Mirrors isFeedbackQuestionsEditable in lib/actions/weekly-feedback.ts - this
+// is only used to decide what the UI shows/enables; the server actions
+// re-check the same rule fresh from the DB and never trust this derived value.
+function isQuestionsEditable(form: { status: WeeklyFeedbackStatusValue; opensAt: string | null }): boolean {
+  if (form.status === "DRAFT") return true;
+  if (form.status === "PUBLISHED" && form.opensAt && new Date(form.opensAt).getTime() > Date.now()) {
+    return true;
+  }
+  return false;
+}
+
 const TYPE_LABELS: Record<FeedbackQuestionTypeValue, string> = {
   RATING_5: "דירוג 1–5",
   COMPARISON_3: "השוואה לשבוע שעבר (1–3)",
@@ -512,6 +523,12 @@ export function WeeklyFeedbackTabs({
                 <p className="text-xs text-muted-foreground">
                   {draft.weekName} · {weekRangeLabel(draft.weekStartDate, draft.weekEndDate)}
                 </p>
+                {!isQuestionsEditable(draft) && (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    ניתן לערוך שאלות רק בטיוטה או במשוב מתוזמן שעדיין לא נפתח לחניכים - השאלות כאן
+                    לצפייה בלבד.
+                  </p>
+                )}
               </div>
 
               {questionActionError && <p className="text-sm text-danger">{questionActionError}</p>}
@@ -532,7 +549,7 @@ export function WeeklyFeedbackTabs({
                         const isLast = globalIndex === draft.questions.length - 1;
                         const isEditingThis = editingQuestionId === q.id;
 
-                        if (draft.status !== "DRAFT") {
+                        if (!isQuestionsEditable(draft)) {
                           return (
                             <div
                               key={q.id}
@@ -646,7 +663,7 @@ export function WeeklyFeedbackTabs({
                 ))}
               </div>
 
-              {draft.status === "DRAFT" && (
+              {isQuestionsEditable(draft) && (
                 <div className="rounded-xl border border-border bg-card p-4">
                   <h3 className="mb-2 text-sm font-bold text-card-foreground">הוספת שאלה</h3>
                   <div className="flex flex-col gap-2 sm:flex-row">

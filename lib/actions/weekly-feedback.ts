@@ -278,10 +278,24 @@ function validateQuestionInput(
   return { section: trimmedSection, prompt: trimmedPrompt };
 }
 
-// Only DRAFT forms may have their questions edited - once PUBLISHED, חניכים
-// may already be answering against the existing question set, and once
-// CLOSED the form is final. Enforced fresh from the DB on every call since
-// the admin client only holds a possibly-stale draft snapshot.
+const QUESTIONS_NOT_EDITABLE_ERROR =
+  "ניתן לערוך שאלות רק בטיוטה או במשוב מתוזמן שעדיין לא נפתח לחניכים";
+
+// Questions stay editable a bit past DRAFT: a PUBLISHED form scheduled to
+// open later (opensAt in the future) has no חניכים answering against it
+// yet, so its question set is still safe to change. Once it's actually open
+// (opensAt null - meaning immediate - or opensAt already in the past) or
+// CLOSED, editing is blocked since responses may already exist against the
+// current questions.
+function isFeedbackQuestionsEditable(form: { status: WeeklyFeedbackStatusValue; opensAt: Date | null }): boolean {
+  if (form.status === "DRAFT") return true;
+  if (form.status === "PUBLISHED" && form.opensAt !== null && form.opensAt > new Date()) return true;
+  return false;
+}
+
+// Enforced fresh from the DB on every call since the admin client only holds
+// a possibly-stale draft snapshot, never trusting the client-derived
+// availability badge.
 export async function addWeeklyFeedbackQuestion(
   formId: string,
   section: string,
@@ -295,7 +309,9 @@ export async function addWeeklyFeedbackQuestion(
     include: { questions: { select: { sortOrder: true } } },
   });
   if (!form) return { success: false, error: "טופס המשוב לא נמצא" };
-  if (form.status !== "DRAFT") return { success: false, error: "ניתן לערוך שאלות רק בטיוטה" };
+  if (!isFeedbackQuestionsEditable(form)) {
+    return { success: false, error: QUESTIONS_NOT_EDITABLE_ERROR };
+  }
 
   const validated = validateQuestionInput(section, prompt, type);
   if ("error" in validated) return { success: false, error: validated.error };
@@ -326,10 +342,12 @@ export async function updateWeeklyFeedbackQuestion(
 
   const question = await prisma.weeklyFeedbackQuestion.findUnique({
     where: { id: questionId },
-    include: { form: { select: { status: true } } },
+    include: { form: { select: { status: true, opensAt: true } } },
   });
   if (!question) return { success: false, error: "השאלה לא נמצאה" };
-  if (question.form.status !== "DRAFT") return { success: false, error: "ניתן לערוך שאלות רק בטיוטה" };
+  if (!isFeedbackQuestionsEditable(question.form)) {
+    return { success: false, error: QUESTIONS_NOT_EDITABLE_ERROR };
+  }
 
   const validated = validateQuestionInput(section, prompt, type);
   if ("error" in validated) return { success: false, error: validated.error };
@@ -347,10 +365,14 @@ export async function deleteWeeklyFeedbackQuestion(questionId: string): Promise<
 
   const question = await prisma.weeklyFeedbackQuestion.findUnique({
     where: { id: questionId },
-    include: { form: { select: { status: true, _count: { select: { questions: true } } } } },
+    include: {
+      form: { select: { status: true, opensAt: true, _count: { select: { questions: true } } } },
+    },
   });
   if (!question) return { success: false, error: "השאלה לא נמצאה" };
-  if (question.form.status !== "DRAFT") return { success: false, error: "ניתן לערוך שאלות רק בטיוטה" };
+  if (!isFeedbackQuestionsEditable(question.form)) {
+    return { success: false, error: QUESTIONS_NOT_EDITABLE_ERROR };
+  }
   if (question.form._count.questions <= 1) {
     return { success: false, error: "לא ניתן למחוק את השאלה האחרונה בטופס" };
   }
@@ -371,7 +393,9 @@ export async function reorderWeeklyFeedbackQuestions(
     include: { questions: { select: { id: true } } },
   });
   if (!form) return { success: false, error: "טופס המשוב לא נמצא" };
-  if (form.status !== "DRAFT") return { success: false, error: "ניתן לערוך שאלות רק בטיוטה" };
+  if (!isFeedbackQuestionsEditable(form)) {
+    return { success: false, error: QUESTIONS_NOT_EDITABLE_ERROR };
+  }
 
   const existingIds = new Set(form.questions.map((q) => q.id));
   const sameSet =

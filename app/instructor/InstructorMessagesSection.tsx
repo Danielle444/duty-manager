@@ -41,6 +41,15 @@ function audienceSummary(item: InstructorMessageTaskView): string {
   return `${names.length} חניכים`;
 }
 
+// Instructors have no per-recipient tracking for messages/tasks (see
+// InstructorMessageTaskRecipient revert), so archive here is a device-local
+// "hide from my own list" only - a plain array of MessageTask ids in
+// localStorage, scoped per instructor. It never syncs across devices and
+// that's an accepted limitation, same as the "new since last viewed" dot.
+function instructorMessagesArchivedKey(instructorId: string): string {
+  return `duty-manager-instructor-messages-archived-${instructorId}`;
+}
+
 // Sending is gated on canSend, which InstructorClient refreshes from the DB
 // on every session load - but the real gate is server-side, inside
 // createMessageTaskAsInstructor itself, which re-checks canSendMessages by
@@ -65,6 +74,47 @@ export function InstructorMessagesSection({
       cancelled = true;
     };
   }, []);
+
+  const [archivedIds, setArchivedIds] = useState<string[]>([]);
+
+  useEffect(() => {
+    const raw = window.localStorage.getItem(instructorMessagesArchivedKey(instructorId));
+    if (!raw) return;
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        setArchivedIds(parsed.filter((id): id is string => typeof id === "string"));
+      }
+    } catch {
+      window.localStorage.removeItem(instructorMessagesArchivedKey(instructorId));
+    }
+  }, [instructorId]);
+
+  const { activeItems, archivedItems } = useMemo(() => {
+    if (!items) return { activeItems: [], archivedItems: [] };
+    return {
+      activeItems: items.filter((item) => !archivedIds.includes(item.id)),
+      archivedItems: items.filter((item) => archivedIds.includes(item.id)),
+    };
+  }, [items, archivedIds]);
+
+  function handleArchive(messageTaskId: string) {
+    setArchivedIds((prev) => {
+      if (prev.includes(messageTaskId)) return prev;
+      const next = [...prev, messageTaskId];
+      window.localStorage.setItem(instructorMessagesArchivedKey(instructorId), JSON.stringify(next));
+      return next;
+    });
+  }
+
+  function handleRestore(messageTaskId: string) {
+    setArchivedIds((prev) => {
+      const next = prev.filter((id) => id !== messageTaskId);
+      window.localStorage.setItem(instructorMessagesArchivedKey(instructorId), JSON.stringify(next));
+      return next;
+    });
+  }
 
   const [type, setType] = useState<MessageTaskTypeValue>("MESSAGE");
   const [audience, setAudience] = useState<MessageAudienceValue>("ALL");
@@ -135,6 +185,51 @@ export function InstructorMessagesSection({
     setIsComposerOpen(true);
   }
 
+  function renderCard(item: InstructorMessageTaskView, options: { archived: boolean }) {
+    return (
+      <div key={item.id} className="rounded-xl border-2 border-border p-3">
+        <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <span
+              className={`rounded-full px-2.5 py-1 text-xs font-medium ${
+                item.type === "TASK"
+                  ? "bg-secondary text-secondary-foreground"
+                  : "bg-success-muted text-success"
+              }`}
+            >
+              {TYPE_LABELS[item.type]}
+            </span>
+            <p className="text-base font-bold text-card-foreground">{item.title}</p>
+          </div>
+          <p className="text-xs text-muted-foreground">{formatHebrewDateTime(new Date(item.createdAt))}</p>
+        </div>
+        <p className="mb-1 whitespace-pre-wrap text-sm text-muted-foreground">{item.body}</p>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="text-xs text-muted-foreground">
+            {audienceSummary(item)} · {item.createdByName ?? "מנהלת"}
+          </p>
+          {options.archived ? (
+            <Button
+              variant="secondary"
+              className="!px-3 !py-1.5 !text-sm"
+              onClick={() => handleRestore(item.id)}
+            >
+              החזרה מהארכיון
+            </Button>
+          ) : (
+            <Button
+              variant="secondary"
+              className="!px-3 !py-1.5 !text-sm"
+              onClick={() => handleArchive(item.id)}
+            >
+              העברה לארכיון
+            </Button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col gap-4">
       <div className="rounded-2xl border border-border bg-card p-4">
@@ -143,34 +238,23 @@ export function InstructorMessagesSection({
           <p className="text-base text-muted-foreground">טוען...</p>
         ) : items.length === 0 ? (
           <p className="text-base text-muted-foreground">עדיין לא נשלחו הודעות או משימות</p>
+        ) : activeItems.length === 0 ? (
+          <p className="text-base text-muted-foreground">כל ההודעות והמשימות נמצאות בארכיון</p>
         ) : (
           <div className="flex flex-col gap-3">
-            {items.map((item) => (
-              <div key={item.id} className="rounded-xl border-2 border-border p-3">
-                <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-2">
-                    <span
-                      className={`rounded-full px-2.5 py-1 text-xs font-medium ${
-                        item.type === "TASK"
-                          ? "bg-secondary text-secondary-foreground"
-                          : "bg-success-muted text-success"
-                      }`}
-                    >
-                      {TYPE_LABELS[item.type]}
-                    </span>
-                    <p className="text-base font-bold text-card-foreground">{item.title}</p>
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    {formatHebrewDateTime(new Date(item.createdAt))}
-                  </p>
-                </div>
-                <p className="mb-1 whitespace-pre-wrap text-sm text-muted-foreground">{item.body}</p>
-                <p className="text-xs text-muted-foreground">
-                  {audienceSummary(item)} · {item.createdByName ?? "מנהלת"}
-                </p>
-              </div>
-            ))}
+            {activeItems.map((item) => renderCard(item, { archived: false }))}
           </div>
+        )}
+
+        {archivedItems.length > 0 && (
+          <details className="mt-4">
+            <summary className="cursor-pointer text-sm font-semibold text-muted-foreground">
+              ארכיון ({archivedItems.length})
+            </summary>
+            <div className="mt-3 flex flex-col gap-3">
+              {archivedItems.map((item) => renderCard(item, { archived: true }))}
+            </div>
+          </details>
         )}
       </div>
 

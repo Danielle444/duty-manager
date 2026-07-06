@@ -254,7 +254,7 @@ export function RidingSlotModal({
 
             <div className="rounded-lg border border-border p-3">
               <p className="mb-2 text-sm font-semibold text-card-foreground">
-                חשיפה לתלמידים (ייכנס לתוקף בשלב מאוחר יותר)
+                חשיפה לחניכים
               </p>
               <div className="flex flex-col gap-1.5 text-sm">
                 <label className="flex items-center gap-2">
@@ -264,7 +264,7 @@ export function RidingSlotModal({
                     disabled={isPending}
                     onChange={() => handleToggleVisibility("showInstructorToStudents")}
                   />
-                  הצג מדריך/ה לתלמידים
+                  הצג מדריך/ה לחניכים
                 </label>
                 <label className="flex items-center gap-2">
                   <input
@@ -273,7 +273,7 @@ export function RidingSlotModal({
                     disabled={isPending}
                     onChange={() => handleToggleVisibility("showArenaToStudents")}
                   />
-                  הצג מגרש לתלמידים
+                  הצג מגרש לחניכים
                 </label>
                 <label className="flex items-center gap-2">
                   <input
@@ -282,7 +282,7 @@ export function RidingSlotModal({
                     disabled={isPending}
                     onChange={() => handleToggleVisibility("showSubgroupToStudents")}
                   />
-                  הצג שיוך תת-קבוצה לתלמידים
+                  הצג שיוך תת-קבוצה לחניכים
                 </label>
               </div>
             </div>

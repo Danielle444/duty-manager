@@ -2,7 +2,8 @@
 
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/auth/require-admin";
-import { dateKey } from "@/lib/dates";
+import { dateKey, formatHebrewDate, formatHebrewWeekday } from "@/lib/dates";
+import { cleanScheduleTitle } from "@/lib/schedule-title";
 import type { ActionResult } from "@/lib/actions/students";
 
 export type WeeklyFeedbackStatusValue = "DRAFT" | "PUBLISHED" | "CLOSED";
@@ -415,6 +416,129 @@ export async function reorderWeeklyFeedbackQuestions(
   );
 
   return { success: true };
+}
+
+export interface WeeklyFeedbackSuggestedQuestion {
+  section: string;
+  prompt: string;
+  type: "RATING_5" | "FREE_TEXT";
+  // Short human-readable explanation of which schedule item this came from
+  // (title/date/instructor), shown to the admin so a low-confidence match
+  // can still be judged before adding it - never shown to חניכים.
+  sourceLabel: string;
+}
+
+// Deliberately a narrow allow-list rather than a broad exclusion list (no
+// attempt to detect/skip meals, breaks, lodging, logistics, etc. by name) -
+// ScheduleItem is mostly free text with no reliable "category" field, so a
+// conservative "only suggest for things we're confident about" allow-list
+// produces far fewer bad suggestions than trying to exclude everything we
+// don't want. Riding lessons are identified structurally (ScheduleItem.
+// ridingSlot presence, not text matching) since that relation already exists
+// specifically to mark "this is a riding slot".
+const LECTURE_KEYWORD_PATTERN = /(הרצאה|מתודיקה|תיאוריה|תאוריה|שיעור עיוני)/;
+
+function scheduleItemSourceLabel(
+  item: { title: string; date: Date; instructorName: string | null },
+  cleanedTitle: string
+): string {
+  const dateLabel = `${formatHebrewWeekday(item.date)} · ${formatHebrewDate(item.date)}`;
+  const instructorPart = item.instructorName ? ` · מדריך/ה: ${item.instructorName}` : "";
+  return `${cleanedTitle} · ${dateLabel}${instructorPart}`;
+}
+
+function buildRidingSuggestion(item: {
+  title: string;
+  date: Date;
+  instructorName: string | null;
+}): WeeklyFeedbackSuggestedQuestion {
+  const cleanedTitle = cleanScheduleTitle(item.title);
+  return {
+    section: "רכיבות",
+    prompt: `כיצד היית מדרג/ת את שיעור הרכיבה: ${cleanedTitle} (${formatHebrewDate(item.date)})?`,
+    type: "RATING_5",
+    sourceLabel: scheduleItemSourceLabel(item, cleanedTitle),
+  };
+}
+
+function buildLectureSuggestions(item: {
+  title: string;
+  date: Date;
+  instructorName: string | null;
+}): WeeklyFeedbackSuggestedQuestion[] {
+  const cleanedTitle = cleanScheduleTitle(item.title);
+  const sourceLabel = scheduleItemSourceLabel(item, cleanedTitle);
+  const dateLabel = formatHebrewDate(item.date);
+  return [
+    {
+      section: "הרצאות ושיעורים",
+      prompt: `כיצד היית מדרג/ת את: ${cleanedTitle} (${dateLabel})?`,
+      type: "RATING_5",
+      sourceLabel,
+    },
+    {
+      section: "הרצאות ושיעורים",
+      prompt: `הערות על ${cleanedTitle} (${dateLabel})`,
+      type: "FREE_TEXT",
+      sourceLabel,
+    },
+  ];
+}
+
+export type WeeklyFeedbackSuggestionsResult =
+  | { success: true; suggestions: WeeklyFeedbackSuggestedQuestion[] }
+  | { success: false; error: string };
+
+// Read-only - never writes a question to the DB. Only offered for forms
+// whose questions are still editable (same rule as add/edit/delete/reorder
+// above), re-checked fresh here rather than trusted from the client.
+// Candidates already matching an existing question's prompt (exact text) are
+// filtered out, so re-running this after adding some suggestions naturally
+// shows only what's left, and an admin can't double-add the same one.
+export async function suggestWeeklyFeedbackQuestionsFromSchedule(
+  formId: string
+): Promise<WeeklyFeedbackSuggestionsResult> {
+  await requireAdmin();
+
+  const form = await prisma.weeklyFeedbackForm.findUnique({
+    where: { id: formId },
+    include: {
+      questions: { select: { prompt: true } },
+      weeklySchedule: {
+        include: {
+          items: {
+            orderBy: [{ date: "asc" }, { startTime: "asc" }],
+            include: { ridingSlot: true },
+          },
+        },
+      },
+    },
+  });
+  if (!form) return { success: false, error: "טופס המשוב לא נמצא" };
+  if (!isFeedbackQuestionsEditable(form)) {
+    return { success: false, error: QUESTIONS_NOT_EDITABLE_ERROR };
+  }
+
+  const candidates: WeeklyFeedbackSuggestedQuestion[] = [];
+  for (const item of form.weeklySchedule.items) {
+    if (item.ridingSlot) {
+      candidates.push(buildRidingSuggestion(item));
+      continue;
+    }
+    if (LECTURE_KEYWORD_PATTERN.test(cleanScheduleTitle(item.title))) {
+      candidates.push(...buildLectureSuggestions(item));
+    }
+  }
+
+  const existingPrompts = new Set(form.questions.map((q) => q.prompt));
+  const seenPrompts = new Set<string>();
+  const suggestions = candidates.filter((s) => {
+    if (existingPrompts.has(s.prompt) || seenPrompts.has(s.prompt)) return false;
+    seenPrompts.add(s.prompt);
+    return true;
+  });
+
+  return { success: true, suggestions };
 }
 
 // Publishing is one-way (DRAFT -> PUBLISHED); questions become read-only

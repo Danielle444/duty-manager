@@ -12,6 +12,7 @@ import {
   listWeeklyFeedbackForms,
   publishWeeklyFeedbackForm,
   reorderWeeklyFeedbackQuestions,
+  suggestWeeklyFeedbackQuestionsFromSchedule,
   updateWeeklyFeedbackQuestion,
   updateWeeklyFeedbackSchedule,
   type EditableFeedbackQuestionTypeValue,
@@ -26,6 +27,7 @@ import {
   type WeeklyFeedbackResults,
   type WeeklyFeedbackStatusValue,
   type WeeklyFeedbackSubmittedTrainee,
+  type WeeklyFeedbackSuggestedQuestion,
   type WeeklyFeedbackTraineeResponse,
 } from "@/lib/actions/weekly-feedback";
 import type { WeeklyScheduleOption } from "@/lib/actions/weekly-schedule";
@@ -277,6 +279,13 @@ export function WeeklyFeedbackTabs({
 
   const [questionActionError, setQuestionActionError] = useState<string | null>(null);
 
+  // null = not loaded yet (button not clicked), [] = loaded and empty.
+  const [suggestions, setSuggestions] = useState<WeeklyFeedbackSuggestedQuestion[] | null>(null);
+  const [isSuggestionsLoading, setIsSuggestionsLoading] = useState(false);
+  const [suggestionsError, setSuggestionsError] = useState<string | null>(null);
+  const [selectedSuggestionIndexes, setSelectedSuggestionIndexes] = useState<Set<number>>(new Set());
+  const [isAddingSuggestions, startAddSuggestionsTransition] = useTransition();
+
   async function refreshDraft() {
     if (!selectedFormId) return;
     const fresh = await getWeeklyFeedbackDraftForAdmin(selectedFormId);
@@ -297,6 +306,62 @@ export function WeeklyFeedbackTabs({
       setNewPrompt("");
       setNewType("RATING_5");
       await refreshDraft();
+    });
+  }
+
+  function handleLoadSuggestions() {
+    if (!draft) return;
+    setSuggestionsError(null);
+    setIsSuggestionsLoading(true);
+    suggestWeeklyFeedbackQuestionsFromSchedule(draft.id).then((result) => {
+      setIsSuggestionsLoading(false);
+      if (!result.success) {
+        setSuggestionsError(result.error);
+        setSuggestions(null);
+        return;
+      }
+      setSuggestions(result.suggestions);
+      setSelectedSuggestionIndexes(new Set());
+    });
+  }
+
+  function toggleSuggestionSelected(index: number) {
+    setSelectedSuggestionIndexes((prev) => {
+      const next = new Set(prev);
+      if (next.has(index)) {
+        next.delete(index);
+      } else {
+        next.add(index);
+      }
+      return next;
+    });
+  }
+
+  // Adds the selected suggestions one at a time (not in parallel) by
+  // reusing addWeeklyFeedbackQuestion as-is - sequential calls keep its own
+  // maxSortOrder-from-current-questions logic correct, which a parallel
+  // Promise.all could race.
+  function handleAddSelectedSuggestions() {
+    if (!draft || !suggestions) return;
+    const toAdd = suggestions.filter((_, i) => selectedSuggestionIndexes.has(i));
+    if (toAdd.length === 0) return;
+    setSuggestionsError(null);
+    startAddSuggestionsTransition(async () => {
+      for (const suggestion of toAdd) {
+        const result = await addWeeklyFeedbackQuestion(
+          draft.id,
+          suggestion.section,
+          suggestion.prompt,
+          suggestion.type
+        );
+        if (!result.success) {
+          setSuggestionsError(result.error ?? "אירעה שגיאה בהוספת אחת ההצעות");
+          break;
+        }
+      }
+      await refreshDraft();
+      setSuggestions(null);
+      setSelectedSuggestionIndexes(new Set());
     });
   }
 
@@ -902,6 +967,63 @@ export function WeeklyFeedbackTabs({
                     </Button>
                   </div>
                   {addQuestionError && <p className="mt-2 text-sm text-danger">{addQuestionError}</p>}
+                </div>
+              )}
+
+              {isQuestionsEditable(draft) && (
+                <div className="rounded-xl border border-border bg-card p-4">
+                  <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                    <h3 className="text-sm font-bold text-card-foreground">הצעת שאלות מהלו&quot;ז</h3>
+                    <Button
+                      variant="secondary"
+                      className="!px-3 !py-1.5 !text-sm"
+                      disabled={isSuggestionsLoading}
+                      onClick={handleLoadSuggestions}
+                    >
+                      {isSuggestionsLoading ? "טוען הצעות..." : "הצעת שאלות מהלו״ז"}
+                    </Button>
+                  </div>
+
+                  {suggestionsError && <p className="mb-2 text-sm text-danger">{suggestionsError}</p>}
+
+                  {suggestions !== null &&
+                    (suggestions.length === 0 ? (
+                      <p className="text-sm text-muted-foreground">
+                        לא נמצאו הצעות שאלות מהלו&quot;ז לשבוע זה
+                      </p>
+                    ) : (
+                      <div className="flex flex-col gap-2">
+                        {suggestions.map((s, i) => (
+                          <label
+                            key={i}
+                            className="flex items-start gap-2 rounded-lg border border-border p-2 text-sm"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={selectedSuggestionIndexes.has(i)}
+                              onChange={() => toggleSuggestionSelected(i)}
+                              className="mt-1"
+                            />
+                            <span className="min-w-0 flex-1">
+                              <span className="block font-semibold text-card-foreground">{s.prompt}</span>
+                              <span className="block text-xs text-muted-foreground">
+                                {s.section} · {TYPE_LABELS[s.type]}
+                              </span>
+                              <span className="block text-xs text-muted-foreground">מקור: {s.sourceLabel}</span>
+                            </span>
+                          </label>
+                        ))}
+                        <Button
+                          className="self-start"
+                          disabled={isAddingSuggestions || selectedSuggestionIndexes.size === 0}
+                          onClick={handleAddSelectedSuggestions}
+                        >
+                          {isAddingSuggestions
+                            ? "מוסיף..."
+                            : `הוספת הנבחרות (${selectedSuggestionIndexes.size})`}
+                        </Button>
+                      </div>
+                    ))}
                 </div>
               )}
             </>

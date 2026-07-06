@@ -390,3 +390,69 @@ export async function reorderWeeklyFeedbackQuestions(
 
   return { success: true };
 }
+
+// Publishing is one-way (DRAFT -> PUBLISHED); questions become read-only
+// from this point on since חניכים may start answering against them.
+// opensAt/closesAt are optional here - when omitted (undefined) the form's
+// already-saved values (e.g. via updateWeeklyFeedbackSchedule while still a
+// draft) are kept as-is; when passed (including explicit null) they
+// overwrite the stored values, same validation as updateWeeklyFeedbackSchedule.
+export async function publishWeeklyFeedbackForm(
+  formId: string,
+  opensAt?: string | null,
+  closesAt?: string | null
+): Promise<ActionResult> {
+  await requireAdmin();
+
+  const form = await prisma.weeklyFeedbackForm.findUnique({
+    where: { id: formId },
+    include: { _count: { select: { questions: true } } },
+  });
+  if (!form) return { success: false, error: "טופס המשוב לא נמצא" };
+  if (form.status !== "DRAFT") return { success: false, error: "ניתן לפרסם רק טיוטה" };
+  if (form._count.questions === 0) {
+    return { success: false, error: "לא ניתן לפרסם משוב ללא שאלות" };
+  }
+
+  const opensAtDate = opensAt === undefined ? form.opensAt : opensAt ? new Date(opensAt) : null;
+  const closesAtDate = closesAt === undefined ? form.closesAt : closesAt ? new Date(closesAt) : null;
+  if (opensAtDate && Number.isNaN(opensAtDate.getTime())) {
+    return { success: false, error: "תאריך פתיחה לא תקין" };
+  }
+  if (closesAtDate && Number.isNaN(closesAtDate.getTime())) {
+    return { success: false, error: "תאריך סגירה לא תקין" };
+  }
+  if (opensAtDate && closesAtDate && closesAtDate <= opensAtDate) {
+    return { success: false, error: "תאריך הסגירה חייב להיות אחרי תאריך הפתיחה" };
+  }
+
+  await prisma.weeklyFeedbackForm.update({
+    where: { id: formId },
+    data: {
+      status: "PUBLISHED",
+      publishedAt: new Date(),
+      opensAt: opensAtDate,
+      closesAt: closesAtDate,
+    },
+  });
+
+  return { success: true };
+}
+
+// Closing is one-way (PUBLISHED -> CLOSED) and never deletes anything -
+// existing responses/questions are kept, only the form's own status/closedAt
+// change, so the data remains available for a future results dashboard.
+export async function closeWeeklyFeedbackForm(formId: string): Promise<ActionResult> {
+  await requireAdmin();
+
+  const form = await prisma.weeklyFeedbackForm.findUnique({ where: { id: formId } });
+  if (!form) return { success: false, error: "טופס המשוב לא נמצא" };
+  if (form.status !== "PUBLISHED") return { success: false, error: "ניתן לסגור רק משוב שפורסם" };
+
+  await prisma.weeklyFeedbackForm.update({
+    where: { id: formId },
+    data: { status: "CLOSED", closedAt: new Date() },
+  });
+
+  return { success: true };
+}

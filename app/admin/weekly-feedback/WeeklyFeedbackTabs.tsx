@@ -4,10 +4,12 @@ import { useEffect, useMemo, useState, useTransition } from "react";
 import { Button } from "@/lib/components/Button";
 import {
   addWeeklyFeedbackQuestion,
+  closeWeeklyFeedbackForm,
   createWeeklyFeedbackDraft,
   deleteWeeklyFeedbackQuestion,
   getWeeklyFeedbackDraftForAdmin,
   listWeeklyFeedbackForms,
+  publishWeeklyFeedbackForm,
   reorderWeeklyFeedbackQuestions,
   updateWeeklyFeedbackQuestion,
   updateWeeklyFeedbackSchedule,
@@ -29,17 +31,32 @@ const TAB_LABELS: Record<Tab, string> = {
   schedule: "הגדרות פתיחה וסגירה",
 };
 
-const STATUS_LABELS: Record<WeeklyFeedbackStatusValue, string> = {
-  DRAFT: "טיוטה",
-  PUBLISHED: "פורסם",
-  CLOSED: "סגור",
-};
+interface AvailabilityInput {
+  status: WeeklyFeedbackStatusValue;
+  opensAt: string | null;
+  closesAt: string | null;
+}
 
-const STATUS_BADGE_CLASSES: Record<WeeklyFeedbackStatusValue, string> = {
-  DRAFT: "bg-secondary text-secondary-foreground",
-  PUBLISHED: "bg-success-muted text-success",
-  CLOSED: "bg-muted text-muted-foreground",
-};
+// Derives the trainee-facing availability from status + the schedule
+// window, rather than status alone - a PUBLISHED form can still be
+// scheduled-for-later, currently open, or past its closesAt without ever
+// having been manually closed.
+function getAvailabilityInfo(form: AvailabilityInput): { label: string; className: string } {
+  if (form.status === "DRAFT") {
+    return { label: "טיוטה", className: "bg-secondary text-secondary-foreground" };
+  }
+  if (form.status === "CLOSED") {
+    return { label: "סגור", className: "bg-muted text-muted-foreground" };
+  }
+  const now = Date.now();
+  if (form.opensAt && new Date(form.opensAt).getTime() > now) {
+    return { label: "מתוזמן", className: "bg-warning-muted text-warning" };
+  }
+  if (form.closesAt && new Date(form.closesAt).getTime() < now) {
+    return { label: "הסתיים", className: "bg-muted text-muted-foreground" };
+  }
+  return { label: "פתוח לחניכים", className: "bg-success-muted text-success" };
+}
 
 const TYPE_LABELS: Record<FeedbackQuestionTypeValue, string> = {
   RATING_5: "דירוג 1–5",
@@ -65,11 +82,10 @@ function toDateTimeLocalValue(iso: string | null): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-function StatusBadge({ status }: { status: WeeklyFeedbackStatusValue }) {
+function AvailabilityBadge({ form }: { form: AvailabilityInput }) {
+  const info = getAvailabilityInfo(form);
   return (
-    <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${STATUS_BADGE_CLASSES[status]}`}>
-      {STATUS_LABELS[status]}
-    </span>
+    <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${info.className}`}>{info.label}</span>
   );
 }
 
@@ -296,6 +312,60 @@ export function WeeklyFeedbackTabs({
     });
   }
 
+  const [publishError, setPublishError] = useState<string | null>(null);
+  const [publishSuccess, setPublishSuccess] = useState<string | null>(null);
+  const [isPublishPending, startPublishTransition] = useTransition();
+
+  const [closeError, setCloseError] = useState<string | null>(null);
+  const [closeSuccess, setCloseSuccess] = useState<string | null>(null);
+  const [isClosePending, startCloseTransition] = useTransition();
+
+  function handlePublish() {
+    if (!draft) return;
+    setPublishError(null);
+    setPublishSuccess(null);
+    if (draft.questions.length === 0) {
+      setPublishError("לא ניתן לפרסם משוב ללא שאלות");
+      return;
+    }
+
+    const opensAtIso = opensAtInput ? new Date(opensAtInput).toISOString() : null;
+    const closesAtIso = closesAtInput ? new Date(closesAtInput).toISOString() : null;
+    if (opensAtIso && closesAtIso && closesAtIso <= opensAtIso) {
+      setPublishError("תאריך הסגירה חייב להיות אחרי תאריך הפתיחה");
+      return;
+    }
+
+    startPublishTransition(async () => {
+      const result = await publishWeeklyFeedbackForm(draft.id, opensAtIso, closesAtIso);
+      if (!result.success) {
+        setPublishError(result.error ?? "אירעה שגיאה");
+        return;
+      }
+      const fresh = await getWeeklyFeedbackDraftForAdmin(draft.id);
+      setDraft(fresh);
+      await refreshForms();
+      setPublishSuccess("המשוב פורסם בהצלחה");
+    });
+  }
+
+  function handleClose() {
+    if (!draft) return;
+    setCloseError(null);
+    setCloseSuccess(null);
+    startCloseTransition(async () => {
+      const result = await closeWeeklyFeedbackForm(draft.id);
+      if (!result.success) {
+        setCloseError(result.error ?? "אירעה שגיאה");
+        return;
+      }
+      const fresh = await getWeeklyFeedbackDraftForAdmin(draft.id);
+      setDraft(fresh);
+      await refreshForms();
+      setCloseSuccess("המשוב נסגר");
+    });
+  }
+
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap gap-2">
@@ -355,7 +425,7 @@ export function WeeklyFeedbackTabs({
               forms.map((form) => (
                 <div key={form.id} className="rounded-xl border border-border bg-card p-4">
                   <div className="mb-1 flex flex-wrap items-center gap-2">
-                    <StatusBadge status={form.status} />
+                    <AvailabilityBadge form={form} />
                     <p className="text-base font-bold text-card-foreground">{form.title}</p>
                   </div>
                   <p className="mb-2 text-xs text-muted-foreground">
@@ -402,7 +472,7 @@ export function WeeklyFeedbackTabs({
             <>
               <div className="rounded-xl border border-border bg-card p-4">
                 <div className="mb-1 flex flex-wrap items-center gap-2">
-                  <StatusBadge status={draft.status} />
+                  <AvailabilityBadge form={draft} />
                   <p className="text-base font-bold text-card-foreground">{draft.title}</p>
                 </div>
                 <p className="text-xs text-muted-foreground">
@@ -592,7 +662,7 @@ export function WeeklyFeedbackTabs({
           ) : (
             <div className="rounded-xl border border-border bg-card p-4">
               <div className="mb-3 flex flex-wrap items-center gap-2">
-                <StatusBadge status={draft.status} />
+                <AvailabilityBadge form={draft} />
                 <p className="text-base font-bold text-card-foreground">{draft.title}</p>
               </div>
               {draft.status === "CLOSED" ? (
@@ -621,9 +691,31 @@ export function WeeklyFeedbackTabs({
                   </label>
                   {scheduleError && <p className="text-sm text-danger">{scheduleError}</p>}
                   {scheduleSuccess && <p className="text-sm text-success">{scheduleSuccess}</p>}
-                  <Button disabled={isSchedulePending} onClick={handleSaveSchedule} className="self-start">
-                    {isSchedulePending ? "שומר..." : "שמירה"}
-                  </Button>
+                  <div className="flex flex-wrap gap-2">
+                    <Button disabled={isSchedulePending} onClick={handleSaveSchedule}>
+                      {isSchedulePending ? "שומר..." : "שמירה"}
+                    </Button>
+                    {draft.status === "DRAFT" && (
+                      <Button
+                        disabled={isPublishPending || draft.questions.length === 0}
+                        onClick={handlePublish}
+                      >
+                        {isPublishPending ? "מפרסם..." : "פרסום"}
+                      </Button>
+                    )}
+                    {draft.status === "PUBLISHED" && (
+                      <Button variant="danger" disabled={isClosePending} onClick={handleClose}>
+                        {isClosePending ? "סוגר..." : "סגירה"}
+                      </Button>
+                    )}
+                  </div>
+                  {draft.status === "DRAFT" && draft.questions.length === 0 && (
+                    <p className="text-sm text-warning">אין שאלות בטופס - לא ניתן לפרסם</p>
+                  )}
+                  {publishError && <p className="text-sm text-danger">{publishError}</p>}
+                  {publishSuccess && <p className="text-sm text-success">{publishSuccess}</p>}
+                  {closeError && <p className="text-sm text-danger">{closeError}</p>}
+                  {closeSuccess && <p className="text-sm text-success">{closeSuccess}</p>}
                 </div>
               )}
             </div>

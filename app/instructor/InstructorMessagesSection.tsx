@@ -28,9 +28,17 @@ const TYPE_LABELS: Record<MessageTaskTypeValue, string> = {
   TASK: "משימה",
 };
 
+// SPECIFIC shows actual trainee names (comma-separated for 2-3, a compact
+// "N חניכים" count for 4+) instead of a generic "חניכים ספציפיים" label -
+// instructors already see this message's full content/audience regardless of
+// sender, so this isn't a new privacy boundary.
 function audienceSummary(item: InstructorMessageTaskView): string {
+  if (item.audience === "ALL") return "כל החניכים";
   if (item.audience === "GROUP") return `קבוצה ${item.groupName ?? "-"}`;
-  return AUDIENCE_LABELS[item.audience];
+  const names = item.recipientNames;
+  if (names.length === 0) return "אין נמענים";
+  if (names.length <= 3) return names.join(", ");
+  return `${names.length} חניכים`;
 }
 
 // Sending is gated on canSend, which InstructorClient refreshes from the DB

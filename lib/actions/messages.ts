@@ -189,6 +189,10 @@ export interface MessageTaskListItem {
   totalCount: number;
   readCount: number;
   completedCount: number;
+  // Only meaningful for audience=SPECIFIC (used to show actual trainee
+  // names instead of a generic label) - populated regardless of audience for
+  // a simpler, uniform query, but ALL/GROUP callers just ignore it.
+  recipientNames: string[];
 }
 
 export async function listMessageTasksForAdmin(
@@ -200,7 +204,9 @@ export async function listMessageTasksForAdmin(
     where: includeArchived ? undefined : { isArchived: false },
     orderBy: { createdAt: "desc" },
     include: {
-      recipients: { select: { readAt: true, completedAt: true } },
+      recipients: {
+        select: { readAt: true, completedAt: true, student: { select: { fullName: true } } },
+      },
     },
   });
 
@@ -217,6 +223,7 @@ export async function listMessageTasksForAdmin(
     totalCount: item.recipients.length,
     readCount: item.recipients.filter((r) => r.readAt !== null).length,
     completedCount: item.recipients.filter((r) => r.completedAt !== null).length,
+    recipientNames: item.recipients.map((r) => r.student.fullName),
   }));
 }
 
@@ -257,6 +264,12 @@ export interface InstructorMessageTaskView {
   groupName: string | null;
   createdByName: string | null;
   createdAt: string;
+  // Only meaningful for audience=SPECIFIC (shows actual trainee names
+  // instead of a generic label) - instructors already see this message's
+  // full content/audience regardless of sender, so this is not a new
+  // privacy boundary. No per-recipient read/completed status is exposed
+  // here (that stays admin-only via getMessageTaskRecipients).
+  recipientNames: string[];
 }
 
 // Read-only, no permission gate - same convention as getHorseAssignments,
@@ -277,6 +290,7 @@ export async function getMessageTasksForInstructorView(): Promise<InstructorMess
       groupName: true,
       createdByName: true,
       createdAt: true,
+      recipients: { select: { student: { select: { fullName: true } } } },
     },
   });
 
@@ -289,6 +303,7 @@ export async function getMessageTasksForInstructorView(): Promise<InstructorMess
     groupName: m.groupName,
     createdByName: m.createdByName,
     createdAt: m.createdAt.toISOString(),
+    recipientNames: m.recipients.map((r) => r.student.fullName),
   }));
 }
 

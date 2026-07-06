@@ -27,15 +27,16 @@ const TYPE_LABELS: Record<MessageTaskTypeValue, string> = {
   TASK: "משימה",
 };
 
-const AUDIENCE_LABELS: Record<MessageAudienceValue, string> = {
-  ALL: "כל החניכים הפעילים",
-  GROUP: "קבוצה",
-  SPECIFIC: "חניכים ספציפיים",
-};
-
+// SPECIFIC shows actual trainee names (comma-separated for 2-3, a compact
+// "N חניכים" count for 4+) instead of a generic "חניכים ספציפיים" label -
+// full names remain viewable either way via "צפייה בסטטוס".
 function audienceSummary(item: MessageTaskListItem): string {
+  if (item.audience === "ALL") return "כל החניכים";
   if (item.audience === "GROUP") return `קבוצה ${item.groupName ?? "-"}`;
-  return AUDIENCE_LABELS[item.audience];
+  const names = item.recipientNames;
+  if (names.length === 0) return "אין נמענים";
+  if (names.length <= 3) return names.join(", ");
+  return `${names.length} חניכים`;
 }
 
 export function MessagesClient({
@@ -224,11 +225,11 @@ export function MessagesClient({
               <div className="flex flex-wrap items-center gap-3">
                 {item.type === "MESSAGE" ? (
                   <span className="text-muted-foreground">
-                    נקראו {item.readCount}/{item.totalCount}
+                    נקרא: {item.readCount} מתוך {item.totalCount}
                   </span>
                 ) : (
                   <span className="text-muted-foreground">
-                    הושלמו {item.completedCount}/{item.totalCount}
+                    הושלם: {item.completedCount} מתוך {item.totalCount}
                   </span>
                 )}
                 <Button variant="ghost" className="!px-2 !py-1" onClick={() => openDrillDown(item)}>
@@ -412,25 +413,34 @@ export function MessagesClient({
                 className="flex items-center justify-between gap-2 border-b border-border py-2 text-sm last:border-0"
               >
                 <span className="text-card-foreground">{r.studentFullName}</span>
-                {drillDownTask?.type === "TASK" ? (
-                  <span
-                    className={`rounded-full px-2 py-0.5 text-xs font-medium ${
-                      r.completedAt
-                        ? "bg-success-muted text-success"
-                        : "bg-muted text-muted-foreground"
-                    }`}
-                  >
-                    {r.completedAt ? "הושלמה" : "פתוחה"}
-                  </span>
-                ) : (
-                  <span
-                    className={`rounded-full px-2 py-0.5 text-xs font-medium ${
-                      r.readAt ? "bg-success-muted text-success" : "bg-muted text-muted-foreground"
-                    }`}
-                  >
-                    {r.readAt ? "נקראה" : "לא נקראה"}
-                  </span>
-                )}
+                <div className="flex flex-col items-end gap-0.5">
+                  {drillDownTask?.type === "TASK" ? (
+                    <span
+                      className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                        r.completedAt
+                          ? "bg-success-muted text-success"
+                          : "bg-muted text-muted-foreground"
+                      }`}
+                    >
+                      {r.completedAt ? "הושלמה" : "פתוחה"}
+                    </span>
+                  ) : (
+                    <span
+                      className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                        r.readAt ? "bg-success-muted text-success" : "bg-muted text-muted-foreground"
+                      }`}
+                    >
+                      {r.readAt ? "נקראה" : "לא נקראה"}
+                    </span>
+                  )}
+                  {(drillDownTask?.type === "TASK" ? r.completedAt : r.readAt) && (
+                    <span className="text-[11px] text-muted-foreground">
+                      {formatHebrewDateTime(
+                        new Date((drillDownTask?.type === "TASK" ? r.completedAt : r.readAt)!)
+                      )}
+                    </span>
+                  )}
+                </div>
               </div>
             ))}
           </div>

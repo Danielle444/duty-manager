@@ -13,6 +13,10 @@ import {
   type InstructorSearchResult,
 } from "@/lib/actions/instructor-auth";
 import { getWeeklyScheduleSelection } from "@/lib/actions/weekly-schedule";
+import {
+  getRidingAssignmentSummaryForInstructor,
+  type InstructorRidingAssignmentSummary,
+} from "@/lib/actions/riding-assignment-summary";
 import { InstructorScheduleSection } from "@/app/instructor/InstructorScheduleSection";
 import { InstructorDutiesSection } from "@/app/instructor/InstructorDutiesSection";
 import { InstructorHorsesSection } from "@/app/instructor/InstructorHorsesSection";
@@ -120,6 +124,7 @@ export function InstructorClient({
   const [weeks, setWeeks] = useState<WeekOption[] | null>(null);
   const [selectedWeekId, setSelectedWeekId] = useState<string | null>(null);
   const [dayFilter, setDayFilter] = useState<string | "all">("all");
+  const [ridingSummary, setRidingSummary] = useState<InstructorRidingAssignmentSummary | null>(null);
 
   // Recomputed every minute (not just once at mount) so "today" rolls over
   // to the new local day on its own if the app is left open across
@@ -175,6 +180,27 @@ export function InstructorClient({
       cancelled = true;
     };
   }, [session]);
+
+  useEffect(() => {
+    if (!session || !weeks) return;
+    const currentWeek =
+      weeks.find((w) => w.startDate <= getLocalDateKey() && getLocalDateKey() <= w.endDate) ?? null;
+    if (!currentWeek) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setRidingSummary(null);
+      return;
+    }
+    let cancelled = false;
+    getRidingAssignmentSummaryForInstructor(session.id, currentWeek.startDate, currentWeek.endDate).then(
+      (summary) => {
+        if (!cancelled) setRidingSummary(summary);
+      }
+    );
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.id, weeks]);
 
   useEffect(() => {
     if (selected || query.trim().length < 2) return;
@@ -323,6 +349,16 @@ export function InstructorClient({
               <p className="text-xl font-bold text-card-foreground">
                 {formatHebrewWeekday(parseDateKey(todayKey))} · {formatHebrewDate(parseDateKey(todayKey))}
               </p>
+              {ridingSummary && (
+                <p className="mt-2 text-xs text-muted-foreground">
+                  רכיבות משובצות השבוע:{" "}
+                  <span className="font-semibold text-card-foreground">
+                    {ridingSummary.totalAssigned}
+                  </span>{" "}
+                  · היום: {ridingSummary.todayAssigned} · עתידיות: {ridingSummary.upcomingAssigned} · עברו:{" "}
+                  {ridingSummary.pastAssigned}
+                </p>
+              )}
             </div>
 
             <div className="rounded-xl border border-border bg-card p-3">

@@ -1,14 +1,20 @@
 import { prisma } from "@/lib/prisma";
 import { InstructorsClient } from "@/app/admin/instructors/InstructorsClient";
 import { requireAdmin } from "@/lib/auth/require-admin";
+import { getRidingAssignmentSummaryForAllInstructors } from "@/lib/actions/riding-assignment-summary";
 
 export const dynamic = "force-dynamic";
 
 export default async function InstructorsPage() {
   await requireAdmin();
-  const instructors = await prisma.instructor.findMany({
-    orderBy: [{ isActive: "desc" }, { fullName: "asc" }],
-  });
+  const [instructors, ridingSummaries] = await Promise.all([
+    prisma.instructor.findMany({
+      orderBy: [{ isActive: "desc" }, { fullName: "asc" }],
+    }),
+    getRidingAssignmentSummaryForAllInstructors(),
+  ]);
+
+  const ridingSummaryByInstructorId = new Map(ridingSummaries.map((s) => [s.instructorId, s]));
 
   return (
     <div className="flex flex-col gap-4">
@@ -28,6 +34,13 @@ export default async function InstructorsPage() {
           canSendMessages: i.canSendMessages,
           canEditAttendance: i.canEditAttendance,
           canEditRidingNotes: i.canEditRidingNotes,
+          ridingSummary: ridingSummaryByInstructorId.get(i.id) ?? {
+            instructorId: i.id,
+            totalAssigned: 0,
+            pastAssigned: 0,
+            todayAssigned: 0,
+            upcomingAssigned: 0,
+          },
         }))}
       />
     </div>

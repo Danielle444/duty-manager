@@ -15,6 +15,13 @@ import {
 import { maskIdentityNumber } from "@/lib/format";
 import { formatPhoneDisplay } from "@/lib/phone-format";
 
+interface InstructorRidingSummary {
+  totalAssigned: number;
+  pastAssigned: number;
+  todayAssigned: number;
+  upcomingAssigned: number;
+}
+
 interface InstructorRow {
   id: string;
   firstName: string;
@@ -27,6 +34,7 @@ interface InstructorRow {
   canSendMessages: boolean;
   canEditAttendance: boolean;
   canEditRidingNotes: boolean;
+  ridingSummary: InstructorRidingSummary;
 }
 
 export function InstructorsClient({ instructors }: { instructors: InstructorRow[] }) {
@@ -124,6 +132,7 @@ export function InstructorsClient({ instructors }: { instructors: InstructorRow[
               <th className="px-4 py-3 text-right font-medium">שליחת הודעות ומשימות</th>
               <th className="px-4 py-3 text-right font-medium">עריכת נוכחות</th>
               <th className="px-4 py-3 text-right font-medium">עריכת הערות רכיבה</th>
+              <th className="px-4 py-3 text-right font-medium">שיבוצי רכיבה (סה&quot;כ)</th>
               <th className="px-4 py-3 text-right font-medium">פעולות</th>
             </tr>
           </thead>
@@ -194,6 +203,15 @@ export function InstructorsClient({ instructors }: { instructors: InstructorRow[
                     title="יכול/ה לערוך הערות רכיבה"
                   />
                 </td>
+                <td
+                  className="px-4 py-3 text-muted-foreground"
+                  title={`היום: ${instructor.ridingSummary.todayAssigned} · עתידיות: ${instructor.ridingSummary.upcomingAssigned} · עברו: ${instructor.ridingSummary.pastAssigned}`}
+                >
+                  <span className="font-semibold text-card-foreground">
+                    {instructor.ridingSummary.totalAssigned}
+                  </span>{" "}
+                  שיבוצים
+                </td>
                 <td className="px-4 py-3">
                   <div className="flex flex-wrap gap-2">
                     <Button
@@ -220,7 +238,7 @@ export function InstructorsClient({ instructors }: { instructors: InstructorRow[
             ))}
             {filteredInstructors.length === 0 && (
               <tr>
-                <td colSpan={9} className="px-4 py-8 text-center text-muted-foreground">
+                <td colSpan={10} className="px-4 py-8 text-center text-muted-foreground">
                   {instructors.length === 0 ? "אין מדריכים עדיין" : "אין מדריכים התואמים את החיפוש"}
                 </td>
               </tr>

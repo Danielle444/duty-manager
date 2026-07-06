@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
 import { requireAdmin } from "@/lib/auth/require-admin";
 import type { ActionResult } from "@/lib/actions/students";
+import { sendNewMessagePushToStudents } from "@/lib/actions/push";
 
 const messageTaskTypeSchema = z.enum(["MESSAGE", "TASK"]);
 const messageAudienceSchema = z.enum(["ALL", "GROUP", "SPECIFIC"]);
@@ -95,6 +96,14 @@ async function createMessageTaskInternal(
       },
     },
   });
+
+  // Best-effort push fanout - must never fail message/task creation, which
+  // has already succeeded above by this point.
+  try {
+    await sendNewMessagePushToStudents(resolved.ids);
+  } catch (error) {
+    console.error("Push fanout failed for new message/task", error);
+  }
 
   revalidatePath("/admin/messages");
   return { success: true };

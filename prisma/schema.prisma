@@ -538,3 +538,26 @@ model Notification {
   @@index([instructorId])
   @@map("notifications")
 }
+
+// Web Push subscriptions (VAPID). v1 only ever creates rows with
+// recipientRole=STUDENT - instructorId/recipientRole=INSTRUCTOR are modeled
+// for shape-consistency with Notification, but nothing subscribes or sends to
+// them yet (instructors coordinate over a separate WhatsApp group - see the
+// InstructorMessageTaskRecipient revert). endpoint is unique so a browser
+// re-subscribing (endpoints rotate periodically) updates in place instead of
+// piling up dead rows.
+model PushSubscription {
+  id            String                    @id @default(cuid())
+  recipientRole NotificationRecipientRole
+  studentId     String?
+  instructorId  String?
+  endpoint      String                    @unique
+  p256dh        String
+  auth          String
+  userAgent     String?
+  createdAt     DateTime                  @default(now())
+
+  @@index([studentId])
+  @@index([instructorId])
+  @@map("push_subscriptions")
+}

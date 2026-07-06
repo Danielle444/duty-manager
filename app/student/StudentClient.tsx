@@ -17,6 +17,7 @@ import { updateOwnPrivateHorseName } from "@/lib/actions/horses";
 import { ScheduleSection } from "@/app/student/ScheduleSection";
 import { DutiesSection } from "@/app/student/DutiesSection";
 import { StudentMessagesSection } from "@/app/student/StudentMessagesSection";
+import { StudentPushSection } from "@/app/student/StudentPushSection";
 import { StudentMessagesSummary } from "@/app/student/StudentMessagesSummary";
 import { StudentAttendanceNotice } from "@/app/student/StudentAttendanceNotice";
 import { ContactsSection } from "@/lib/components/ContactsSection";
@@ -653,6 +654,7 @@ export function StudentClient() {
                   </Button>
                 ))}
             </div>
+            <StudentPushSection studentId={session.id} />
             <Button variant="secondary" onClick={handleSwitchStudent} className="!py-3 !text-base">
               החלפת חניך/ה
             </Button>

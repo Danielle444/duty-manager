@@ -15,7 +15,7 @@ import {
 import { cleanScheduleTitle } from "@/lib/schedule-title";
 import { getScheduleGroupColorClass } from "@/lib/schedule-group-colors";
 import { getHorseDisplayInfo } from "@/lib/horse-info";
-import { groupByGroupAndSubgroup } from "@/lib/attendance-ui";
+import { groupByGroupAndSubgroup, STATUS_BADGE_CLASS } from "@/lib/attendance-ui";
 import {
   getInstructorRidingSlots,
   getRidingSlotStudentNotes,
@@ -91,7 +91,9 @@ function StudentCompactRow({
     <button
       type="button"
       onClick={onOpen}
-      className="flex w-full flex-col gap-1 rounded-lg border border-border bg-card p-2.5 text-right hover:bg-muted"
+      className={`flex w-full flex-col gap-1 rounded-lg border p-2.5 text-right hover:bg-muted ${
+        row.attendanceStatus === "ABSENT" ? "border-danger/40 bg-danger-muted/30" : "border-border bg-card"
+      }`}
     >
       <div className="flex items-center justify-between gap-2">
         <span className="min-w-0 flex-1 truncate text-sm font-semibold text-card-foreground">
@@ -110,11 +112,37 @@ function StudentCompactRow({
         )}
         {row.note && (
           <span
-            title="קיימת הערה"
+            title="קיימת הערת רכיבה"
             className="h-1.5 w-1.5 shrink-0 rounded-full bg-secondary-foreground"
           />
         )}
+        {row.attendanceStatus === "ABSENT" && (
+          <span
+            className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${STATUS_BADGE_CLASS.ABSENT}`}
+          >
+            נעדר/ת היום
+          </span>
+        )}
+        {row.attendanceStatus === "PARTIAL" && (
+          <span
+            className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${STATUS_BADGE_CLASS.PARTIAL}`}
+          >
+            נוכחות חלקית
+          </span>
+        )}
+        {row.attendanceNotes && (
+          <span
+            title="קיימת הערת נוכחות"
+            className="h-1.5 w-1.5 shrink-0 rounded-full bg-warning"
+          />
+        )}
       </div>
+      {row.attendanceStatus === "PARTIAL" && (row.attendanceArrivalTime || row.attendanceDepartureTime) && (
+        <div className="flex flex-wrap gap-1.5 text-[10px] text-muted-foreground">
+          {row.attendanceArrivalTime && <span>הגעה: {row.attendanceArrivalTime}</span>}
+          {row.attendanceDepartureTime && <span>יציאה: {row.attendanceDepartureTime}</span>}
+        </div>
+      )}
     </button>
   );
 }
@@ -198,6 +226,31 @@ function StudentEditor({
         )}
       </div>
 
+      {(row.attendanceStatus === "ABSENT" || row.attendanceStatus === "PARTIAL" || row.attendanceNotes) && (
+        <div className="rounded-lg border border-border p-2.5">
+          {row.attendanceStatus === "ABSENT" && (
+            <p className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_BADGE_CLASS.ABSENT}`}>
+              נעדר/ת היום
+            </p>
+          )}
+          {row.attendanceStatus === "PARTIAL" && (
+            <p className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_BADGE_CLASS.PARTIAL}`}>
+              נוכחות חלקית
+            </p>
+          )}
+          {(row.attendanceArrivalTime || row.attendanceDepartureTime) && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              {row.attendanceArrivalTime && `הגעה: ${row.attendanceArrivalTime}`}
+              {row.attendanceArrivalTime && row.attendanceDepartureTime && " · "}
+              {row.attendanceDepartureTime && `יציאה: ${row.attendanceDepartureTime}`}
+            </p>
+          )}
+          {row.attendanceNotes && (
+            <p className="mt-1 text-xs text-card-foreground">הערת נוכחות: {row.attendanceNotes}</p>
+          )}
+        </div>
+      )}
+
       {canEdit && !isEditingHorse && (
         <button
           type="button"
@@ -246,7 +299,7 @@ function StudentEditor({
       {canEdit ? (
         <>
           <label className="flex flex-col gap-1 text-sm">
-            הערה
+            הערת רכיבה
             <textarea
               value={note}
               onChange={(e) => setNote(e.target.value)}
@@ -281,7 +334,7 @@ function StudentEditor({
         </>
       ) : (
         <>
-          <p className="text-sm text-muted-foreground">הערה: {row.note ?? "אין הערה"}</p>
+          <p className="text-sm text-muted-foreground">הערת רכיבה: {row.note ?? "אין הערה"}</p>
           <p className="text-sm text-muted-foreground">
             דירוג: {row.ratingHalfPoints != null ? row.ratingHalfPoints / 2 : "ללא"}
           </p>

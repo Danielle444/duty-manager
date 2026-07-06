@@ -6,7 +6,10 @@ import { revalidatePath } from "next/cache";
 import { requireAdmin } from "@/lib/auth/require-admin";
 import { dateKey, parseDateKey } from "@/lib/dates";
 import { buildScheduleSlots } from "@/lib/schedule-grouping";
+import { getHorseDisplayInfo } from "@/lib/horse-info";
 import type { ActionResult } from "@/lib/actions/students";
+import type { AttendanceStatusValue } from "@/lib/actions/attendance";
+import { findAssignmentForStudent } from "@/lib/riding-assignment-matching";
 
 const NOT_FOUND_SCHEDULE_ITEM = 'פריט הלו"ז לא נמצא. נסי לרענן את העמוד.';
 const NOT_FOUND_RIDING_SLOT = "ניהול הרכיבה לא נמצא. נסי לרענן את העמוד.";
@@ -753,6 +756,13 @@ export interface RidingSlotStudentRow {
   // ISO string, null when no note/rating has ever been saved for this
   // student+slot - kept for the future student history view too.
   updatedAt: string | null;
+  // Read-only attendance snapshot for the riding slot's own date - never
+  // written from this screen. Null status means no StudentAttendance row
+  // exists for that date (treated the same as PRESENT for display purposes).
+  attendanceStatus: AttendanceStatusValue | null;
+  attendanceArrivalTime: string | null;
+  attendanceDepartureTime: string | null;
+  attendanceNotes: string | null;
 }
 
 // Read-only, unrestricted view (same "all instructors can view" convention
@@ -772,7 +782,7 @@ export async function getRidingSlotStudentNotes(ridingSlotId: string): Promise<R
     include: {
       assignments: true,
       notes: true,
-      scheduleItem: { select: { groupName: true } },
+      scheduleItem: { select: { groupName: true, date: true } },
     },
   });
   if (!slot) return [];
@@ -801,8 +811,14 @@ export async function getRidingSlotStudentNotes(ridingSlotId: string): Promise<R
 
   const noteByStudentId = new Map(slot.notes.map((n) => [n.studentId, n]));
 
+  const attendanceRecords = await prisma.studentAttendance.findMany({
+    where: { date: slot.scheduleItem.date, studentId: { in: students.map((s) => s.id) } },
+  });
+  const attendanceByStudentId = new Map(attendanceRecords.map((a) => [a.studentId, a]));
+
   return students.map((s) => {
     const note = noteByStudentId.get(s.id);
+    const attendance = attendanceByStudentId.get(s.id);
     return {
       studentId: s.id,
       studentName: s.fullName,
@@ -816,6 +832,10 @@ export async function getRidingSlotStudentNotes(ridingSlotId: string): Promise<R
       sessionHorseName: note?.sessionHorseName ?? null,
       updatedByName: note?.updatedByName ?? null,
       updatedAt: note?.updatedAt ? note.updatedAt.toISOString() : null,
+      attendanceStatus: attendance?.status ?? null,
+      attendanceArrivalTime: attendance?.arrivalTime ?? null,
+      attendanceDepartureTime: attendance?.departureTime ?? null,
+      attendanceNotes: attendance?.notes ?? null,
     };
   });
 }
@@ -883,4 +903,126 @@ export async function upsertRidingLessonNoteAsInstructor(
 
   revalidatePath("/instructor");
   return { success: true, updatedByName: saved.updatedByName, updatedAt: saved.updatedAt.toISOString() };
+}
+
+export interface RidingHistoryRow {
+  ridingSlotId: string;
+  dateKey: string;
+  startTime: string;
+  endTime: string;
+  title: string;
+  groupName: string | null;
+  subgroupNumber: number | null;
+  instructorName: string | null;
+  arena: string | null;
+  // Already resolved: "סוס בשיעור: X" when this note has a session override,
+  // otherwise the student's normal horse via getHorseDisplayInfo. Computed
+  // server-side so both the admin and instructor views render identically
+  // without duplicating the resolution rule.
+  horseDisplay: string;
+  ratingHalfPoints: number | null;
+  note: string | null;
+  updatedByName: string | null;
+  updatedAt: string;
+}
+
+export interface StudentRidingHistoryResult {
+  student: {
+    id: string;
+    fullName: string;
+    groupName: string | null;
+    subgroupNumber: number | null;
+    horseNameDisplay: string;
+  };
+  rows: RidingHistoryRow[];
+}
+
+// Read-only, reused by both the admin and instructor history views (neither
+// creates or mutates anything). One row per RidingLessonNote the student
+// has - never per ScheduleItem, so a merged/multi-row riding slot still
+// only ever produces one history row, matching how notes are actually
+// stored (one per ridingSlotId + studentId). The slot's own date/time range
+// is reconstructed from its full linked ScheduleItem set (via
+// RidingSlotScheduleItem), not just the anchor row, so a 2-hour lesson
+// stored as two contiguous rows still shows its true 08:00-10:00 range.
+async function buildStudentRidingHistory(studentId: string): Promise<StudentRidingHistoryResult | null> {
+  const student = await prisma.student.findUnique({ where: { id: studentId } });
+  if (!student) return null;
+
+  const notes = await prisma.ridingLessonNote.findMany({
+    where: { studentId },
+    include: {
+      ridingSlot: {
+        include: {
+          assignments: { include: { instructor: true } },
+          scheduleItems: { include: { scheduleItem: true } },
+        },
+      },
+    },
+    orderBy: { updatedAt: "desc" },
+  });
+
+  const rows: RidingHistoryRow[] = [];
+  for (const n of notes) {
+    const scheduleItems = n.ridingSlot.scheduleItems.map((link) => link.scheduleItem);
+    if (scheduleItems.length === 0) continue;
+    scheduleItems.sort((a, b) => a.startTime.localeCompare(b.startTime));
+    const first = scheduleItems[0];
+    const last = scheduleItems[scheduleItems.length - 1];
+
+    const assignment = findAssignmentForStudent(
+      n.ridingSlot.assignments,
+      student.groupName,
+      student.subgroupNumber
+    );
+
+    const sessionHorse = n.sessionHorseName?.trim();
+    const horseDisplay = sessionHorse
+      ? `סוס בשיעור: ${sessionHorse}`
+      : `סוס: ${getHorseDisplayInfo(student).horseNameDisplay}`;
+
+    rows.push({
+      ridingSlotId: n.ridingSlotId,
+      dateKey: dateKey(first.date),
+      startTime: first.startTime,
+      endTime: last.endTime,
+      title: first.title,
+      groupName: student.groupName,
+      subgroupNumber: student.subgroupNumber,
+      instructorName: assignment?.instructor?.fullName ?? null,
+      arena: assignment?.arena ?? null,
+      horseDisplay,
+      ratingHalfPoints: n.ratingHalfPoints,
+      note: n.note,
+      updatedByName: n.updatedByName,
+      updatedAt: n.updatedAt.toISOString(),
+    });
+  }
+
+  return {
+    student: {
+      id: student.id,
+      fullName: student.fullName,
+      groupName: student.groupName,
+      subgroupNumber: student.subgroupNumber,
+      horseNameDisplay: getHorseDisplayInfo(student).horseNameDisplay,
+    },
+    rows,
+  };
+}
+
+export async function getStudentRidingHistoryForAdmin(
+  studentId: string
+): Promise<StudentRidingHistoryResult | null> {
+  await requireAdmin();
+  return buildStudentRidingHistory(studentId);
+}
+
+// Unrestricted view - matches the existing "all instructors can view"
+// convention (attendance, riding slots). Never called from student-facing
+// code; students must not see notes/ratings at all.
+export async function getStudentRidingHistoryForInstructor(
+  studentId: string
+): Promise<StudentRidingHistoryResult | null> {
+  return buildStudentRidingHistory(studentId);
 }

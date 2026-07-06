@@ -20,7 +20,17 @@ function ratingRange(type: FeedbackQuestionTypeValue): number[] {
   return type === "COMPARISON_3" ? [1, 2, 3] : [1, 2, 3, 4, 5];
 }
 
-export function StudentWeeklyFeedbackSection({ studentId }: { studentId: string }) {
+export function StudentWeeklyFeedbackSection({
+  studentId,
+  onOpenChange,
+}: {
+  studentId: string;
+  // Reports whether there's currently an open, unanswered form, so a parent
+  // component can keep its own "עוד"/menu-row dot in sync immediately after
+  // this loads or after a submit, without a second fetch - same pattern as
+  // NotificationsList's onUnreadChange.
+  onOpenChange?: (isOpen: boolean) => void;
+}) {
   const [data, setData] = useState<WeeklyFeedbackForStudent | null>(null);
   const [answers, setAnswers] = useState<Record<string, AnswerDraft>>({});
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -43,6 +53,11 @@ export function StudentWeeklyFeedbackSection({ studentId }: { studentId: string 
       cancelled = true;
     };
   }, [studentId]);
+
+  useEffect(() => {
+    if (data) onOpenChange?.(data.status === "open");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data]);
 
   function handleSetRating(questionId: string, value: number) {
     setSubmitError(null);

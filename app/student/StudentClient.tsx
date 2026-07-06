@@ -30,6 +30,7 @@ import {
   hasUnreadNotificationsForStudent,
 } from "@/lib/actions/notifications";
 import { getStudentMessages, type StudentMessageItem } from "@/lib/actions/messages";
+import { getOpenWeeklyFeedbackForStudent } from "@/lib/actions/weekly-feedback";
 import {
   formatHebrewDate,
   formatHebrewWeekday,
@@ -139,12 +140,33 @@ export function StudentClient() {
   // from the messages screen's own real readAt/completedAt state, which it
   // keeps using for its own badges and mark-as-read/complete actions.
   const [hasNewMessages, setHasNewMessages] = useState(false);
+  // Drives the "עוד" tab / "משוב שבועי" menu-row dot - a real DB-backed
+  // signal (there's a currently-open, unanswered weekly feedback form),
+  // reusing the same getOpenWeeklyFeedbackForStudent status the section
+  // screen itself uses, never a separately-derived open/closed calculation.
+  // Set here for the initial value (so the dot can show before the trainee
+  // ever opens the tab), then kept in sync afterward by
+  // StudentWeeklyFeedbackSection's onOpenChange, same dual pattern as
+  // hasUnreadNotifications + NotificationsList's onUnreadChange.
+  const [hasOpenWeeklyFeedback, setHasOpenWeeklyFeedback] = useState(false);
 
   useEffect(() => {
     if (!session) return;
     let cancelled = false;
     hasUnreadNotificationsForStudent(session.id).then((value) => {
       if (!cancelled) setHasUnreadNotifications(value);
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.id]);
+
+  useEffect(() => {
+    if (!session) return;
+    let cancelled = false;
+    getOpenWeeklyFeedbackForStudent(session.id).then((result) => {
+      if (!cancelled) setHasOpenWeeklyFeedback(result.status === "open");
     });
     return () => {
       cancelled = true;
@@ -549,6 +571,9 @@ export function StudentClient() {
                   {item.id === "notifications" && hasUnreadNotifications && (
                     <span className="h-2 w-2 rounded-full bg-primary" aria-hidden="true" />
                   )}
+                  {item.id === "weeklyFeedback" && hasOpenWeeklyFeedback && (
+                    <span className="h-2 w-2 rounded-full bg-primary" aria-hidden="true" />
+                  )}
                 </span>
                 <span className="text-muted-foreground">‹</span>
               </button>
@@ -670,7 +695,9 @@ export function StudentClient() {
 
         {activeTab === "materials" && <CourseMaterialsSection role="student" />}
 
-        {activeTab === "weeklyFeedback" && <StudentWeeklyFeedbackSection studentId={session.id} />}
+        {activeTab === "weeklyFeedback" && (
+          <StudentWeeklyFeedbackSection studentId={session.id} onOpenChange={setHasOpenWeeklyFeedback} />
+        )}
 
         {activeTab === "help" && <HelpContent role="student" />}
 
@@ -691,7 +718,7 @@ export function StudentClient() {
         tabs={STUDENT_MAIN_TABS}
         dotTabIds={[
           ...(hasNewMessages ? (["messages"] as MainTabId[]) : []),
-          ...(hasUnreadNotifications ? (["more"] as MainTabId[]) : []),
+          ...(hasUnreadNotifications || hasOpenWeeklyFeedback ? (["more"] as MainTabId[]) : []),
         ]}
       />
     </div>

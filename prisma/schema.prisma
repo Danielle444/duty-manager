@@ -30,11 +30,12 @@ model Student {
   privateHorseName  String?
   assignedHorseName String?
 
-  availability          StudentAvailability[]
-  assignments           DutyAssignment[]
-  messageTaskRecipients MessageTaskRecipient[]
-  attendance            StudentAttendance[]
-  ridingLessonNotes     RidingLessonNote[]
+  availability            StudentAvailability[]
+  assignments             DutyAssignment[]
+  messageTaskRecipients   MessageTaskRecipient[]
+  attendance              StudentAttendance[]
+  ridingLessonNotes       RidingLessonNote[]
+  weeklyFeedbackResponses WeeklyFeedbackResponse[]
 
   @@map("students")
 }
@@ -282,7 +283,8 @@ model WeeklySchedule {
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
-  items ScheduleItem[]
+  items        ScheduleItem[]
+  feedbackForm WeeklyFeedbackForm?
 
   @@index([startDate, endDate])
   @@map("weekly_schedules")
@@ -565,4 +567,116 @@ model PushSubscription {
   @@index([studentId])
   @@index([instructorId])
   @@map("push_subscriptions")
+}
+
+enum WeeklyFeedbackStatus {
+  DRAFT
+  PUBLISHED
+  CLOSED
+}
+
+enum FeedbackQuestionType {
+  RATING_5
+  COMPARISON_3
+  FREE_TEXT
+}
+
+enum FeedbackQuestionSource {
+  FIXED
+  DYNAMIC
+}
+
+// One row per week that has ever had a form drafted - at most one per
+// WeeklySchedule (weeklyScheduleId unique). Never auto-created; always
+// starts from an explicit admin action. Trainee-facing, admin-authored -
+// deliberately separate from MessageTask/MessageTaskRecipient, which
+// continue to handle admin/instructor-authored messages and tasks.
+//
+// Availability to trainees is derived, not just status-based: DRAFT is
+// never visible; PUBLISHED is only actually open once opensAt is null or in
+// the past, and stops accepting submissions once closesAt is in the past;
+// CLOSED is closed regardless of either date. publishedAt/closedAt remain
+// pure admin-action timestamps (when they clicked publish/close), separate
+// from opensAt/closesAt (when it's scheduled to actually open/close for
+// trainees) - a form can be published in advance of its own opening.
+model WeeklyFeedbackForm {
+  id               String               @id @default(cuid())
+  weeklyScheduleId String               @unique
+  status           WeeklyFeedbackStatus @default(DRAFT)
+  title            String
+  opensAt          DateTime?
+  closesAt         DateTime?
+  publishedAt      DateTime?
+  closedAt         DateTime?
+  createdByName    String?
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+
+  weeklySchedule WeeklySchedule           @relation(fields: [weeklyScheduleId], references: [id], onDelete: Cascade)
+  questions      WeeklyFeedbackQuestion[]
+  responses      WeeklyFeedbackResponse[]
+
+  @@map("weekly_feedback_forms")
+}
+
+// Questions are materialized onto the form at draft-creation time (fixed
+// template copied in, and later - not yet built - schedule-derived dynamic
+// ones) - editing the fixed question bank or that week's schedule later
+// never retroactively changes an already-drafted form's questions, same
+// materialize-at-creation principle as MessageTaskRecipient.
+model WeeklyFeedbackQuestion {
+  id        String                 @id @default(cuid())
+  formId    String
+  // Free text (e.g. "אוכל", "מגורים", "רכיבה"), not an enum - matches this
+  // schema's existing preference for content-ish fields over a rigid list
+  // (see HorseFeedingMeal.hayType).
+  section   String
+  prompt    String
+  type      FeedbackQuestionType
+  source    FeedbackQuestionSource
+  sortOrder Int
+  createdAt DateTime               @default(now())
+
+  form    WeeklyFeedbackForm     @relation(fields: [formId], references: [id], onDelete: Cascade)
+  answers WeeklyFeedbackAnswer[]
+
+  @@index([formId])
+  @@map("weekly_feedback_questions")
+}
+
+// One row = "this trainee submitted" - presence/absence is what drives "who
+// responded / who didn't". unique(formId, studentId) is the hard guarantee
+// against duplicate submissions (enforced again in the submit action itself,
+// never trusted from the client - students have no NextAuth session).
+model WeeklyFeedbackResponse {
+  id          String   @id @default(cuid())
+  formId      String
+  studentId   String
+  submittedAt DateTime @default(now())
+
+  form    WeeklyFeedbackForm     @relation(fields: [formId], references: [id], onDelete: Cascade)
+  student Student                @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  answers WeeklyFeedbackAnswer[]
+
+  @@unique([formId, studentId])
+  @@index([studentId])
+  @@map("weekly_feedback_responses")
+}
+
+// ratingValue is used for RATING_5/COMPARISON_3, textValue for FREE_TEXT -
+// validated against the question's type in the action layer, not the schema.
+model WeeklyFeedbackAnswer {
+  id          String   @id @default(cuid())
+  responseId  String
+  questionId  String
+  ratingValue Int?
+  textValue   String?
+  createdAt   DateTime @default(now())
+
+  response WeeklyFeedbackResponse @relation(fields: [responseId], references: [id], onDelete: Cascade)
+  question WeeklyFeedbackQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@unique([responseId, questionId])
+  @@index([questionId])
+  @@map("weekly_feedback_answers")
 }

@@ -91,6 +91,22 @@ export function todayDateKey(): string {
   return getLocalDateKey();
 }
 
+// Picks today as the initial day-tab selection when the displayed week
+// actually contains today, so opening the current week focuses today
+// instead of always starting on "כל השבוע" - a past/future week (or a
+// current week where today has nothing on it) keeps the existing "all"
+// default untouched.
+export function getDefaultDayFilter(
+  week: { startDate: string; endDate: string } | null | undefined,
+  todayKey: string,
+  availableDayKeys?: string[]
+): string | "all" {
+  if (!week) return "all";
+  if (todayKey < week.startDate || todayKey > week.endDate) return "all";
+  if (availableDayKeys && !availableDayKeys.includes(todayKey)) return "all";
+  return todayKey;
+}
+
 // Sunday-Saturday calendar week containing the given date, as all 7 date
 // keys in order - independent of any WeeklySchedule row, for views (like
 // daily-tracking's week toggle) that just need "this date's week" rather

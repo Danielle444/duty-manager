@@ -20,7 +20,13 @@ import { InstructorMessagesSection } from "@/app/instructor/InstructorMessagesSe
 import { InstructorAttendanceSection } from "@/app/instructor/InstructorAttendanceSection";
 import { InstructorRidingSlotsSection } from "@/app/instructor/InstructorRidingSlotsSection";
 import { ContactsSection } from "@/lib/components/ContactsSection";
-import { formatHebrewDate, formatHebrewWeekday, getLocalDateKey, parseDateKey } from "@/lib/dates";
+import {
+  formatHebrewDate,
+  formatHebrewWeekday,
+  getDefaultDayFilter,
+  getLocalDateKey,
+  parseDateKey,
+} from "@/lib/dates";
 
 const STORAGE_KEY = "duty-manager-instructor-v2";
 
@@ -149,6 +155,8 @@ export function InstructorClient({
       if (cancelled) return;
       setWeeks(sel.weeks);
       setSelectedWeekId(sel.defaultWeekId);
+      const defaultWeek = sel.weeks.find((w) => w.id === sel.defaultWeekId) ?? null;
+      setDayFilter(getDefaultDayFilter(defaultWeek, getLocalDateKey()));
     });
     return () => {
       cancelled = true;
@@ -352,7 +360,8 @@ export function InstructorClient({
                 selectedWeekId={selectedWeekId}
                 onSelectWeek={(id) => {
                   setSelectedWeekId(id);
-                  setDayFilter("all");
+                  const week = weeks?.find((w) => w.id === id) ?? null;
+                  setDayFilter(getDefaultDayFilter(week, getLocalDateKey()));
                 }}
                 dayFilter={dayFilter}
                 onSelectDay={setDayFilter}
@@ -376,7 +385,8 @@ export function InstructorClient({
                 selectedWeekId={selectedWeekId}
                 onSelectWeek={(id) => {
                   setSelectedWeekId(id);
-                  setDayFilter("all");
+                  const week = weeks?.find((w) => w.id === id) ?? null;
+                  setDayFilter(getDefaultDayFilter(week, getLocalDateKey()));
                 }}
                 dayFilter={dayFilter}
                 onSelectDay={setDayFilter}

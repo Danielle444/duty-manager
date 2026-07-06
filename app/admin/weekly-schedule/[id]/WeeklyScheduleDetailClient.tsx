@@ -4,7 +4,7 @@ import Link from "next/link";
 import { FormEvent, useEffect, useMemo, useState, useTransition } from "react";
 import { Button } from "@/lib/components/Button";
 import { Modal } from "@/lib/components/Modal";
-import { formatHebrewDate, formatHebrewWeekday, parseDateKey } from "@/lib/dates";
+import { formatHebrewDate, formatHebrewWeekday, getDefaultDayFilter, getLocalDateKey, parseDateKey } from "@/lib/dates";
 import { cleanScheduleTitle } from "@/lib/schedule-title";
 import { ScheduleTimeGrid } from "@/lib/components/ScheduleTimeGrid";
 import { coalesceAdjacentSameActivity } from "@/lib/schedule-grouping";
@@ -139,7 +139,17 @@ export function WeeklyScheduleDetailClient({
 }) {
   const [items, setItems] = useState(week.items);
   const [groupFilter, setGroupFilter] = useState<"all" | string>("all");
-  const [dayFilter, setDayFilter] = useState<"all" | string>("all");
+  // Opening the current week focuses today's day instead of always starting
+  // on "כל השבוע" - only when today actually has schedule items, and only
+  // ever computed once for this page's initial state (a lazy initializer,
+  // not re-run on later renders), so it never fights a manual selection.
+  const [dayFilter, setDayFilter] = useState<"all" | string>(() =>
+    getDefaultDayFilter(
+      week,
+      getLocalDateKey(),
+      week.items.map((i) => i.dateKey)
+    )
+  );
   const [noDutyStatus, setNoDutyStatus] = useState<Map<string, NoDutyDayStatus> | null>(null);
   const [isPending, startTransition] = useTransition();
 

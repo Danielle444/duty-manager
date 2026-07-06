@@ -20,7 +20,13 @@ import { StudentMessagesSection } from "@/app/student/StudentMessagesSection";
 import { StudentMessagesSummary } from "@/app/student/StudentMessagesSummary";
 import { StudentAttendanceNotice } from "@/app/student/StudentAttendanceNotice";
 import { ContactsSection } from "@/lib/components/ContactsSection";
-import { formatHebrewDate, formatHebrewWeekday, getLocalDateKey, parseDateKey } from "@/lib/dates";
+import {
+  formatHebrewDate,
+  formatHebrewWeekday,
+  getDefaultDayFilter,
+  getLocalDateKey,
+  parseDateKey,
+} from "@/lib/dates";
 import { getHorseDisplayInfo } from "@/lib/horse-info";
 
 const STORAGE_KEY = "duty-manager-student";
@@ -137,6 +143,8 @@ export function StudentClient() {
       if (cancelled) return;
       setWeeks(sel.weeks);
       setSelectedWeekId(sel.defaultWeekId);
+      const defaultWeek = sel.weeks.find((w) => w.id === sel.defaultWeekId) ?? null;
+      setDayFilter(getDefaultDayFilter(defaultWeek, getLocalDateKey()));
     });
     return () => {
       cancelled = true;
@@ -362,7 +370,8 @@ export function StudentClient() {
                 selectedWeekId={selectedWeekId}
                 onSelectWeek={(id) => {
                   setSelectedWeekId(id);
-                  setDayFilter("all");
+                  const week = weeks?.find((w) => w.id === id) ?? null;
+                  setDayFilter(getDefaultDayFilter(week, getLocalDateKey()));
                 }}
                 dayFilter={dayFilter}
                 onSelectDay={setDayFilter}
@@ -386,7 +395,8 @@ export function StudentClient() {
                 selectedWeekId={selectedWeekId}
                 onSelectWeek={(id) => {
                   setSelectedWeekId(id);
-                  setDayFilter("all");
+                  const week = weeks?.find((w) => w.id === id) ?? null;
+                  setDayFilter(getDefaultDayFilter(week, getLocalDateKey()));
                 }}
                 dayFilter={dayFilter}
                 onSelectDay={setDayFilter}

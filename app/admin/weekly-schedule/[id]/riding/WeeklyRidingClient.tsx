@@ -1,9 +1,9 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { Button } from "@/lib/components/Button";
-import { formatHebrewDate, formatHebrewWeekday, parseDateKey } from "@/lib/dates";
+import { formatHebrewDate, formatHebrewWeekday, getLocalDateKey, parseDateKey } from "@/lib/dates";
 import { cleanScheduleTitle } from "@/lib/schedule-title";
 import { getScheduleGroupColorClass } from "@/lib/schedule-group-colors";
 import { RidingSlotModal } from "@/app/admin/weekly-schedule/[id]/RidingSlotModal";
@@ -79,6 +79,20 @@ export function WeeklyRidingClient({
   const [days, setDays] = useState(initialDays);
   const [viewMode, setViewMode] = useState<ViewMode>("likely");
   const [ridingTarget, setRidingTarget] = useState<WeeklyRidingActivity | null>(null);
+  // This view is a vertical stack of day sections (no day tabs), so "focus
+  // today" means scrolling today's section into view once, the first time
+  // it's actually on screen - never again afterward, so it doesn't fight a
+  // manual scroll/selection later.
+  const todayDateKey = getLocalDateKey();
+  const todaySectionRef = useRef<HTMLDivElement | null>(null);
+  const hasScrolledToTodayRef = useRef(false);
+
+  useEffect(() => {
+    if (hasScrolledToTodayRef.current) return;
+    if (!todaySectionRef.current) return;
+    todaySectionRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
+    hasScrolledToTodayRef.current = true;
+  }, []);
 
   const [bulkForm, setBulkForm] = useState<BulkForm>(EMPTY_BULK_FORM);
   const [bulkError, setBulkError] = useState<string | null>(null);
@@ -397,7 +411,11 @@ export function WeeklyRidingClient({
       ) : (
         <div className="flex flex-col gap-5">
           {visibleDays.map((day) => (
-            <div key={day.dateKey} className="rounded-2xl border border-border bg-card p-5">
+            <div
+              key={day.dateKey}
+              ref={day.dateKey === todayDateKey ? todaySectionRef : undefined}
+              className="rounded-2xl border border-border bg-card p-5"
+            >
               <p className="mb-3 inline-block rounded-lg bg-secondary px-3 py-2 text-base font-bold text-secondary-foreground">
                 {formatHebrewWeekday(parseDateKey(day.dateKey))} ·{" "}
                 {formatHebrewDate(parseDateKey(day.dateKey))}

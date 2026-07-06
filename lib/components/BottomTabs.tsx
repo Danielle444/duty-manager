@@ -97,6 +97,26 @@ const TAB_ICON_PATHS: Record<MainTabId, ReactNode> = {
   ),
 };
 
+// Renders one tab's icon on its own, so other screens (e.g. an instructor
+// home-screen shortcut grid) can show the same icon set without duplicating
+// the path data or adding an icon library.
+export function TabIcon({ id, className = "h-5 w-5" }: { id: MainTabId; className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.75}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      {TAB_ICON_PATHS[id]}
+    </svg>
+  );
+}
+
 export function BottomTabs({
   active,
   onChange,
@@ -129,18 +149,7 @@ export function BottomTabs({
                   isActive ? "bg-primary/10" : ""
                 }`}
               >
-                <svg
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth={1.75}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  className="h-5 w-5"
-                  aria-hidden="true"
-                >
-                  {TAB_ICON_PATHS[tab.id]}
-                </svg>
+                <TabIcon id={tab.id} />
               </span>
               <span
                 className={`max-w-full truncate text-xs leading-tight ${

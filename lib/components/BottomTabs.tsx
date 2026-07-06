@@ -14,6 +14,7 @@ export type MainTabId =
   | "materials"
   | "attendance"
   | "riding"
+  | "help"
   | "more";
 
 export const MAIN_TABS: { id: MainTabId; label: string }[] = [
@@ -86,6 +87,13 @@ const TAB_ICON_PATHS: Record<MainTabId, ReactNode> = {
     <>
       <circle cx="12" cy="12" r="8" />
       <circle cx="12" cy="12" r="3" />
+    </>
+  ),
+  help: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.8.4-1 .8-1 1.7" />
+      <path d="M12 16.5v.01" />
     </>
   ),
   more: (

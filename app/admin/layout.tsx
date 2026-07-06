@@ -20,6 +20,7 @@ const NAV_ITEMS = [
   { href: "/admin/horses", label: "חלוקה לקבוצות וסוסים" },
   { href: "/admin/messages", label: "הודעות ומשימות" },
   { href: "/admin/admins", label: "מנהלים מורשים" },
+  { href: "/admin/help", label: "מדריך שימוש" },
 ];
 
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {

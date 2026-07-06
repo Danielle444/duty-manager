@@ -20,6 +20,7 @@ import { StudentMessagesSection } from "@/app/student/StudentMessagesSection";
 import { StudentMessagesSummary } from "@/app/student/StudentMessagesSummary";
 import { StudentAttendanceNotice } from "@/app/student/StudentAttendanceNotice";
 import { ContactsSection } from "@/lib/components/ContactsSection";
+import { HelpContent } from "@/lib/components/HelpContent";
 import {
   formatHebrewDate,
   formatHebrewWeekday,
@@ -48,6 +49,7 @@ const STUDENT_MORE_ITEMS: { id: MainTabId; label: string }[] = [
   { id: "profile", label: "פרופיל" },
   { id: "contacts", label: "אנשי קשר" },
   { id: "materials", label: "חומרי קורס" },
+  { id: "help", label: "עזרה" },
 ];
 
 const STUDENT_ALL_TABS = [...STUDENT_MAIN_TABS, ...STUDENT_MORE_ITEMS];
@@ -534,6 +536,8 @@ export function StudentClient() {
         {activeTab === "contacts" && <ContactsSection />}
 
         {activeTab === "materials" && <CourseMaterialsSection role="student" />}
+
+        {activeTab === "help" && <HelpContent role="student" />}
       </main>
 
       <BottomTabs active={bottomActiveTab} onChange={setActiveTab} tabs={STUDENT_MAIN_TABS} />

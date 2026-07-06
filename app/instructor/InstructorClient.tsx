@@ -24,6 +24,7 @@ import { InstructorMessagesSection } from "@/app/instructor/InstructorMessagesSe
 import { InstructorAttendanceSection } from "@/app/instructor/InstructorAttendanceSection";
 import { InstructorRidingSlotsSection } from "@/app/instructor/InstructorRidingSlotsSection";
 import { ContactsSection } from "@/lib/components/ContactsSection";
+import { HelpContent } from "@/lib/components/HelpContent";
 import {
   formatHebrewDate,
   formatHebrewWeekday,
@@ -54,6 +55,7 @@ const INSTRUCTOR_MORE_ITEMS: { id: MainTabId; label: string }[] = [
   { id: "messages", label: "הודעות ומשימות" },
   { id: "contacts", label: "אנשי קשר" },
   { id: "materials", label: "חומרי קורס" },
+  { id: "help", label: "עזרה" },
 ];
 
 const INSTRUCTOR_ALL_TABS = [...INSTRUCTOR_MAIN_TABS, ...INSTRUCTOR_MORE_ITEMS];
@@ -527,6 +529,8 @@ export function InstructorClient({
         {activeTab === "contacts" && <ContactsSection />}
 
         {activeTab === "materials" && <CourseMaterialsSection role="instructor" />}
+
+        {activeTab === "help" && <HelpContent role="instructor" />}
       </main>
 
       <BottomTabs active={bottomActiveTab} onChange={setActiveTab} tabs={INSTRUCTOR_MAIN_TABS} />

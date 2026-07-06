@@ -27,11 +27,7 @@ import {
   markNotificationReadAsStudent,
   hasUnreadNotificationsForStudent,
 } from "@/lib/actions/notifications";
-import {
-  getStudentMessages,
-  hasUnreadMessagesForStudent,
-  type StudentMessageItem,
-} from "@/lib/actions/messages";
+import { getStudentMessages, type StudentMessageItem } from "@/lib/actions/messages";
 import {
   formatHebrewDate,
   formatHebrewWeekday,
@@ -42,6 +38,14 @@ import {
 import { getHorseDisplayInfo } from "@/lib/horse-info";
 
 const STORAGE_KEY = "duty-manager-student";
+
+// The messages/tasks shortcut dot is a device-local "new since last opened
+// the screen" indicator (like the instructor equivalent), separate from the
+// real per-item readAt/completedAt state the messages screen itself still
+// uses for its own badges and "סימון כנקרא"/"סימון כהושלמה" actions.
+function studentMessagesLastSeenKey(studentId: string): string {
+  return `duty-manager-student-messages-last-seen-${studentId}`;
+}
 
 // Student has its own 5 main bottom tabs (independent of the shared
 // MAIN_TABS default, which BottomTabs still falls back to elsewhere) plus a
@@ -124,13 +128,14 @@ export function StudentClient() {
   const [selectedWeekId, setSelectedWeekId] = useState<string | null>(null);
   const [dayFilter, setDayFilter] = useState<string | "all">("all");
 
-  // Drives the "עוד" tab / "עדכונים" menu-row dot and the "הודעות" tab /
-  // home-shortcut dot. Fetched proactively on login (a lightweight count
-  // query) so the dot is correct before the student ever opens either
-  // screen; NotificationsList/StudentMessagesSection then keep it in sync via
-  // onUnreadChange whenever their own list loads or changes.
+  // Drives the "עוד" tab / "עדכונים" menu-row dot - a real unread-notification
+  // count, kept in sync afterward by NotificationsList's onUnreadChange.
   const [hasUnreadNotifications, setHasUnreadNotifications] = useState(false);
-  const [hasUnreadMessages, setHasUnreadMessages] = useState(false);
+  // Drives the "הודעות" tab / home-shortcut dot - device-local "new since
+  // last opened the screen" only (like the instructor equivalent), separate
+  // from the messages screen's own real readAt/completedAt state, which it
+  // keeps using for its own badges and mark-as-read/complete actions.
+  const [hasNewMessages, setHasNewMessages] = useState(false);
 
   useEffect(() => {
     if (!session) return;
@@ -138,14 +143,35 @@ export function StudentClient() {
     hasUnreadNotificationsForStudent(session.id).then((value) => {
       if (!cancelled) setHasUnreadNotifications(value);
     });
-    hasUnreadMessagesForStudent(session.id).then((value) => {
-      if (!cancelled) setHasUnreadMessages(value);
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.id]);
+
+  useEffect(() => {
+    if (!session) return;
+    let cancelled = false;
+    getStudentMessages(session.id).then((items) => {
+      if (cancelled) return;
+      const lastSeenRaw = window.localStorage.getItem(studentMessagesLastSeenKey(session.id));
+      const lastSeen = lastSeenRaw ? new Date(lastSeenRaw).getTime() : 0;
+      const hasNew = items.some((item) => new Date(item.createdAt).getTime() > lastSeen);
+      setHasNewMessages(hasNew);
     });
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.id]);
+
+  useEffect(() => {
+    if (!session || activeTab !== "messages") return;
+    window.localStorage.setItem(studentMessagesLastSeenKey(session.id), new Date().toISOString());
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setHasNewMessages(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, session?.id]);
 
   // Recomputed every minute (not just once at mount) so "today" rolls over
   // to the new local day on its own if the app is left open across
@@ -430,7 +456,7 @@ export function StudentClient() {
                   className="relative rounded-xl border border-border bg-card p-3 text-center text-sm font-semibold text-card-foreground hover:bg-muted"
                 >
                   {action.label}
-                  {action.id === "messages" && hasUnreadMessages && (
+                  {action.id === "messages" && hasNewMessages && (
                     <span
                       className="absolute top-1.5 right-1.5 h-2 w-2 rounded-full bg-primary"
                       aria-hidden="true"
@@ -633,9 +659,7 @@ export function StudentClient() {
           </div>
         )}
 
-        {activeTab === "messages" && (
-          <StudentMessagesSection studentId={session.id} onUnreadChange={setHasUnreadMessages} />
-        )}
+        {activeTab === "messages" && <StudentMessagesSection studentId={session.id} />}
 
         {activeTab === "contacts" && <ContactsSection />}
 
@@ -659,7 +683,7 @@ export function StudentClient() {
         onChange={setActiveTab}
         tabs={STUDENT_MAIN_TABS}
         dotTabIds={[
-          ...(hasUnreadMessages ? (["messages"] as MainTabId[]) : []),
+          ...(hasNewMessages ? (["messages"] as MainTabId[]) : []),
           ...(hasUnreadNotifications ? (["more"] as MainTabId[]) : []),
         ]}
       />

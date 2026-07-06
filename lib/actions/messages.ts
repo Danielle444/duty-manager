@@ -319,23 +319,6 @@ export async function getStudentMessages(studentId: string): Promise<StudentMess
   }));
 }
 
-// Cheap existence check for the messages/tasks shortcut unread dot - same
-// unread/incomplete definition as getStudentMessages (unread MESSAGE or
-// incomplete TASK), without fetching full content.
-export async function hasUnreadMessagesForStudent(studentId: string): Promise<boolean> {
-  const count = await prisma.messageTaskRecipient.count({
-    where: {
-      studentId,
-      messageTask: { isArchived: false },
-      OR: [
-        { messageTask: { type: "MESSAGE" }, readAt: null },
-        { messageTask: { type: "TASK" }, completedAt: null },
-      ],
-    },
-  });
-  return count > 0;
-}
-
 // Students have no NextAuth session in this app (see requireAdmin), so
 // ownership is verified by re-reading the recipient row and comparing
 // studentId - the same convention already established by markDutyCompleted.

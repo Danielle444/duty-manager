@@ -7,11 +7,11 @@ import type { NotificationRow } from "@/lib/actions/notifications";
 import type { ActionResult } from "@/lib/actions/students";
 
 // A compact, read-only preview of one message/task, already normalized by
-// the caller from either getStudentMessages (trainee, real per-recipient
-// read/completed state) or getMessageTasksForInstructorView (instructor,
-// content-only - no per-instructor read tracking exists yet, see this
-// component's own doc comment below). isUnread is null when read state
-// genuinely isn't available, rather than guessed at.
+// the caller from getStudentMessages (trainee, real per-recipient
+// read/completed state). fetchMessagePreview/onOpenMessages are optional -
+// instructors don't have a messaging use-case today (they coordinate over a
+// separate WhatsApp group) so the instructor "עדכונים" screen omits them and
+// shows only system notifications.
 export interface MessagePreviewItem {
   id: string;
   typeLabel: string;

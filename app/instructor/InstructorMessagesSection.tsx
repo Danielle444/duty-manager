@@ -5,8 +5,6 @@ import { Button } from "@/lib/components/Button";
 import {
   createMessageTaskAsInstructor,
   getMessageTasksForInstructorView,
-  markInstructorMessageRead,
-  markInstructorTaskCompleted,
   type InstructorMessageTaskView,
   type MessageAudienceValue,
   type MessageTaskTypeValue,
@@ -35,12 +33,6 @@ function audienceSummary(item: InstructorMessageTaskView): string {
   return AUDIENCE_LABELS[item.audience];
 }
 
-// Same "unread message" / "incomplete task" definition already used by the
-// student screen, just keyed to this instructor's own readAt/completedAt.
-function isActive(item: InstructorMessageTaskView): boolean {
-  return item.type === "TASK" ? !item.completedAt : !item.readAt;
-}
-
 // Sending is gated on canSend, which InstructorClient refreshes from the DB
 // on every session load - but the real gate is server-side, inside
 // createMessageTaskAsInstructor itself, which re-checks canSendMessages by
@@ -55,127 +47,16 @@ export function InstructorMessagesSection({
   students: StudentOption[];
 }) {
   const [items, setItems] = useState<InstructorMessageTaskView[] | null>(null);
-  const [isMarkPending, startMarkTransition] = useTransition();
 
   useEffect(() => {
     let cancelled = false;
-    getMessageTasksForInstructorView(instructorId).then((result) => {
+    getMessageTasksForInstructorView().then((result) => {
       if (!cancelled) setItems(result);
     });
     return () => {
       cancelled = true;
     };
-  }, [instructorId]);
-
-  const { activeItems, historyItems } = useMemo(() => {
-    if (!items) return { activeItems: [], historyItems: [] };
-    return {
-      activeItems: items.filter(isActive),
-      historyItems: items.filter((item) => !isActive(item)),
-    };
-  }, [items]);
-
-  function handleMarkRead(recipientId: string) {
-    startMarkTransition(async () => {
-      const result = await markInstructorMessageRead(recipientId, instructorId);
-      if (!result.success) return;
-      setItems((prev) =>
-        prev
-          ? prev.map((item) =>
-              item.recipientId === recipientId
-                ? { ...item, readAt: item.readAt ?? new Date().toISOString() }
-                : item
-            )
-          : prev
-      );
-    });
-  }
-
-  function handleSetCompleted(recipientId: string, completed: boolean) {
-    startMarkTransition(async () => {
-      const result = await markInstructorTaskCompleted(recipientId, instructorId, completed);
-      if (!result.success) return;
-      setItems((prev) =>
-        prev
-          ? prev.map((item) =>
-              item.recipientId === recipientId
-                ? { ...item, completedAt: completed ? new Date().toISOString() : null }
-                : item
-            )
-          : prev
-      );
-    });
-  }
-
-  function renderCard(item: InstructorMessageTaskView) {
-    return (
-      <div key={item.recipientId} className="rounded-xl border-2 border-border p-3">
-        <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <span
-              className={`rounded-full px-2.5 py-1 text-xs font-medium ${
-                item.type === "TASK"
-                  ? "bg-secondary text-secondary-foreground"
-                  : "bg-success-muted text-success"
-              }`}
-            >
-              {TYPE_LABELS[item.type]}
-            </span>
-            <p className="text-base font-bold text-card-foreground">{item.title}</p>
-          </div>
-          <span
-            className={`rounded-full px-2 py-0.5 text-xs font-medium ${
-              isActive(item) ? "bg-muted text-muted-foreground" : "bg-success-muted text-success"
-            }`}
-          >
-            {item.type === "TASK"
-              ? item.completedAt
-                ? "הושלמה"
-                : "פתוחה"
-              : item.readAt
-                ? "נקראה"
-                : "לא נקראה"}
-          </span>
-        </div>
-        <p className="mb-1 whitespace-pre-wrap text-sm text-muted-foreground">{item.body}</p>
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <p className="text-xs text-muted-foreground">
-            {audienceSummary(item)} · {item.createdByName ?? "מנהלת"} ·{" "}
-            {formatHebrewDateTime(new Date(item.createdAt))}
-          </p>
-          {item.type === "MESSAGE" && !item.readAt && (
-            <Button
-              variant="secondary"
-              className="!px-3 !py-1.5 !text-sm"
-              disabled={isMarkPending}
-              onClick={() => handleMarkRead(item.recipientId)}
-            >
-              סימון כנקרא
-            </Button>
-          )}
-          {item.type === "TASK" &&
-            (item.completedAt ? (
-              <Button
-                variant="secondary"
-                className="!px-3 !py-1.5 !text-sm"
-                disabled={isMarkPending}
-                onClick={() => handleSetCompleted(item.recipientId, false)}
-              >
-                סימון כלא הושלמה
-              </Button>
-            ) : (
-              <Button
-                className="!px-3 !py-1.5 !text-sm"
-                disabled={isMarkPending}
-                onClick={() => handleSetCompleted(item.recipientId, true)}
-              >
-                סימון כהושלמה
-              </Button>
-            ))}
-        </div>
-      </div>
-    );
-  }
+  }, []);
 
   const [type, setType] = useState<MessageTaskTypeValue>("MESSAGE");
   const [audience, setAudience] = useState<MessageAudienceValue>("ALL");
@@ -247,23 +128,32 @@ export function InstructorMessagesSection({
         ) : items.length === 0 ? (
           <p className="text-base text-muted-foreground">עדיין לא נשלחו הודעות או משימות</p>
         ) : (
-          <div className="flex flex-col gap-4">
-            <div className="flex flex-col gap-3">
-              {activeItems.length === 0 ? (
-                <p className="text-base text-muted-foreground">אין הודעות או משימות פתוחות</p>
-              ) : (
-                activeItems.map(renderCard)
-              )}
-            </div>
-
-            {historyItems.length > 0 && (
-              <details className="flex flex-col gap-3">
-                <summary className="cursor-pointer text-sm font-semibold text-muted-foreground">
-                  היסטוריה ({historyItems.length})
-                </summary>
-                <div className="mt-3 flex flex-col gap-3">{historyItems.map(renderCard)}</div>
-              </details>
-            )}
+          <div className="flex flex-col gap-3">
+            {items.map((item) => (
+              <div key={item.id} className="rounded-xl border-2 border-border p-3">
+                <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`rounded-full px-2.5 py-1 text-xs font-medium ${
+                        item.type === "TASK"
+                          ? "bg-secondary text-secondary-foreground"
+                          : "bg-success-muted text-success"
+                      }`}
+                    >
+                      {TYPE_LABELS[item.type]}
+                    </span>
+                    <p className="text-base font-bold text-card-foreground">{item.title}</p>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    {formatHebrewDateTime(new Date(item.createdAt))}
+                  </p>
+                </div>
+                <p className="mb-1 whitespace-pre-wrap text-sm text-muted-foreground">{item.body}</p>
+                <p className="text-xs text-muted-foreground">
+                  {audienceSummary(item)} · {item.createdByName ?? "מנהלת"}
+                </p>
+              </div>
+            ))}
           </div>
         )}
       </div>

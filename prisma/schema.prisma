@@ -258,7 +258,6 @@ model Instructor {
   canEditHorseFeeding Boolean @default(false)
 
   ridingSlotAssignments RidingSlotAssignment[]
-  messageTaskRecipients InstructorMessageTaskRecipient[]
 
   @@map("instructors")
 }
@@ -455,8 +454,7 @@ model MessageTask {
   createdAt     DateTime        @default(now())
   updatedAt     DateTime        @updatedAt
 
-  recipients           MessageTaskRecipient[]
-  instructorRecipients InstructorMessageTaskRecipient[]
+  recipients MessageTaskRecipient[]
 
   @@map("message_tasks")
 }
@@ -475,31 +473,6 @@ model MessageTaskRecipient {
   @@unique([messageTaskId, studentId])
   @@index([studentId])
   @@map("message_task_recipients")
-}
-
-// Mirrors MessageTaskRecipient exactly, one row per (MessageTask,
-// Instructor) - added so the instructor "עדכונים" preview and the
-// instructor messages/tasks screen can show a real per-instructor
-// read/completed state instead of the old content-only view (which had no
-// recipient concept for instructors at all). First version fans out to
-// every currently-active instructor for every new MessageTask (see
-// createMessageTaskInternal) - there is no instructor-group targeting yet,
-// matching how every instructor already sees every non-archived
-// MessageTask today.
-model InstructorMessageTaskRecipient {
-  id            String    @id @default(cuid())
-  messageTaskId String
-  instructorId  String
-  readAt        DateTime?
-  completedAt   DateTime?
-  createdAt     DateTime  @default(now())
-
-  messageTask MessageTask @relation(fields: [messageTaskId], references: [id], onDelete: Cascade)
-  instructor  Instructor  @relation(fields: [instructorId], references: [id], onDelete: Cascade)
-
-  @@unique([messageTaskId, instructorId])
-  @@index([instructorId])
-  @@map("instructor_message_task_recipients")
 }
 
 enum CourseMaterialType {

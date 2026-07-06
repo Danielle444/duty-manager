@@ -82,15 +82,6 @@ async function createMessageTaskInternal(
     return { success: false, error: "לא נמצאו נמענים מתאימים" };
   }
 
-  // Instructor "recipients" are not targeted yet (no instructor-group
-  // concept exists) - every currently-active instructor gets a row for
-  // every new MessageTask, matching how every instructor already sees every
-  // non-archived MessageTask today via getMessageTasksForInstructorView.
-  const activeInstructors = await prisma.instructor.findMany({
-    where: { isActive: true },
-    select: { id: true },
-  });
-
   await prisma.messageTask.create({
     data: {
       type: data.type,
@@ -102,14 +93,10 @@ async function createMessageTaskInternal(
       recipients: {
         create: resolved.ids.map((studentId) => ({ studentId })),
       },
-      instructorRecipients: {
-        create: activeInstructors.map((i) => ({ instructorId: i.id })),
-      },
     },
   });
 
   revalidatePath("/admin/messages");
-  revalidatePath("/instructor");
   return { success: true };
 }
 
@@ -254,7 +241,6 @@ export async function getMessageTaskRecipients(
 
 export interface InstructorMessageTaskView {
   id: string;
-  recipientId: string;
   type: MessageTaskTypeValue;
   title: string;
   body: string;
@@ -262,86 +248,39 @@ export interface InstructorMessageTaskView {
   groupName: string | null;
   createdByName: string | null;
   createdAt: string;
-  readAt: string | null;
-  completedAt: string | null;
 }
 
 // Read-only, no permission gate - same convention as getHorseAssignments,
 // since instructors have no NextAuth session in this app. Every instructor
-// can see this list regardless of canSendMessages. Driven by
-// InstructorMessageTaskRecipient (not a raw MessageTask scan) so it also
-// carries this instructor's own readAt/completedAt - a real per-instructor
-// state, not the admin-only aggregate exposed by getMessageTaskRecipients.
-export async function getMessageTasksForInstructorView(
-  instructorId: string
-): Promise<InstructorMessageTaskView[]> {
-  const recipients = await prisma.instructorMessageTaskRecipient.findMany({
-    where: { instructorId, messageTask: { isArchived: false } },
-    include: { messageTask: true },
+// can see this list regardless of canSendMessages - it's content-only, no
+// per-recipient read/completed status is exposed here (that stays
+// admin-only via getMessageTaskRecipients).
+export async function getMessageTasksForInstructorView(): Promise<InstructorMessageTaskView[]> {
+  const items = await prisma.messageTask.findMany({
+    where: { isArchived: false },
     orderBy: { createdAt: "desc" },
+    select: {
+      id: true,
+      type: true,
+      title: true,
+      body: true,
+      audience: true,
+      groupName: true,
+      createdByName: true,
+      createdAt: true,
+    },
   });
 
-  return recipients.map((r) => ({
-    id: r.messageTaskId,
-    recipientId: r.id,
-    type: r.messageTask.type,
-    title: r.messageTask.title,
-    body: r.messageTask.body,
-    audience: r.messageTask.audience,
-    groupName: r.messageTask.groupName,
-    createdByName: r.messageTask.createdByName,
-    createdAt: r.messageTask.createdAt.toISOString(),
-    readAt: r.readAt ? r.readAt.toISOString() : null,
-    completedAt: r.completedAt ? r.completedAt.toISOString() : null,
+  return items.map((m) => ({
+    id: m.id,
+    type: m.type,
+    title: m.title,
+    body: m.body,
+    audience: m.audience,
+    groupName: m.groupName,
+    createdByName: m.createdByName,
+    createdAt: m.createdAt.toISOString(),
   }));
-}
-
-// Instructors have no NextAuth session in this app, so ownership is
-// re-verified by re-reading the recipient row and comparing instructorId -
-// the same convention already established by markMessageRead/
-// setTaskCompleted for students, never trusted from client-supplied state.
-export async function markInstructorMessageRead(
-  recipientId: string,
-  instructorId: string
-): Promise<ActionResult> {
-  const recipient = await prisma.instructorMessageTaskRecipient.findUnique({
-    where: { id: recipientId },
-  });
-  if (!recipient || recipient.instructorId !== instructorId) {
-    return { success: false, error: "ההודעה לא נמצאה" };
-  }
-  if (recipient.readAt) {
-    return { success: true };
-  }
-
-  await prisma.instructorMessageTaskRecipient.update({
-    where: { id: recipientId },
-    data: { readAt: new Date() },
-  });
-
-  revalidatePath("/instructor");
-  return { success: true };
-}
-
-export async function markInstructorTaskCompleted(
-  recipientId: string,
-  instructorId: string,
-  isCompleted: boolean
-): Promise<ActionResult> {
-  const recipient = await prisma.instructorMessageTaskRecipient.findUnique({
-    where: { id: recipientId },
-  });
-  if (!recipient || recipient.instructorId !== instructorId) {
-    return { success: false, error: "המשימה לא נמצאה" };
-  }
-
-  await prisma.instructorMessageTaskRecipient.update({
-    where: { id: recipientId },
-    data: { completedAt: isCompleted ? new Date() : null },
-  });
-
-  revalidatePath("/instructor");
-  return { success: true };
 }
 
 export interface StudentMessageItem {

@@ -25,15 +25,11 @@ import { InstructorAttendanceSection } from "@/app/instructor/InstructorAttendan
 import { InstructorRidingSlotsSection } from "@/app/instructor/InstructorRidingSlotsSection";
 import { ContactsSection } from "@/lib/components/ContactsSection";
 import { HelpContent } from "@/lib/components/HelpContent";
-import { NotificationsList, type MessagePreviewItem } from "@/lib/components/NotificationsList";
+import { NotificationsList } from "@/lib/components/NotificationsList";
 import {
   getNotificationsForInstructor,
   markNotificationReadAsInstructor,
 } from "@/lib/actions/notifications";
-import {
-  getMessageTasksForInstructorView,
-  type InstructorMessageTaskView,
-} from "@/lib/actions/messages";
 import {
   formatHebrewDate,
   formatHebrewWeekday,
@@ -69,20 +65,6 @@ const INSTRUCTOR_MORE_ITEMS: { id: MainTabId; label: string }[] = [
 ];
 
 const INSTRUCTOR_ALL_TABS = [...INSTRUCTOR_MAIN_TABS, ...INSTRUCTOR_MORE_ITEMS];
-
-// Normalizes getMessageTasksForInstructorView()'s shape for the "עדכונים"
-// preview section, using this instructor's own InstructorMessageTaskRecipient
-// row (readAt for MESSAGE, completedAt for TASK) as the unread flag.
-function toMessagePreview(items: InstructorMessageTaskView[]): MessagePreviewItem[] {
-  return items.map((m) => ({
-    id: m.id,
-    typeLabel: m.type === "MESSAGE" ? "הודעה" : "משימה",
-    title: m.title,
-    body: m.body,
-    createdAt: m.createdAt,
-    isUnread: m.type === "MESSAGE" ? !m.readAt : !m.completedAt,
-  }));
-}
 
 // Shortcut grid shown on the "today" home screen - covers every instructor
 // section except "today" itself (navigating to the screen you're already on
@@ -602,8 +584,6 @@ export function InstructorClient({
           <NotificationsList
             fetchNotifications={() => getNotificationsForInstructor(session.id)}
             onMarkRead={(notificationId) => markNotificationReadAsInstructor(notificationId, session.id)}
-            fetchMessagePreview={() => getMessageTasksForInstructorView(session.id).then(toMessagePreview)}
-            onOpenMessages={() => setActiveTab("messages")}
           />
         )}
       </main>

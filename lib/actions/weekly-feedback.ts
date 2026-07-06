@@ -655,13 +655,20 @@ export interface WeeklyFeedbackSubmittedTrainee {
   studentId: string;
   fullName: string;
   groupName: string | null;
+  subgroupNumber: number | null;
   submittedAt: string;
+  // Whether this trainee is still active today (not at submission time) -
+  // lets the admin UI filter the "X מתוך Y" denominator to active trainees
+  // only, while still listing a since-deactivated trainee's historical
+  // submission in submittedTrainees/traineeResponses.
+  isActive: boolean;
 }
 
 export interface WeeklyFeedbackNotSubmittedTrainee {
   studentId: string;
   fullName: string;
   groupName: string | null;
+  subgroupNumber: number | null;
 }
 
 export interface WeeklyFeedbackRatingDistributionEntry {
@@ -729,7 +736,9 @@ export async function getWeeklyFeedbackResults(formId: string): Promise<WeeklyFe
       responses: {
         orderBy: { submittedAt: "asc" },
         include: {
-          student: { select: { id: true, fullName: true, groupName: true } },
+          student: {
+            select: { id: true, fullName: true, groupName: true, subgroupNumber: true, isActive: true },
+          },
           answers: true,
         },
       },
@@ -739,7 +748,7 @@ export async function getWeeklyFeedbackResults(formId: string): Promise<WeeklyFe
 
   const activeStudents = await prisma.student.findMany({
     where: { isActive: true },
-    select: { id: true, fullName: true, groupName: true },
+    select: { id: true, fullName: true, groupName: true, subgroupNumber: true },
     orderBy: { fullName: "asc" },
   });
 
@@ -757,13 +766,20 @@ export async function getWeeklyFeedbackResults(formId: string): Promise<WeeklyFe
       studentId: r.studentId,
       fullName: r.student.fullName,
       groupName: r.student.groupName,
+      subgroupNumber: r.student.subgroupNumber,
       submittedAt: r.submittedAt.toISOString(),
+      isActive: r.student.isActive,
     }))
     .sort((a, b) => a.fullName.localeCompare(b.fullName, "he"));
 
   const notSubmittedTrainees: WeeklyFeedbackNotSubmittedTrainee[] = activeStudents
     .filter((s) => !submittedStudentIds.has(s.id))
-    .map((s) => ({ studentId: s.id, fullName: s.fullName, groupName: s.groupName }));
+    .map((s) => ({
+      studentId: s.id,
+      fullName: s.fullName,
+      groupName: s.groupName,
+      subgroupNumber: s.subgroupNumber,
+    }));
 
   const answersByQuestionId = new Map<string, { response: (typeof form.responses)[number]; answer: (typeof form.responses)[number]["answers"][number] }[]>();
   for (const response of form.responses) {

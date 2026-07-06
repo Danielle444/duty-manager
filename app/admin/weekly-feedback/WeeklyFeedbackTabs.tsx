@@ -19,9 +19,14 @@ import {
   type WeeklyFeedbackDraft,
   type WeeklyFeedbackDraftQuestion,
   type WeeklyFeedbackFormListItem,
+  type WeeklyFeedbackFreeTextAnswer,
+  type WeeklyFeedbackNotSubmittedTrainee,
   type WeeklyFeedbackQuestionResult,
+  type WeeklyFeedbackRatingDistributionEntry,
   type WeeklyFeedbackResults,
   type WeeklyFeedbackStatusValue,
+  type WeeklyFeedbackSubmittedTrainee,
+  type WeeklyFeedbackTraineeResponse,
 } from "@/lib/actions/weekly-feedback";
 import type { WeeklyScheduleOption } from "@/lib/actions/weekly-schedule";
 import { formatHebrewDate, formatHebrewDateTime, parseDateKey } from "@/lib/dates";
@@ -102,6 +107,72 @@ function AvailabilityBadge({ form }: { form: AvailabilityInput }) {
   return (
     <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${info.className}`}>{info.label}</span>
   );
+}
+
+function matchesGroupSubgroupFilter(
+  groupName: string | null,
+  subgroupNumber: number | null,
+  groupFilter: string,
+  subgroupFilter: string
+): boolean {
+  if (groupFilter && groupName !== groupFilter) return false;
+  if (subgroupFilter && String(subgroupNumber ?? "") !== subgroupFilter) return false;
+  return true;
+}
+
+// Recomputes per-question aggregates from a (possibly filtered) set of
+// traineeResponses, rather than trusting getWeeklyFeedbackResults'
+// questionResults (which always reflects every response, unfiltered) - the
+// math mirrors the server's own averageRating/ratingDistribution/
+// freeTextAnswers logic exactly, since traineeResponses already carries
+// every answer needed and no new query is required. Question metadata
+// (section/prompt/type/sortOrder) is reused as-is from questionResults.
+function computeQuestionResults(
+  questionMetas: WeeklyFeedbackQuestionResult[],
+  traineeResponses: WeeklyFeedbackTraineeResponse[]
+): WeeklyFeedbackQuestionResult[] {
+  return questionMetas.map((meta) => {
+    const answers = traineeResponses
+      .map((tr) => tr.answers.find((a) => a.questionId === meta.questionId))
+      .filter((a): a is NonNullable<typeof a> => a != null);
+
+    if (meta.type === "FREE_TEXT") {
+      const freeTextAnswers: WeeklyFeedbackFreeTextAnswer[] = traineeResponses.flatMap((tr) => {
+        const answer = tr.answers.find((a) => a.questionId === meta.questionId);
+        if (!answer?.textValue || answer.textValue.trim() === "") return [];
+        return [
+          {
+            studentId: tr.studentId,
+            studentName: tr.studentName,
+            submittedAt: tr.submittedAt,
+            text: answer.textValue,
+          },
+        ];
+      });
+      return {
+        ...meta,
+        answerCount: freeTextAnswers.length,
+        averageRating: null,
+        ratingDistribution: null,
+        freeTextAnswers,
+      };
+    }
+
+    const ratings = answers.map((a) => a.ratingValue).filter((v): v is number => v != null);
+    const maxValue = meta.type === "COMPARISON_3" ? 3 : 5;
+    const ratingDistribution: WeeklyFeedbackRatingDistributionEntry[] = Array.from(
+      { length: maxValue },
+      (_, i) => ({ value: i + 1, count: ratings.filter((r) => r === i + 1).length })
+    );
+
+    return {
+      ...meta,
+      answerCount: ratings.length,
+      averageRating: ratings.length > 0 ? ratings.reduce((sum, r) => sum + r, 0) / ratings.length : null,
+      ratingDistribution,
+      freeTextAnswers: null,
+    };
+  });
 }
 
 export function WeeklyFeedbackTabs({
@@ -383,6 +454,8 @@ export function WeeklyFeedbackTabs({
 
   const [results, setResults] = useState<WeeklyFeedbackResults | null>(null);
   const [isResultsLoading, setIsResultsLoading] = useState(false);
+  const [resultsGroupFilter, setResultsGroupFilter] = useState("");
+  const [resultsSubgroupFilter, setResultsSubgroupFilter] = useState("");
 
   // Only fetched while the "תוצאות" tab is actually open - unlike the draft
   // loader above (shared by the draft/schedule tabs), this query pulls every
@@ -403,6 +476,92 @@ export function WeeklyFeedbackTabs({
       cancelled = true;
     };
   }, [selectedFormId, tab]);
+
+  // Resets the group/subgroup filters whenever a different form is selected
+  // (not on every tab toggle) - otherwise a filter chosen for one form could
+  // silently carry over to another form that has no such group at all,
+  // looking like "no data" rather than a stale filter.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setResultsGroupFilter("");
+    setResultsSubgroupFilter("");
+  }, [selectedFormId]);
+
+  const groupOptions = useMemo(() => {
+    if (!results) return [];
+    const names = new Set<string>();
+    for (const t of results.submittedTrainees) if (t.groupName) names.add(t.groupName);
+    for (const t of results.notSubmittedTrainees) if (t.groupName) names.add(t.groupName);
+    return Array.from(names).sort((a, b) => a.localeCompare(b, "he"));
+  }, [results]);
+
+  const subgroupOptions = useMemo(() => {
+    if (!results) return [];
+    const numbers = new Set<number>();
+    const consider = (t: { groupName: string | null; subgroupNumber: number | null }) => {
+      if (resultsGroupFilter && t.groupName !== resultsGroupFilter) return;
+      if (t.subgroupNumber != null) numbers.add(t.subgroupNumber);
+    };
+    results.submittedTrainees.forEach(consider);
+    results.notSubmittedTrainees.forEach(consider);
+    return Array.from(numbers).sort((a, b) => a - b);
+  }, [results, resultsGroupFilter]);
+
+  const filteredSubmittedTrainees: WeeklyFeedbackSubmittedTrainee[] = useMemo(() => {
+    if (!results) return [];
+    return results.submittedTrainees.filter((t) =>
+      matchesGroupSubgroupFilter(t.groupName, t.subgroupNumber, resultsGroupFilter, resultsSubgroupFilter)
+    );
+  }, [results, resultsGroupFilter, resultsSubgroupFilter]);
+
+  const filteredNotSubmittedTrainees: WeeklyFeedbackNotSubmittedTrainee[] = useMemo(() => {
+    if (!results) return [];
+    return results.notSubmittedTrainees.filter((t) =>
+      matchesGroupSubgroupFilter(t.groupName, t.subgroupNumber, resultsGroupFilter, resultsSubgroupFilter)
+    );
+  }, [results, resultsGroupFilter, resultsSubgroupFilter]);
+
+  // Active trainees remain the denominator, same as the unfiltered summary -
+  // just recomputed from the already-filtered lists: filteredNotSubmittedTrainees
+  // is active-only by construction (from activeStudents), and filteredSubmittedTrainees
+  // is narrowed to isActive here for the same reason.
+  const filteredSummary = useMemo(() => {
+    const activeSubmittedCount = filteredSubmittedTrainees.filter((t) => t.isActive).length;
+    return {
+      activeTraineeCount: activeSubmittedCount + filteredNotSubmittedTrainees.length,
+      submittedCount: activeSubmittedCount,
+      notSubmittedCount: filteredNotSubmittedTrainees.length,
+    };
+  }, [filteredSubmittedTrainees, filteredNotSubmittedTrainees]);
+
+  // traineeResponses has no group/subgroup of its own - every studentId in it
+  // also appears in submittedTrainees (both derived from the same
+  // form.responses), so that list doubles as the lookup for filtering here.
+  const filteredTraineeResponses: WeeklyFeedbackTraineeResponse[] = useMemo(() => {
+    if (!results) return [];
+    const infoById = new Map(results.submittedTrainees.map((t) => [t.studentId, t]));
+    return results.traineeResponses.filter((tr) => {
+      const info = infoById.get(tr.studentId);
+      if (!info) return true;
+      return matchesGroupSubgroupFilter(
+        info.groupName,
+        info.subgroupNumber,
+        resultsGroupFilter,
+        resultsSubgroupFilter
+      );
+    });
+  }, [results, resultsGroupFilter, resultsSubgroupFilter]);
+
+  const filteredQuestionResults: WeeklyFeedbackQuestionResult[] = useMemo(() => {
+    if (!results) return [];
+    return computeQuestionResults(results.questionResults, filteredTraineeResponses);
+  }, [results, filteredTraineeResponses]);
+
+  const resultsFilterSummaryLabel = !resultsGroupFilter
+    ? "כל החניכים"
+    : resultsSubgroupFilter
+      ? `קבוצה ${resultsGroupFilter} · תת-קבוצה ${resultsSubgroupFilter}`
+      : `קבוצה ${resultsGroupFilter}`;
 
   return (
     <div className="flex flex-col gap-4">
@@ -795,16 +954,53 @@ export function WeeklyFeedbackTabs({
                 </p>
               </div>
 
+              <div className="flex flex-wrap items-end gap-3 rounded-xl border border-border bg-card p-4">
+                <label className="flex flex-col gap-1 text-sm">
+                  קבוצה
+                  <select
+                    value={resultsGroupFilter}
+                    onChange={(e) => {
+                      setResultsGroupFilter(e.target.value);
+                      setResultsSubgroupFilter("");
+                    }}
+                    className="rounded-lg border border-border px-3 py-2 text-sm"
+                  >
+                    <option value="">כל הקבוצות</option>
+                    {groupOptions.map((g) => (
+                      <option key={g} value={g}>
+                        קבוצה {g}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="flex flex-col gap-1 text-sm">
+                  תת-קבוצה
+                  <select
+                    value={resultsSubgroupFilter}
+                    onChange={(e) => setResultsSubgroupFilter(e.target.value)}
+                    className="rounded-lg border border-border px-3 py-2 text-sm"
+                  >
+                    <option value="">כל תתי-הקבוצות</option>
+                    {subgroupOptions.map((n) => (
+                      <option key={n} value={n}>
+                        {n}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <p className="text-xs text-muted-foreground">מציג נתונים עבור: {resultsFilterSummaryLabel}</p>
+              </div>
+
               <div className="grid grid-cols-2 gap-3">
                 <div className="rounded-xl border border-border bg-card p-4 text-center">
                   <p className="text-2xl font-bold text-card-foreground">
-                    {results.summary.submittedCount} מתוך {results.summary.activeTraineeCount}
+                    {filteredSummary.submittedCount} מתוך {filteredSummary.activeTraineeCount}
                   </p>
                   <p className="text-xs text-muted-foreground">חניכים הגישו</p>
                 </div>
                 <div className="rounded-xl border border-border bg-card p-4 text-center">
                   <p className="text-2xl font-bold text-card-foreground">
-                    {results.summary.notSubmittedCount}
+                    {filteredSummary.notSubmittedCount}
                   </p>
                   <p className="text-xs text-muted-foreground">לא הגישו</p>
                 </div>
@@ -817,13 +1013,13 @@ export function WeeklyFeedbackTabs({
                 <div className="mt-3 flex flex-col gap-4">
                   <div>
                     <p className="mb-1 text-xs font-semibold text-muted-foreground">
-                      הגישו ({results.submittedTrainees.length})
+                      הגישו ({filteredSubmittedTrainees.length})
                     </p>
-                    {results.submittedTrainees.length === 0 ? (
+                    {filteredSubmittedTrainees.length === 0 ? (
                       <p className="text-sm text-muted-foreground">אין עדיין הגשות</p>
                     ) : (
                       <ul className="flex flex-col gap-1">
-                        {results.submittedTrainees.map((t) => (
+                        {filteredSubmittedTrainees.map((t) => (
                           <li
                             key={t.studentId}
                             className="flex flex-wrap items-center justify-between gap-2 border-b border-border py-1 text-sm last:border-0"
@@ -831,6 +1027,7 @@ export function WeeklyFeedbackTabs({
                             <span className="text-card-foreground">
                               {t.fullName}
                               {t.groupName ? ` · ${t.groupName}` : ""}
+                              {t.subgroupNumber != null ? ` · תת-קבוצה ${t.subgroupNumber}` : ""}
                             </span>
                             <span className="text-xs text-muted-foreground">
                               {formatHebrewDateTime(new Date(t.submittedAt))}
@@ -842,19 +1039,20 @@ export function WeeklyFeedbackTabs({
                   </div>
                   <div>
                     <p className="mb-1 text-xs font-semibold text-muted-foreground">
-                      לא הגישו ({results.notSubmittedTrainees.length})
+                      לא הגישו ({filteredNotSubmittedTrainees.length})
                     </p>
-                    {results.notSubmittedTrainees.length === 0 ? (
+                    {filteredNotSubmittedTrainees.length === 0 ? (
                       <p className="text-sm text-muted-foreground">כל החניכים הפעילים הגישו</p>
                     ) : (
                       <ul className="flex flex-col gap-1">
-                        {results.notSubmittedTrainees.map((t) => (
+                        {filteredNotSubmittedTrainees.map((t) => (
                           <li
                             key={t.studentId}
                             className="border-b border-border py-1 text-sm text-card-foreground last:border-0"
                           >
                             {t.fullName}
                             {t.groupName ? ` · ${t.groupName}` : ""}
+                            {t.subgroupNumber != null ? ` · תת-קבוצה ${t.subgroupNumber}` : ""}
                           </li>
                         ))}
                       </ul>
@@ -865,7 +1063,7 @@ export function WeeklyFeedbackTabs({
 
               <div className="flex flex-col gap-3">
                 {Object.entries(
-                  results.questionResults.reduce<Record<string, WeeklyFeedbackQuestionResult[]>>(
+                  filteredQuestionResults.reduce<Record<string, WeeklyFeedbackQuestionResult[]>>(
                     (acc, q) => {
                       (acc[q.section] ??= []).push(q);
                       return acc;
@@ -930,13 +1128,13 @@ export function WeeklyFeedbackTabs({
                 ))}
               </div>
 
-              {results.traineeResponses.length > 0 && (
+              {filteredTraineeResponses.length > 0 && (
                 <details className="rounded-xl border border-border bg-card p-4">
                   <summary className="cursor-pointer text-sm font-bold text-card-foreground">
-                    תשובות לפי חניך ({results.traineeResponses.length})
+                    תשובות לפי חניך ({filteredTraineeResponses.length})
                   </summary>
                   <div className="mt-3 flex flex-col gap-2">
-                    {results.traineeResponses.map((tr) => (
+                    {filteredTraineeResponses.map((tr) => (
                       <details key={tr.studentId} className="rounded-lg border border-border p-3">
                         <summary className="cursor-pointer text-sm font-semibold text-card-foreground">
                           {tr.studentName} · {formatHebrewDateTime(new Date(tr.submittedAt))}

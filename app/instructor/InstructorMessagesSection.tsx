@@ -76,6 +76,7 @@ export function InstructorMessagesSection({
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
+  const [isComposerOpen, setIsComposerOpen] = useState(false);
 
   const groups = useMemo(
     () =>
@@ -124,7 +125,14 @@ export function InstructorMessagesSection({
       }
       resetForm();
       setSuccessMessage("נשלח בהצלחה");
+      setIsComposerOpen(false);
     });
+  }
+
+  function openComposer() {
+    setError(null);
+    setSuccessMessage(null);
+    setIsComposerOpen(true);
   }
 
   return (
@@ -170,9 +178,29 @@ export function InstructorMessagesSection({
         <p className="rounded-2xl border border-border bg-card p-5 text-base text-muted-foreground">
           אין הרשאה לשליחת הודעות ומשימות
         </p>
+      ) : !isComposerOpen ? (
+        <div className="flex flex-col gap-2">
+          <button
+            type="button"
+            onClick={openComposer}
+            className="rounded-2xl border-2 border-dashed border-primary/40 bg-card p-4 text-center text-base font-bold text-primary hover:bg-secondary"
+          >
+            + יצירת הודעה או משימה
+          </button>
+          {successMessage && <p className="text-sm text-success">{successMessage}</p>}
+        </div>
       ) : (
       <div className="rounded-2xl border border-border bg-card p-4">
-        <h2 className="mb-3 text-lg font-bold text-card-foreground">יצירת הודעה/משימה</h2>
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-lg font-bold text-card-foreground">יצירת הודעה/משימה</h2>
+          <button
+            type="button"
+            onClick={() => setIsComposerOpen(false)}
+            className="text-sm text-muted-foreground underline"
+          >
+            צמצום
+          </button>
+        </div>
         <form onSubmit={handleSubmit} className="flex flex-col gap-3">
           <div className="flex flex-col gap-2 text-sm">
             <label className="flex items-center gap-2">
@@ -295,7 +323,6 @@ export function InstructorMessagesSection({
           </div>
 
           {error && <p className="text-sm text-danger">{error}</p>}
-          {successMessage && <p className="text-sm text-success">{successMessage}</p>}
           <Button type="submit" disabled={isPending} className="!py-3 !text-base">
             {isPending ? "שולח..." : "שליחה"}
           </Button>

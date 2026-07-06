@@ -3,10 +3,16 @@
 import { FormEvent, useMemo, useState, useTransition } from "react";
 import { Button } from "@/lib/components/Button";
 import { Modal } from "@/lib/components/Modal";
+import { HorseFeedingSection } from "@/lib/components/HorseFeedingSection";
 import { updateStudentHorseInfo, type HorseAssignmentRow } from "@/lib/actions/horses";
+import {
+  getHorseFeedingOverviewForAdmin,
+  upsertHorseFeedingMealsAsAdmin,
+} from "@/lib/actions/horse-feeding";
 import { getHorseDisplayInfo, type HorseBadgeType } from "@/lib/horse-info";
 
 type HorseTypeFilter = "all" | HorseBadgeType;
+type ViewMode = "assignments" | "feeding";
 
 const HORSE_TYPE_LABELS: Record<HorseTypeFilter, string> = {
   all: "הכל",
@@ -22,6 +28,7 @@ function badgeClass(badgeType: HorseBadgeType): string {
 }
 
 export function HorsesClient({ students }: { students: HorseAssignmentRow[] }) {
+  const [viewMode, setViewMode] = useState<ViewMode>("assignments");
   const [rows, setRows] = useState(students);
   const [groupFilter, setGroupFilter] = useState("all");
   const [nameQuery, setNameQuery] = useState("");
@@ -85,6 +92,39 @@ export function HorsesClient({ students }: { students: HorseAssignmentRow[] }) {
 
   return (
     <div className="flex flex-col gap-4">
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={() => setViewMode("assignments")}
+          className={`rounded-full px-4 py-2 text-sm font-medium ${
+            viewMode === "assignments"
+              ? "bg-primary text-primary-foreground"
+              : "bg-muted text-muted-foreground"
+          }`}
+        >
+          שיוך סוסים
+        </button>
+        <button
+          type="button"
+          onClick={() => setViewMode("feeding")}
+          className={`rounded-full px-4 py-2 text-sm font-medium ${
+            viewMode === "feeding"
+              ? "bg-primary text-primary-foreground"
+              : "bg-muted text-muted-foreground"
+          }`}
+        >
+          האכלות
+        </button>
+      </div>
+
+      {viewMode === "feeding" ? (
+        <HorseFeedingSection
+          canEdit
+          fetchOverview={getHorseFeedingOverviewForAdmin}
+          onSave={upsertHorseFeedingMealsAsAdmin}
+        />
+      ) : (
+        <>
       <div className="rounded-xl border border-border bg-card p-4">
         <div className="flex flex-wrap gap-2">
           <select
@@ -240,6 +280,8 @@ export function HorsesClient({ students }: { students: HorseAssignmentRow[] }) {
           </div>
         </form>
       </Modal>
+        </>
+      )}
     </div>
   );
 }

@@ -3,14 +3,21 @@
 import { FormEvent, useEffect, useMemo, useState, useTransition } from "react";
 import { Button } from "@/lib/components/Button";
 import { Modal } from "@/lib/components/Modal";
+import { HorseFeedingSection } from "@/lib/components/HorseFeedingSection";
 import {
   getHorseAssignments,
   updateStudentHorseInfoAsInstructor,
   type HorseAssignmentRow,
 } from "@/lib/actions/horses";
+import {
+  getHorseFeedingOverviewForInstructor,
+  upsertHorseFeedingMealsAsInstructor,
+  type HorseFeedingUpsertInput,
+} from "@/lib/actions/horse-feeding";
 import { getHorseDisplayInfo, type HorseBadgeType } from "@/lib/horse-info";
 
 type HorseTypeFilter = "all" | HorseBadgeType;
+type ViewMode = "assignments" | "feeding";
 
 const HORSE_TYPE_LABELS: Record<HorseTypeFilter, string> = {
   all: "הכל",
@@ -100,10 +107,13 @@ function buildSections(rows: HorseAssignmentRow[]): GroupSection[] {
 export function InstructorHorsesSection({
   instructorId,
   canEdit,
+  canEditFeeding,
 }: {
   instructorId: string;
   canEdit: boolean;
+  canEditFeeding: boolean;
 }) {
+  const [viewMode, setViewMode] = useState<ViewMode>("assignments");
   const [rows, setRows] = useState<HorseAssignmentRow[] | null>(null);
   const [groupTab, setGroupTab] = useState("all");
   const [nameQuery, setNameQuery] = useState("");
@@ -177,8 +187,45 @@ export function InstructorHorsesSection({
     });
   }
 
+  function saveFeeding(input: HorseFeedingUpsertInput) {
+    return upsertHorseFeedingMealsAsInstructor(instructorId, input);
+  }
+
   return (
     <div className="flex flex-col gap-4">
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={() => setViewMode("assignments")}
+          className={`rounded-full px-4 py-2 text-sm font-medium ${
+            viewMode === "assignments"
+              ? "bg-primary text-primary-foreground"
+              : "bg-muted text-muted-foreground"
+          }`}
+        >
+          שיוך סוסים
+        </button>
+        <button
+          type="button"
+          onClick={() => setViewMode("feeding")}
+          className={`rounded-full px-4 py-2 text-sm font-medium ${
+            viewMode === "feeding"
+              ? "bg-primary text-primary-foreground"
+              : "bg-muted text-muted-foreground"
+          }`}
+        >
+          האכלות
+        </button>
+      </div>
+
+      {viewMode === "feeding" ? (
+        <HorseFeedingSection
+          canEdit={canEditFeeding}
+          fetchOverview={getHorseFeedingOverviewForInstructor}
+          onSave={saveFeeding}
+        />
+      ) : (
+        <>
       <div className="rounded-2xl border border-border bg-card p-4">
         <h2 className="mb-3 text-lg font-bold text-card-foreground">חלוקה לקבוצות וסוסים</h2>
         <div className="flex flex-col gap-2">
@@ -369,6 +416,8 @@ export function InstructorHorsesSection({
             </div>
           </form>
         </Modal>
+      )}
+        </>
       )}
     </div>
   );

@@ -39,6 +39,38 @@ model Student {
   @@map("students")
 }
 
+enum HorseMealType {
+  MORNING
+  LUNCH
+  EVENING
+}
+
+// A horse's per-meal feeding instructions. There is still no separate Horse
+// table (Student.assignedHorseName/privateHorseName remain the only horse
+// identity in this app) - horseName is the natural key here too, matching
+// that same existing convention, rather than introducing a full Horse
+// entity just for this. LUNCH rows are optional - a horse with only
+// MORNING/EVENING rows simply has no lunch feeding. hayType/concentrateType/
+// concentrateAmount are all free text on purpose (never an enum, never
+// numeric) - amounts like "1/4" or "חופן" don't fit a number column, and
+// hay/concentrate types are meant to grow from whatever admins actually type
+// (see getKnownHayTypes/getKnownConcentrateTypes), not a fixed list.
+model HorseFeedingMeal {
+  id                String        @id @default(cuid())
+  horseName         String
+  mealType          HorseMealType
+  hayType           String?
+  concentrateType   String?
+  concentrateAmount String?
+  notes             String?
+  updatedByName     String?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  @@unique([horseName, mealType])
+  @@map("horse_feeding_meals")
+}
+
 model StudentAvailability {
   id          String   @id @default(cuid())
   studentId   String
@@ -217,6 +249,13 @@ model Instructor {
   // only the riding slots this instructor is assigned to. All instructors
   // can still view riding slots/assignments regardless of this flag.
   canEditRidingNotes Boolean @default(false)
+
+  // Grants permission to edit HorseFeedingMeal from the instructor app;
+  // false by default. Independent of canEditHorseAssignments - editing who
+  // rides which horse and editing that horse's feeding instructions are
+  // different trust levels. All instructors can still view feeding
+  // instructions regardless of this flag.
+  canEditHorseFeeding Boolean @default(false)
 
   ridingSlotAssignments RidingSlotAssignment[]
 

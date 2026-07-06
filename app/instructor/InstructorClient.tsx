@@ -90,6 +90,7 @@ interface StoredSession {
   canSendMessages: boolean;
   canEditAttendance: boolean;
   canEditRidingNotes: boolean;
+  canEditHorseFeeding: boolean;
 }
 
 interface StudentOption {
@@ -458,6 +459,7 @@ export function InstructorClient({
           <InstructorHorsesSection
             instructorId={session.id}
             canEdit={session.canEditHorseAssignments}
+            canEditFeeding={session.canEditHorseFeeding}
           />
         )}
 

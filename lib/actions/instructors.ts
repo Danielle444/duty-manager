@@ -150,3 +150,17 @@ export async function setInstructorCanEditRidingNotes(
   revalidatePath("/instructor");
   return { success: true };
 }
+
+export async function setInstructorCanEditHorseFeeding(
+  instructorId: string,
+  canEditHorseFeeding: boolean
+): Promise<ActionResult> {
+  await requireAdmin();
+  await prisma.instructor.update({
+    where: { id: instructorId },
+    data: { canEditHorseFeeding },
+  });
+  revalidatePath("/admin/instructors");
+  revalidatePath("/instructor");
+  return { success: true };
+}

@@ -10,6 +10,7 @@ import {
   setInstructorCanSendMessages,
   setInstructorCanEditAttendance,
   setInstructorCanEditRidingNotes,
+  setInstructorCanEditHorseFeeding,
   updateInstructor,
 } from "@/lib/actions/instructors";
 import { maskIdentityNumber } from "@/lib/format";
@@ -34,6 +35,7 @@ interface InstructorRow {
   canSendMessages: boolean;
   canEditAttendance: boolean;
   canEditRidingNotes: boolean;
+  canEditHorseFeeding: boolean;
   ridingSummary: InstructorRidingSummary;
 }
 
@@ -101,6 +103,12 @@ export function InstructorsClient({ instructors }: { instructors: InstructorRow[
     });
   }
 
+  function handleToggleCanEditHorseFeeding(instructor: InstructorRow) {
+    startTransition(async () => {
+      await setInstructorCanEditHorseFeeding(instructor.id, !instructor.canEditHorseFeeding);
+    });
+  }
+
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap gap-2">
@@ -132,6 +140,7 @@ export function InstructorsClient({ instructors }: { instructors: InstructorRow[
               <th className="px-4 py-3 text-right font-medium">שליחת הודעות ומשימות</th>
               <th className="px-4 py-3 text-right font-medium">עריכת נוכחות</th>
               <th className="px-4 py-3 text-right font-medium">עריכת הערות רכיבה</th>
+              <th className="px-4 py-3 text-right font-medium">עריכת האכלות</th>
               <th className="px-4 py-3 text-right font-medium">שיבוצי רכיבה (סה&quot;כ)</th>
               <th className="px-4 py-3 text-right font-medium">פעולות</th>
             </tr>
@@ -203,6 +212,16 @@ export function InstructorsClient({ instructors }: { instructors: InstructorRow[
                     title="יכול/ה לערוך הערות רכיבה"
                   />
                 </td>
+                <td className="px-4 py-3">
+                  <input
+                    type="checkbox"
+                    checked={instructor.canEditHorseFeeding}
+                    disabled={isPending}
+                    onChange={() => handleToggleCanEditHorseFeeding(instructor)}
+                    aria-label={`יכול/ה לערוך האכלות עבור ${instructor.fullName}`}
+                    title="יכול/ה לערוך האכלות"
+                  />
+                </td>
                 <td
                   className="px-4 py-3 text-muted-foreground"
                   title={`היום: ${instructor.ridingSummary.todayAssigned} · עתידיות: ${instructor.ridingSummary.upcomingAssigned} · עברו: ${instructor.ridingSummary.pastAssigned}`}
@@ -238,7 +257,7 @@ export function InstructorsClient({ instructors }: { instructors: InstructorRow[
             ))}
             {filteredInstructors.length === 0 && (
               <tr>
-                <td colSpan={10} className="px-4 py-8 text-center text-muted-foreground">
+                <td colSpan={11} className="px-4 py-8 text-center text-muted-foreground">
                   {instructors.length === 0 ? "אין מדריכים עדיין" : "אין מדריכים התואמים את החיפוש"}
                 </td>
               </tr>

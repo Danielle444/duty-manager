@@ -498,26 +498,35 @@ export function InstructorClient({
               </div>
             </div>
 
-            <InstructorDutiesSection
-              weeklyScheduleId={todayWeek?.id ?? null}
-              dayFilter={todayKey}
-              students={students}
-              dutyTypes={dutyTypes}
-            />
-
+            {/* Internal scroll (not full-page) so this + the duties box below
+                keep the "today" screen a bounded height instead of growing
+                arbitrarily long - each box scrolls its own content
+                independently, same max-height/overflow-y-auto pattern already
+                used for the riding-notes modal in InstructorRidingSlotsSection. */}
             {weeks === null ? (
               <p className="text-base text-muted-foreground">טוען...</p>
             ) : todayWeek ? (
-              <InstructorScheduleSection
-                instructorId={session.id}
-                weeklyScheduleId={todayWeek.id}
-                dayFilter={todayKey}
-              />
+              <div className="max-h-[40vh] overflow-y-auto">
+                <InstructorScheduleSection
+                  instructorId={session.id}
+                  weeklyScheduleId={todayWeek.id}
+                  dayFilter={todayKey}
+                />
+              </div>
             ) : (
               <p className="rounded-2xl border border-border bg-card p-5 text-base text-muted-foreground">
                 עדיין לא הועלה לו&quot;ז להיום
               </p>
             )}
+
+            <div className="max-h-[40vh] overflow-y-auto">
+              <InstructorDutiesSection
+                weeklyScheduleId={todayWeek?.id ?? null}
+                dayFilter={todayKey}
+                students={students}
+                dutyTypes={dutyTypes}
+              />
+            </div>
           </div>
         )}
 

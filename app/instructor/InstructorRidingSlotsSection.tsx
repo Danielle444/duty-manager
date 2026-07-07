@@ -764,9 +764,17 @@ export function InstructorRidingSlotsSection({
                   return (
                     <div
                       key={activity.scheduleItemIds.join("+")}
+                      // The whole card opens the same "צפייה בחניכים" modal -
+                      // the button below is kept for discoverability/keyboard
+                      // access, but on mobile the button alone was too small
+                      // a target. Only clickable once a ridingSlot exists
+                      // (openStudents itself already no-ops otherwise), so an
+                      // unconfigured slot's card never shows a false
+                      // clickable affordance.
+                      onClick={activity.ridingSlot ? () => openStudents(activity) : undefined}
                       className={`rounded-xl border-2 border-border p-4 ${getScheduleGroupColorClass(
                         activity.groupName
-                      )}`}
+                      )} ${activity.ridingSlot ? "cursor-pointer active:bg-black/5" : ""}`}
                     >
                       <div className="mb-1 flex flex-wrap items-center justify-between gap-1.5">
                         <span className="font-semibold text-card-foreground">
@@ -805,7 +813,13 @@ export function InstructorRidingSlotsSection({
                           <Button
                             variant="secondary"
                             className="!px-2 !py-1 !text-xs"
-                            onClick={() => openStudents(activity)}
+                            onClick={(e) => {
+                              // Stops the click from also bubbling to the
+                              // card's own onClick above, which would
+                              // otherwise call openStudents twice for one tap.
+                              e.stopPropagation();
+                              openStudents(activity);
+                            }}
                           >
                             צפייה בחניכים
                           </Button>

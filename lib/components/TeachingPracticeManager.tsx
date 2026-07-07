@@ -245,6 +245,20 @@ export function TeachingPracticeManager({
   // is already true, so this flag alone never unlocks editing on its own.
   const canEditHorseFields = role === "admin" || canManageHorses;
 
+  // Stage A: view/edit mode. canEdit/canEditHorseFields above stay exactly
+  // what they always meant ("is this user allowed to edit at all") - they
+  // gate whether the edit-mode toggle button even appears. isEditMode is a
+  // separate, purely client-side "have they actually turned editing on"
+  // switch, always starting false (view-only) on every mount/reload - never
+  // persisted, so there is no way to land back in edit mode without
+  // deliberately pressing the button again. Every UI edit affordance in this
+  // file reads effectiveCanEdit/effectiveCanEditHorseFields, never the bare
+  // canEdit/canEditHorseFields, so permission alone is never enough to show
+  // a live control - the user must also be in edit mode.
+  const [isEditMode, setIsEditMode] = useState(false);
+  const effectiveCanEdit = canEdit && isEditMode;
+  const effectiveCanEditHorseFields = canEditHorseFields && isEditMode;
+
   const [tab, setTab] = useState<Tab>("tracks");
 
   const [tracks, setTracks] = useState<TeachingPracticeTrackSummary[] | null>(null);
@@ -992,19 +1006,35 @@ export function TeachingPracticeManager({
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex flex-wrap gap-2">
-        {(Object.keys(TAB_LABELS) as Tab[]).map((t) => (
-          <button
-            key={t}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap gap-2">
+          {(Object.keys(TAB_LABELS) as Tab[]).map((t) => (
+            <button
+              key={t}
+              type="button"
+              onClick={() => setTab(t)}
+              className={`rounded-full px-4 py-2 text-sm font-medium ${
+                tab === t ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"
+              }`}
+            >
+              {TAB_LABELS[t]}
+            </button>
+          ))}
+        </div>
+        {/* Only ever rendered for canEdit users - someone without edit
+            permission never sees this button, and therefore never has a way
+            to reach isEditMode=true (view-only stays view-only for them,
+            with no client-side path around it). */}
+        {canEdit && (
+          <Button
             type="button"
-            onClick={() => setTab(t)}
-            className={`rounded-full px-4 py-2 text-sm font-medium ${
-              tab === t ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"
-            }`}
+            variant={isEditMode ? "secondary" : "primary"}
+            className="!px-3 !py-1.5 !text-sm"
+            onClick={() => setIsEditMode((prev) => !prev)}
           >
-            {TAB_LABELS[t]}
-          </button>
-        ))}
+            {isEditMode ? "יציאה ממצב עריכה" : "מעבר למצב עריכה"}
+          </Button>
+        )}
       </div>
 
       {!canEdit && (
@@ -1015,7 +1045,7 @@ export function TeachingPracticeManager({
 
       {tab === "tracks" && (
         <div className="flex flex-col gap-4">
-          {canEdit && (
+          {effectiveCanEdit && (
             <div className="rounded-xl border border-border bg-card p-4">
               <button
                 type="button"
@@ -1179,7 +1209,7 @@ export function TeachingPracticeManager({
             </div>
           )}
 
-          {canEdit && (
+          {effectiveCanEdit && (
             <div className="rounded-xl border border-border bg-card p-4">
               <button
                 type="button"
@@ -1411,14 +1441,18 @@ export function TeachingPracticeManager({
                                   </td>
                                   <TraineeAssignmentCell
                                     value={row.traineeIdsBySlot[0] ?? ""}
+                                    label={row.traineeNamesBySlot[0] ?? "—"}
                                     options={traineeSelectOptions(row.track, row.traineeIdsBySlot[0] ?? "")}
-                                    disabled={!canEdit || savingCellKey === `${row.track.id}-0`}
+                                    editable={effectiveCanEdit}
+                                    disabled={savingCellKey === `${row.track.id}-0`}
                                     onAssign={(traineeId) => handleInlineAssignTrainee(row.track, 0, traineeId)}
                                   />
                                   <TraineeAssignmentCell
                                     value={row.traineeIdsBySlot[1] ?? ""}
+                                    label={row.traineeNamesBySlot[1] ?? "—"}
                                     options={traineeSelectOptions(row.track, row.traineeIdsBySlot[1] ?? "")}
-                                    disabled={!canEdit || savingCellKey === `${row.track.id}-1`}
+                                    editable={effectiveCanEdit}
+                                    disabled={savingCellKey === `${row.track.id}-1`}
                                     onAssign={(traineeId) => handleInlineAssignTrainee(row.track, 1, traineeId)}
                                   />
                                   <td className="px-2 py-2">{row.childFirstName}</td>
@@ -1540,25 +1574,33 @@ export function TeachingPracticeManager({
                                               </ClickableCell>
                                               <TraineeAssignmentCell
                                                 value={privateRow.traineeIdsBySlot[0] ?? ""}
+                                                label={privateRow.traineeNamesBySlot[0] ?? "—"}
                                                 options={traineeSelectOptions(
                                                   privateRow.track,
                                                   privateRow.traineeIdsBySlot[0] ?? ""
                                                 )}
-                                                disabled={!canEdit || savingCellKey === `${privateRow.track.id}-0`}
+                                                editable={effectiveCanEdit}
+                                                disabled={savingCellKey === `${privateRow.track.id}-0`}
                                                 onAssign={(traineeId) =>
                                                   handleInlineAssignTrainee(privateRow.track, 0, traineeId)
                                                 }
+                                                onOpen={() => openTrackManager(privateRow.track)}
+                                                isActive={privateRow.track.isActive}
                                               />
                                               <TraineeAssignmentCell
                                                 value={privateRow.traineeIdsBySlot[1] ?? ""}
+                                                label={privateRow.traineeNamesBySlot[1] ?? "—"}
                                                 options={traineeSelectOptions(
                                                   privateRow.track,
                                                   privateRow.traineeIdsBySlot[1] ?? ""
                                                 )}
-                                                disabled={!canEdit || savingCellKey === `${privateRow.track.id}-1`}
+                                                editable={effectiveCanEdit}
+                                                disabled={savingCellKey === `${privateRow.track.id}-1`}
                                                 onAssign={(traineeId) =>
                                                   handleInlineAssignTrainee(privateRow.track, 1, traineeId)
                                                 }
+                                                onOpen={() => openTrackManager(privateRow.track)}
+                                                isActive={privateRow.track.isActive}
                                               />
                                               <ClickableCell
                                                 isActive={privateRow.track.isActive}
@@ -1664,15 +1706,23 @@ export function TeachingPracticeManager({
                                     </ClickableCell>
                                     <TraineeAssignmentCell
                                       value={row.traineeIdsBySlot[0] ?? ""}
+                                      label={row.traineeNamesBySlot[0] ?? "—"}
                                       options={traineeSelectOptions(row.track, row.traineeIdsBySlot[0] ?? "")}
-                                      disabled={!canEdit || savingCellKey === `${row.track.id}-0`}
+                                      editable={effectiveCanEdit}
+                                      disabled={savingCellKey === `${row.track.id}-0`}
                                       onAssign={(traineeId) => handleInlineAssignTrainee(row.track, 0, traineeId)}
+                                      onOpen={() => openTrackManager(row.track)}
+                                      isActive={row.track.isActive}
                                     />
                                     <TraineeAssignmentCell
                                       value={row.traineeIdsBySlot[1] ?? ""}
+                                      label={row.traineeNamesBySlot[1] ?? "—"}
                                       options={traineeSelectOptions(row.track, row.traineeIdsBySlot[1] ?? "")}
-                                      disabled={!canEdit || savingCellKey === `${row.track.id}-1`}
+                                      editable={effectiveCanEdit}
+                                      disabled={savingCellKey === `${row.track.id}-1`}
                                       onAssign={(traineeId) => handleInlineAssignTrainee(row.track, 1, traineeId)}
+                                      onOpen={() => openTrackManager(row.track)}
+                                      isActive={row.track.isActive}
                                     />
                                     <ClickableCell isActive={row.track.isActive} onOpen={() => openTrackManager(row.track)}>
                                       {row.childFirstName}
@@ -1737,7 +1787,7 @@ export function TeachingPracticeManager({
                             practiceType: e.target.value as TeachingPracticeTypeValue,
                           }))
                         }
-                        disabled={!canEdit}
+                        disabled={!effectiveCanEdit}
                         className="rounded-lg border border-border px-3 py-2 text-sm disabled:opacity-50"
                       >
                         {PRACTICE_TYPES.map((pt) => (
@@ -1752,7 +1802,7 @@ export function TeachingPracticeManager({
                       <select
                         value={editTrackForm.groupName}
                         onChange={(e) => setEditTrackForm((f) => ({ ...f, groupName: e.target.value }))}
-                        disabled={!canEdit}
+                        disabled={!effectiveCanEdit}
                         className="rounded-lg border border-border px-3 py-2 text-sm disabled:opacity-50"
                       >
                         <option value="">ללא קבוצה / כל הקבוצות</option>
@@ -1768,7 +1818,7 @@ export function TeachingPracticeManager({
                       <select
                         value={editTrackForm.weekday}
                         onChange={(e) => setEditTrackForm((f) => ({ ...f, weekday: e.target.value }))}
-                        disabled={!canEdit}
+                        disabled={!effectiveCanEdit}
                         className="rounded-lg border border-border px-3 py-2 text-sm disabled:opacity-50"
                       >
                         <option value="">לא נקבע</option>
@@ -1787,7 +1837,7 @@ export function TeachingPracticeManager({
                       <input
                         value={editTrackForm.defaultLocation}
                         onChange={(e) => setEditTrackForm((f) => ({ ...f, defaultLocation: e.target.value }))}
-                        disabled={!canEdit}
+                        disabled={!effectiveCanEdit}
                         className="rounded-lg border border-border px-3 py-2 text-sm disabled:opacity-50"
                       />
                     </label>
@@ -1799,7 +1849,7 @@ export function TeachingPracticeManager({
                           setEditTrackForm((f) => ({ ...f, defaultStartTime: e.target.value }))
                         }
                         placeholder="HH:MM"
-                        disabled={!canEdit}
+                        disabled={!effectiveCanEdit}
                         className="rounded-lg border border-border px-3 py-2 text-sm disabled:opacity-50"
                       />
                       <span className="text-xs text-muted-foreground">
@@ -1818,7 +1868,7 @@ export function TeachingPracticeManager({
                             defaultResponsibleInstructorId: e.target.value,
                           }))
                         }
-                        disabled={!canEdit}
+                        disabled={!effectiveCanEdit}
                         className="rounded-lg border border-border px-3 py-2 text-sm disabled:opacity-50"
                       >
                         <option value="">ללא</option>
@@ -1835,7 +1885,7 @@ export function TeachingPracticeManager({
                         <select
                           value={editTrackForm.groupTrackId}
                           onChange={(e) => setEditTrackForm((f) => ({ ...f, groupTrackId: e.target.value }))}
-                          disabled={!canEdit}
+                          disabled={!effectiveCanEdit}
                           className="rounded-lg border border-border px-3 py-2 text-sm disabled:opacity-50"
                         >
                           <option value="">ללא שיוך</option>
@@ -1858,12 +1908,12 @@ export function TeachingPracticeManager({
                         value={editTrackForm.notes}
                         onChange={(e) => setEditTrackForm((f) => ({ ...f, notes: e.target.value }))}
                         rows={2}
-                        disabled={!canEdit}
+                        disabled={!effectiveCanEdit}
                         className="rounded-lg border border-border px-3 py-2 text-sm disabled:opacity-50"
                       />
                     </label>
                   </div>
-                  {canEdit && (
+                  {effectiveCanEdit && (
                     <div className="mt-2 flex flex-wrap gap-2">
                       <Button
                         className="!px-3 !py-1.5 !text-sm"
@@ -1915,7 +1965,7 @@ export function TeachingPracticeManager({
                                   return next;
                                 })
                               }
-                              disabled={!canEdit}
+                              disabled={!effectiveCanEdit}
                               className="rounded-lg border border-border px-3 py-2 text-sm disabled:opacity-50"
                             >
                               <option value="">בחרו חניך/ה</option>
@@ -1934,7 +1984,7 @@ export function TeachingPracticeManager({
                       }
                     )}
                   </div>
-                  {canEdit && (
+                  {effectiveCanEdit && (
                     <Button
                       className="mt-2 !px-3 !py-1.5 !text-sm"
                       disabled={isTrackActionPending}
@@ -1958,7 +2008,7 @@ export function TeachingPracticeManager({
                           <select
                             value={row.childId}
                             onChange={(e) => updateTrackChildRow(i, { childId: e.target.value })}
-                            disabled={!canEdit}
+                            disabled={!effectiveCanEdit}
                             className="rounded-lg border border-border px-3 py-2 text-sm disabled:opacity-50"
                           >
                             <option value="">בחרו ילד/ה</option>
@@ -1974,7 +2024,7 @@ export function TeachingPracticeManager({
                           <input
                             value={row.horseName}
                             onChange={(e) => updateTrackChildRow(i, { horseName: e.target.value })}
-                            disabled={!canEdit || !canEditHorseFields}
+                            disabled={!effectiveCanEdit || !effectiveCanEditHorseFields}
                             className="rounded-lg border border-border px-3 py-2 text-sm disabled:opacity-50"
                           />
                         </label>
@@ -1983,11 +2033,11 @@ export function TeachingPracticeManager({
                           <input
                             value={row.equipmentNotes}
                             onChange={(e) => updateTrackChildRow(i, { equipmentNotes: e.target.value })}
-                            disabled={!canEdit || !canEditHorseFields}
+                            disabled={!effectiveCanEdit || !effectiveCanEditHorseFields}
                             className="rounded-lg border border-border px-3 py-2 text-sm disabled:opacity-50"
                           />
                         </label>
-                        {canEdit && (
+                        {effectiveCanEdit && (
                           <Button
                             variant="ghost"
                             className="!px-2 !py-1 !text-xs"
@@ -1999,7 +2049,7 @@ export function TeachingPracticeManager({
                       </div>
                     ))}
                   </div>
-                  {canEdit && (
+                  {effectiveCanEdit && (
                     <div className="mt-2 flex flex-wrap gap-2">
                       <Button variant="secondary" className="!px-3 !py-1.5 !text-sm" onClick={addTrackChildRow}>
                         הוספת ילד/ה
@@ -2013,7 +2063,7 @@ export function TeachingPracticeManager({
                       </Button>
                     </div>
                   )}
-                  {canEdit && !canEditHorseFields && (
+                  {effectiveCanEdit && !effectiveCanEditHorseFields && (
                     <p className="mt-1 text-xs text-muted-foreground">
                       אין הרשאה לעריכת שדות סוס/ציוד - ניתן עדיין לשנות אילו ילדים משובצים.
                     </p>
@@ -2027,7 +2077,7 @@ export function TeachingPracticeManager({
                     don't get this section at all - there's nothing to look
                     at here besides in-progress draft dates, not a real
                     record. */}
-                {canEdit && (
+                {effectiveCanEdit && (
                 <div className="border-t border-border pt-4">
                   <h3 className="mb-2 text-sm font-bold text-card-foreground">
                     יצירת שיעור/ים מהסלוט לתאריכים
@@ -2111,7 +2161,7 @@ export function TeachingPracticeManager({
                     <LessonCard
                       key={lesson.id}
                       lesson={lesson}
-                      canEdit={canEdit}
+                      canEdit={effectiveCanEdit}
                       isPending={isLessonActionPending}
                       instructors={instructors}
                       onTogglePublished={() => handleToggleLessonPublished(lesson)}
@@ -2132,7 +2182,7 @@ export function TeachingPracticeManager({
 
       {tab === "children" && (
         <div className="flex flex-col gap-4">
-          {canEdit && (
+          {effectiveCanEdit && (
             <div className="rounded-xl border border-border bg-card p-4">
               <h2 className="mb-3 text-base font-semibold text-card-foreground">הוספת ילד/ה</h2>
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -2336,7 +2386,7 @@ export function TeachingPracticeManager({
                       {child.notes && (
                         <p className="mt-1 text-xs text-muted-foreground">הערות: {child.notes}</p>
                       )}
-                      {canEdit && (
+                      {effectiveCanEdit && (
                         <div className="mt-2 flex flex-wrap gap-2">
                           <Button
                             variant="ghost"
@@ -2367,25 +2417,60 @@ export function TeachingPracticeManager({
   );
 }
 
-// One inline trainee-assignment cell in a fixed-structure table row - a
-// thin wrapper around SearchableSelect that also stops the click from
-// bubbling up to the row's onClick (which opens the slot drawer), so
-// clicking into the cell to search/select never also pops the drawer open.
+// One inline trainee-assignment cell in a fixed-structure table row. In
+// effective edit mode this is a thin wrapper around SearchableSelect that
+// also stops the click from bubbling up to the row's onClick (which opens
+// the slot drawer), so clicking into the cell to search/select never also
+// pops the drawer open. Outside edit mode (view-only, or a permitted user
+// who hasn't pressed "מעבר למצב עריכה" yet) it renders the resolved trainee
+// name as plain text instead - never a SearchableSelect, live or disabled -
+// via the same ClickableCell every other read-only cell in these tables
+// already uses, so a click still opens the drawer for viewing (except in
+// the LUNGE table, where the surrounding <tr> already does that - onOpen is
+// left unset there to avoid triggering the open twice for one click).
 function TraineeAssignmentCell({
   value,
+  label,
   options,
+  editable,
   disabled,
   onAssign,
+  onOpen,
+  isActive = true,
   rowSpan,
 }: {
   value: string;
+  // Resolved display name for the currently-assigned trainee (or "—") -
+  // only ever rendered when !editable.
+  label: string;
   options: SearchableSelectOption[];
+  // Whether this cell may render a live SearchableSelect at all - callers
+  // pass effectiveCanEdit here, never the bare canEdit permission flag.
+  editable: boolean;
   disabled: boolean;
   onAssign: (traineeId: string) => void;
+  // Only set for tables with no row-level onClick of their own (Beginners
+  // blocks / unlinked private rows) - see the function doc above.
+  onOpen?: () => void;
+  isActive?: boolean;
   // Set when this cell represents a BEGINNER_GROUP block's own team slot,
   // shared (merged) across all of that block's private sub-rows.
   rowSpan?: number;
 }) {
+  if (!editable) {
+    if (onOpen) {
+      return (
+        <ClickableCell rowSpan={rowSpan} isActive={isActive} onOpen={onOpen}>
+          {label}
+        </ClickableCell>
+      );
+    }
+    return (
+      <td rowSpan={rowSpan} className="px-2 py-2">
+        {label}
+      </td>
+    );
+  }
   return (
     <td rowSpan={rowSpan} className="px-2 py-2" onClick={(e) => e.stopPropagation()}>
       <SearchableSelect

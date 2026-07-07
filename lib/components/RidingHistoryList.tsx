@@ -98,6 +98,14 @@ export function RidingHistoryList({ rows }: { rows: RidingHistoryRow[] }) {
             </p>
             <p className="mb-1 text-xs text-muted-foreground">{row.horseDisplay}</p>
             {row.note && <p className="mb-1 text-sm text-card-foreground">הערה: {row.note}</p>}
+            {row.lessonTopic && (
+              <p className="mb-1 text-xs text-muted-foreground">נושא השיעור: {row.lessonTopic}</p>
+            )}
+            {row.taughtStudents.length > 0 && (
+              <p className="mb-1 text-xs text-muted-foreground">
+                הדריך/ה: {row.taughtStudents.map((s) => s.fullName).join(", ")}
+              </p>
+            )}
             <p className="text-xs text-muted-foreground">
               {row.updatedByName && `עודכן על ידי: ${row.updatedByName}`}
               {row.updatedByName && " · "}

@@ -1,9 +1,11 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import { Button } from "@/lib/components/Button";
 import { Modal } from "@/lib/components/Modal";
 import { RidingHistoryList } from "@/lib/components/RidingHistoryList";
+import { SuggestInput } from "@/lib/components/SuggestInput";
+import { SearchableMultiSelect } from "@/lib/components/SearchableMultiSelect";
 import {
   formatHebrewDate,
   formatHebrewDateTime,
@@ -15,12 +17,15 @@ import {
 import { cleanScheduleTitle } from "@/lib/schedule-title";
 import { getScheduleGroupColorClass } from "@/lib/schedule-group-colors";
 import { getHorseDisplayInfo } from "@/lib/horse-info";
+import { formatInstructorNames } from "@/lib/riding-assignment-matching";
 import { groupByGroupAndSubgroup, STATUS_BADGE_CLASS, type GroupSection } from "@/lib/attendance-ui";
 import {
   getInstructorRidingSlots,
   getRidingSlotStudentNotes,
   getStudentRidingHistoryForInstructor,
   upsertRidingLessonNoteAsInstructor,
+  getKnownRidingLessonTopics,
+  getKnownRidingHorseNames,
   type WeeklyRidingDay,
   type WeeklyRidingActivity,
   type RidingSlotStudentRow,
@@ -43,7 +48,7 @@ interface RidingStudentOption {
 const RATING_OPTIONS = [2, 3, 4, 5, 6, 7, 8, 9, 10];
 
 function isAssignedToInstructor(activity: WeeklyRidingActivity, instructorId: string): boolean {
-  return activity.ridingSlot?.assignments.some((a) => a.instructorId === instructorId) ?? false;
+  return activity.ridingSlot?.assignments.some((a) => a.instructorIds.includes(instructorId)) ?? false;
 }
 
 // Finds the assignment responsible for a given group/subgroup section,
@@ -86,7 +91,7 @@ function getInstructorAssignmentTier(
   instructorId: string
 ): AssignmentTier {
   const assignment = findAssignmentForSection(assignments, groupName, subgroupNumber);
-  if (!assignment || assignment.instructorId !== instructorId) return "none";
+  if (!assignment || !assignment.instructorIds.includes(instructorId)) return "none";
   if (assignment.groupName !== null && assignment.subgroupNumber !== null) return "exact";
   if (assignment.groupName !== null && assignment.subgroupNumber === null) return "group";
   return "none";
@@ -283,6 +288,9 @@ function StudentEditor({
   ridingSlotId,
   instructorId,
   canEdit,
+  students,
+  knownLessonTopics,
+  knownHorseNames,
   onBack,
   onSaved,
 }: {
@@ -290,6 +298,9 @@ function StudentEditor({
   ridingSlotId: string;
   instructorId: string;
   canEdit: boolean;
+  students: RidingStudentOption[];
+  knownLessonTopics: string[];
+  knownHorseNames: string[];
   onBack: () => void;
   onSaved: (updated: RidingSlotStudentRow) => void;
 }) {
@@ -297,8 +308,20 @@ function StudentEditor({
   const [rating, setRating] = useState(row.ratingHalfPoints != null ? String(row.ratingHalfPoints) : "");
   const [sessionHorseName, setSessionHorseName] = useState(row.sessionHorseName ?? "");
   const [isEditingHorse, setIsEditingHorse] = useState(false);
+  const [lessonTopic, setLessonTopic] = useState(row.lessonTopic ?? "");
+  const [taughtStudentIds, setTaughtStudentIds] = useState(row.taughtStudents.map((s) => s.id));
   const [isSaving, startSaveTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
+
+  // A trainee can't be recorded as teaching themselves - excluded from the
+  // "who did they teach" options rather than left selectable-but-nonsensical.
+  const taughtStudentOptions = useMemo(
+    () =>
+      students
+        .filter((s) => s.id !== row.studentId)
+        .map((s) => ({ value: s.id, label: s.fullName })),
+    [students, row.studentId]
+  );
 
   function handleSave() {
     setError(null);
@@ -308,16 +331,23 @@ function StudentEditor({
         note,
         ratingHalfPoints,
         sessionHorseName,
+        lessonTopic,
+        taughtStudentIds,
       });
       if (!result.success) {
         setError(result.error ?? "אירעה שגיאה");
         return;
       }
+      const taughtStudents = students
+        .filter((s) => taughtStudentIds.includes(s.id))
+        .map((s) => ({ id: s.id, fullName: s.fullName }));
       onSaved({
         ...row,
         note: note.trim() || null,
         ratingHalfPoints,
         sessionHorseName: sessionHorseName.trim() || null,
+        lessonTopic: lessonTopic.trim() || null,
+        taughtStudents,
         updatedByName: result.updatedByName ?? row.updatedByName,
         updatedAt: result.updatedAt ?? row.updatedAt,
       });
@@ -392,11 +422,11 @@ function StudentEditor({
         <div className="flex flex-col gap-1.5 rounded-lg border border-border p-2.5">
           <label className="flex flex-col gap-1 text-sm">
             סוס בשיעור זה (לא משנה את השיוך הרגיל)
-            <input
+            <SuggestInput
               value={sessionHorseName}
-              onChange={(e) => setSessionHorseName(e.target.value)}
+              onChange={setSessionHorseName}
+              suggestions={knownHorseNames}
               placeholder={getHorseDisplayInfo(row).horseNameDisplay}
-              className="rounded-lg border border-border px-3 py-2 text-sm"
             />
           </label>
           <div className="flex flex-wrap gap-2">
@@ -449,6 +479,26 @@ function StudentEditor({
               ))}
             </select>
           </label>
+          <label className="flex flex-col gap-1 text-sm">
+            נושא השיעור
+            <SuggestInput
+              value={lessonTopic}
+              onChange={setLessonTopic}
+              suggestions={knownLessonTopics}
+              placeholder="לדוגמה: מעברים"
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-sm">
+            את מי החניך/ה הדריך/ה
+            <SearchableMultiSelect
+              values={taughtStudentIds}
+              options={taughtStudentOptions}
+              onChange={setTaughtStudentIds}
+              placeholder="לא הדריך/ה אף אחד"
+              searchPlaceholder="הקלידו שם..."
+              emptyMessage="לא נמצאו חניכים"
+            />
+          </label>
           {error && <p className="text-sm text-danger">{error}</p>}
           <div className="flex justify-end gap-2">
             <Button type="button" variant="secondary" onClick={onBack}>
@@ -464,6 +514,11 @@ function StudentEditor({
           <p className="text-sm text-muted-foreground">הערת רכיבה: {row.note ?? "אין הערה"}</p>
           <p className="text-sm text-muted-foreground">
             דירוג: {row.ratingHalfPoints != null ? row.ratingHalfPoints / 2 : "ללא"}
+          </p>
+          <p className="text-sm text-muted-foreground">נושא השיעור: {row.lessonTopic ?? "אין"}</p>
+          <p className="text-sm text-muted-foreground">
+            הדריך/ה:{" "}
+            {row.taughtStudents.length > 0 ? row.taughtStudents.map((s) => s.fullName).join(", ") : "אין"}
           </p>
         </>
       )}
@@ -496,6 +551,24 @@ export function InstructorRidingSlotsSection({
   const [historyStudentId, setHistoryStudentId] = useState<string | null>(null);
   const [historyResult, setHistoryResult] = useState<StudentRidingHistoryResult | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
+
+  // Loaded once at the section level (not per student row) and passed down
+  // to StudentEditor - same "load once, reuse" convention as
+  // HorseFeedingSection's loadKnownValues. Only editors ever open the form
+  // that uses these, so there's nothing to fetch for a view-only instructor.
+  const [knownLessonTopics, setKnownLessonTopics] = useState<string[]>([]);
+  const [knownHorseNames, setKnownHorseNames] = useState<string[]>([]);
+
+  function loadKnownValues() {
+    if (!canEdit) return;
+    getKnownRidingLessonTopics().then(setKnownLessonTopics);
+    getKnownRidingHorseNames().then(setKnownHorseNames);
+  }
+
+  useEffect(() => {
+    loadKnownValues();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canEdit]);
 
   const rangeKeys = viewMode === "day" ? [selectedDate] : getWeekDateKeys(selectedDate);
   const rangeStart = rangeKeys[0] ?? selectedDate;
@@ -538,6 +611,10 @@ export function InstructorRidingSlotsSection({
   function handleStudentSaved(updated: RidingSlotStudentRow) {
     setSlotStudents((prev) => (prev ? prev.map((s) => (s.studentId === updated.studentId ? updated : s)) : prev));
     setEditingStudent(null);
+    // A newly-typed lesson topic/horse name only becomes a suggestion for
+    // the *next* student once this refetches - same reasoning as
+    // HorseFeedingSection's post-save loadKnownValues() call.
+    loadKnownValues();
   }
 
   function openHistory(studentId: string) {
@@ -802,7 +879,8 @@ export function InstructorRidingSlotsSection({
                             <p key={a.id}>
                               {a.groupName ? `קבוצה ${a.groupName}` : "כל הרכיבה"}
                               {a.subgroupNumber != null ? ` / תת-קבוצה ${a.subgroupNumber}` : ""} -
-                              מדריך/ה: {a.instructorName ?? "לא נבחר"} · מגרש: {a.arena ?? "לא הוזן"}
+                              מדריך/ה: {formatInstructorNames(a.instructors.map((i) => i.fullName)) ?? "לא נבחר"} ·
+                              מגרש: {a.arena ?? "לא הוזן"}
                             </p>
                           ))}
                         </div>
@@ -855,6 +933,9 @@ export function InstructorRidingSlotsSection({
               ridingSlotId={openActivity!.ridingSlot!.id}
               instructorId={instructorId}
               canEdit={canEdit}
+              students={students}
+              knownLessonTopics={knownLessonTopics}
+              knownHorseNames={knownHorseNames}
               onBack={() => setEditingStudent(null)}
               onSaved={handleStudentSaved}
             />
@@ -894,8 +975,10 @@ export function InstructorRidingSlotsSection({
                       )}
                     </p>
                     <p className="mb-2 text-[11px] text-muted-foreground">
-                      מאמן/ת: {assignment?.instructorName ?? "לא הוגדר"} · מגרש:{" "}
-                      {assignment?.arena ?? "לא הוגדר"}
+                      מאמן/ת:{" "}
+                      {(assignment && formatInstructorNames(assignment.instructors.map((i) => i.fullName))) ??
+                        "לא הוגדר"}{" "}
+                      · מגרש: {assignment?.arena ?? "לא הוגדר"}
                     </p>
                     <div className="flex flex-col gap-1.5">
                       {section.items.map((row) => (

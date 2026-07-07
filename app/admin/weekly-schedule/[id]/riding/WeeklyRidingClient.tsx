@@ -7,6 +7,7 @@ import { formatHebrewDate, formatHebrewWeekday, getLocalDateKey, parseDateKey } 
 import { cleanScheduleTitle } from "@/lib/schedule-title";
 import { getScheduleGroupColorClass } from "@/lib/schedule-group-colors";
 import { RidingSlotModal } from "@/app/admin/weekly-schedule/[id]/RidingSlotModal";
+import { formatInstructorNames } from "@/lib/riding-assignment-matching";
 import {
   getWeeklyRidingOverview,
   bulkApplyRidingAssignment,
@@ -472,7 +473,8 @@ export function WeeklyRidingClient({
                             <p key={a.id}>
                               {a.groupName ? `קבוצה ${a.groupName}` : "כל הרכיבה"}
                               {a.subgroupNumber != null ? ` / תת-קבוצה ${a.subgroupNumber}` : ""} -
-                              מדריך/ה: {a.instructorName ?? "לא נבחר"} · מגרש: {a.arena ?? "לא הוזן"}
+                              מדריך/ה: {formatInstructorNames(a.instructors.map((i) => i.fullName)) ?? "לא נבחר"} ·
+                              מגרש: {a.arena ?? "לא הוזן"}
                             </p>
                           ))
                         )}

@@ -1,10 +1,18 @@
 "use client";
 
-import { FormEvent, useEffect, useState, useTransition } from "react";
+import {
+  Dispatch,
+  FormEvent,
+  SetStateAction,
+  useEffect,
+  useState,
+  useTransition,
+} from "react";
 import { Button } from "@/lib/components/Button";
 import { Modal } from "@/lib/components/Modal";
 import { formatHebrewDate, parseDateKey } from "@/lib/dates";
 import { cleanScheduleTitle } from "@/lib/schedule-title";
+import { formatInstructorNames } from "@/lib/riding-assignment-matching";
 import {
   getRidingSlotForScheduleItem,
   createOrGetRidingSlot,
@@ -33,14 +41,14 @@ interface InstructorOption {
 interface AssignmentForm {
   groupName: string;
   subgroupNumber: string;
-  instructorId: string;
+  instructorIds: string[];
   arena: string;
 }
 
 const EMPTY_ASSIGNMENT_FORM: AssignmentForm = {
   groupName: "",
   subgroupNumber: "",
-  instructorId: "",
+  instructorIds: [],
   arena: "",
 };
 
@@ -48,9 +56,178 @@ function assignmentFormFromRow(row: RidingSlotAssignmentRow): AssignmentForm {
   return {
     groupName: row.groupName ?? "",
     subgroupNumber: row.subgroupNumber != null ? String(row.subgroupNumber) : "",
-    instructorId: row.instructorId ?? "",
+    // Copied, not aliased - the form's array must never be the same
+    // reference as row.instructorIds, so editing one assignment can never
+    // affect another still-cached row.
+    instructorIds: [...row.instructorIds],
     arena: row.arena ?? "",
   };
+}
+
+// Shared by both "editing an existing split" (rendered inline, in place of
+// that row) and "adding a new split" (rendered after the list) - factored
+// out so the two call sites can't drift, and so the row being edited is
+// never ALSO rendered as a separate, still-clickable list item at the same
+// time (that used to let its own "עריכה" button re-fire openEditAssignment
+// mid-edit, silently resetting assignmentForm back to the pre-edit row).
+// Deliberately NOT SearchableMultiSelect here - that component kept its own
+// internal open/search/highlight state, and something about combining it
+// with this modal's edit-form re-renders made a freshly-toggled id disappear
+// a moment after being selected. This picker holds no selection state of its
+// own at all: every checkbox's checked value reads assignmentForm.instructorIds
+// directly, and toggling writes straight back into it via a functional
+// setState - there is no intermediate copy that could ever fall out of sync.
+function InstructorChecklist({
+  instructors,
+  selectedIds,
+  setAssignmentForm,
+}: {
+  instructors: InstructorOption[];
+  selectedIds: string[];
+  setAssignmentForm: Dispatch<SetStateAction<AssignmentForm>>;
+}) {
+  const [search, setSearch] = useState("");
+
+  const filteredInstructors = instructors.filter((i) =>
+    i.fullName.toLowerCase().includes(search.trim().toLowerCase())
+  );
+  const selectedInstructors = instructors.filter((i) => selectedIds.includes(i.id));
+
+  function toggleInstructor(instructorId: string) {
+    setAssignmentForm((current) => {
+      const exists = current.instructorIds.includes(instructorId);
+      return {
+        ...current,
+        instructorIds: exists
+          ? current.instructorIds.filter((id) => id !== instructorId)
+          : [...current.instructorIds, instructorId],
+      };
+    });
+  }
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      {selectedInstructors.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {selectedInstructors.map((i) => (
+            <span
+              key={i.id}
+              className="flex items-center gap-1 rounded-full bg-secondary px-2 py-0.5 text-xs text-secondary-foreground"
+            >
+              {i.fullName}
+              <button
+                type="button"
+                onClick={() => toggleInstructor(i.id)}
+                aria-label={`הסרת ${i.fullName}`}
+                className="text-secondary-foreground/70 hover:text-secondary-foreground"
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      <input
+        type="text"
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        placeholder="חיפוש מדריך"
+        className="rounded-lg border border-border px-3 py-2 text-sm"
+      />
+      <div className="flex max-h-40 flex-col gap-0.5 overflow-y-auto rounded-lg border border-border p-1.5">
+        {filteredInstructors.length === 0 ? (
+          <p className="px-1.5 py-1 text-xs text-muted-foreground">לא נמצאו מדריכים</p>
+        ) : (
+          filteredInstructors.map((i) => (
+            <label
+              key={i.id}
+              className="flex items-center gap-2 rounded px-1.5 py-1 text-sm hover:bg-muted"
+            >
+              <input
+                type="checkbox"
+                checked={selectedIds.includes(i.id)}
+                onChange={() => toggleInstructor(i.id)}
+              />
+              {i.fullName}
+            </label>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AssignmentEditForm({
+  assignmentForm,
+  setAssignmentForm,
+  instructors,
+  assignmentFormError,
+  isSavingAssignment,
+  onSubmit,
+  onCancel,
+}: {
+  assignmentForm: AssignmentForm;
+  setAssignmentForm: Dispatch<SetStateAction<AssignmentForm>>;
+  instructors: InstructorOption[];
+  assignmentFormError: string | null;
+  isSavingAssignment: boolean;
+  onSubmit: (e: FormEvent<HTMLFormElement>) => void;
+  onCancel: () => void;
+}) {
+  return (
+    <form onSubmit={onSubmit} className="flex flex-col gap-2 rounded-lg border border-border p-3">
+      <div className="grid grid-cols-2 gap-2">
+        <label className="flex flex-col gap-1 text-sm">
+          קבוצה (ריק = כל הרכיבה)
+          <select
+            value={assignmentForm.groupName}
+            onChange={(e) => setAssignmentForm((f) => ({ ...f, groupName: e.target.value }))}
+            className="rounded-lg border border-border px-3 py-2 text-sm"
+          >
+            <option value="">כל הרכיבה</option>
+            <option value="א">קבוצה א</option>
+            <option value="ב">קבוצה ב</option>
+          </select>
+        </label>
+        <label className="flex flex-col gap-1 text-sm">
+          תת-קבוצה (אופציונלי)
+          <input
+            type="number"
+            min={1}
+            value={assignmentForm.subgroupNumber}
+            onChange={(e) => setAssignmentForm((f) => ({ ...f, subgroupNumber: e.target.value }))}
+            className="rounded-lg border border-border px-3 py-2 text-sm"
+          />
+        </label>
+      </div>
+      <div className="flex flex-col gap-1 text-sm">
+        מדריכים/ות אחראים/ות
+        <InstructorChecklist
+          instructors={instructors}
+          selectedIds={assignmentForm.instructorIds}
+          setAssignmentForm={setAssignmentForm}
+        />
+      </div>
+      <label className="flex flex-col gap-1 text-sm">
+        מגרש
+        <input
+          value={assignmentForm.arena}
+          onChange={(e) => setAssignmentForm((f) => ({ ...f, arena: e.target.value }))}
+          placeholder="למשל: מגרש 1"
+          className="rounded-lg border border-border px-3 py-2 text-sm"
+        />
+      </label>
+      {assignmentFormError && <p className="text-sm text-danger">{assignmentFormError}</p>}
+      <div className="flex justify-end gap-2">
+        <Button type="button" variant="secondary" onClick={onCancel}>
+          ביטול
+        </Button>
+        <Button type="submit" disabled={isSavingAssignment}>
+          {isSavingAssignment ? "שומר..." : "שמירה"}
+        </Button>
+      </div>
+    </form>
+  );
 }
 
 export function RidingSlotModal({
@@ -154,7 +331,10 @@ export function RidingSlotModal({
       scheduleItemInfo.groupName === "א" || scheduleItemInfo.groupName === "ב"
         ? scheduleItemInfo.groupName
         : "";
-    setAssignmentForm({ ...EMPTY_ASSIGNMENT_FORM, groupName: defaultGroupName });
+    // instructorIds gets its own fresh array (not EMPTY_ASSIGNMENT_FORM's
+    // shared one) so this session's selections can never be confused with
+    // another "add new" session's.
+    setAssignmentForm({ ...EMPTY_ASSIGNMENT_FORM, groupName: defaultGroupName, instructorIds: [] });
     setAssignmentFormError(null);
   }
 
@@ -177,7 +357,7 @@ export function RidingSlotModal({
         subgroupNumber: assignmentForm.subgroupNumber
           ? Number(assignmentForm.subgroupNumber)
           : undefined,
-        instructorId: assignmentForm.instructorId || undefined,
+        instructorIds: assignmentForm.instructorIds,
         arena: assignmentForm.arena || undefined,
       });
       if (!result.success || !result.assignment) {
@@ -215,8 +395,13 @@ export function RidingSlotModal({
 
   return (
     <Modal open={open} title="ניהול רכיבה" onClose={onClose}>
-      <div className="flex flex-col gap-4">
-        <div className="rounded-lg bg-secondary p-3 text-sm text-secondary-foreground">
+      {/* Bounded to a viewport-relative height with the schedule-item summary
+          pinned above and the "סגירה" button pinned below - only the
+          middle (visibility/assignments) section scrolls internally, so a
+          long assignment list or the multi-instructor picker's dropdown
+          never pushes the modal itself past the visible screen. */}
+      <div className="flex max-h-[80vh] flex-col gap-4">
+        <div className="shrink-0 rounded-lg bg-secondary p-3 text-sm text-secondary-foreground">
           <p className="font-semibold">{cleanScheduleTitle(scheduleItemInfo.title)}</p>
           <p className="text-xs">
             {formatHebrewDate(parseDateKey(scheduleItemInfo.dateKey))} ·{" "}
@@ -236,6 +421,7 @@ export function RidingSlotModal({
           )}
         </div>
 
+        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto ps-1">
         {isLoading ? (
           <p className="text-sm text-muted-foreground">טוען...</p>
         ) : !ridingSlot ? (
@@ -309,122 +495,78 @@ export function RidingSlotModal({
                 </p>
               )}
 
-              {ridingSlot.assignments.map((a) => (
-                <div
-                  key={a.id}
-                  className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border p-2 text-sm"
-                >
-                  <div>
-                    <p className="font-medium text-card-foreground">
-                      {a.groupName ? `קבוצה ${a.groupName}` : "כל הרכיבה"}
-                      {a.subgroupNumber != null ? ` / תת-קבוצה ${a.subgroupNumber}` : ""}
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      מדריך/ה: {a.instructorName ?? "לא נבחר"} · מגרש: {a.arena ?? "לא הוזן"}
-                    </p>
-                  </div>
-                  <div className="flex gap-2">
-                    <Button
-                      variant="ghost"
-                      className="!px-2 !py-1 !text-xs"
-                      disabled={isSavingAssignment}
-                      onClick={() => openEditAssignment(a)}
-                    >
-                      עריכה
-                    </Button>
-                    <Button
-                      variant="danger"
-                      className="!px-2 !py-1 !text-xs"
-                      disabled={isSavingAssignment}
-                      onClick={() => handleDeleteAssignment(a.id)}
-                    >
-                      מחיקה
-                    </Button>
-                  </div>
-                </div>
-              ))}
-
-              {editingAssignmentId !== null && (
-                <form
-                  onSubmit={handleAssignmentSubmit}
-                  className="flex flex-col gap-2 rounded-lg border border-border p-3"
-                >
-                  <div className="grid grid-cols-2 gap-2">
-                    <label className="flex flex-col gap-1 text-sm">
-                      קבוצה (ריק = כל הרכיבה)
-                      <select
-                        value={assignmentForm.groupName}
-                        onChange={(e) =>
-                          setAssignmentForm((f) => ({ ...f, groupName: e.target.value }))
-                        }
-                        className="rounded-lg border border-border px-3 py-2 text-sm"
+              {ridingSlot.assignments.map((a) =>
+                editingAssignmentId === a.id ? (
+                  <AssignmentEditForm
+                    key={a.id}
+                    assignmentForm={assignmentForm}
+                    setAssignmentForm={setAssignmentForm}
+                    instructors={instructors}
+                    assignmentFormError={assignmentFormError}
+                    isSavingAssignment={isSavingAssignment}
+                    onSubmit={handleAssignmentSubmit}
+                    onCancel={() => setEditingAssignmentId(null)}
+                  />
+                ) : (
+                  <div
+                    key={a.id}
+                    className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border p-2 text-sm"
+                  >
+                    <div>
+                      <p className="font-medium text-card-foreground">
+                        {a.groupName ? `קבוצה ${a.groupName}` : "כל הרכיבה"}
+                        {a.subgroupNumber != null ? ` / תת-קבוצה ${a.subgroupNumber}` : ""}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        מדריך/ה:{" "}
+                        {formatInstructorNames(a.instructors.map((i) => i.fullName)) ?? "לא נבחר"} · מגרש:{" "}
+                        {a.arena ?? "לא הוזן"}
+                      </p>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button
+                        variant="ghost"
+                        className="!px-2 !py-1 !text-xs"
+                        // Disabled (not just for this row) while ANY edit is in
+                        // progress - editingAssignmentId already renders that
+                        // row as a form above, so this button, for every OTHER
+                        // row, must not be able to start a second, conflicting
+                        // edit session mid-way through the first.
+                        disabled={editingAssignmentId !== null || isSavingAssignment}
+                        onClick={() => openEditAssignment(a)}
                       >
-                        <option value="">כל הרכיבה</option>
-                        <option value="א">קבוצה א</option>
-                        <option value="ב">קבוצה ב</option>
-                      </select>
-                    </label>
-                    <label className="flex flex-col gap-1 text-sm">
-                      תת-קבוצה (אופציונלי)
-                      <input
-                        type="number"
-                        min={1}
-                        value={assignmentForm.subgroupNumber}
-                        onChange={(e) =>
-                          setAssignmentForm((f) => ({ ...f, subgroupNumber: e.target.value }))
-                        }
-                        className="rounded-lg border border-border px-3 py-2 text-sm"
-                      />
-                    </label>
+                        עריכה
+                      </Button>
+                      <Button
+                        variant="danger"
+                        className="!px-2 !py-1 !text-xs"
+                        disabled={editingAssignmentId !== null || isSavingAssignment}
+                        onClick={() => handleDeleteAssignment(a.id)}
+                      >
+                        מחיקה
+                      </Button>
+                    </div>
                   </div>
-                  <label className="flex flex-col gap-1 text-sm">
-                    מדריך/ה
-                    <select
-                      value={assignmentForm.instructorId}
-                      onChange={(e) =>
-                        setAssignmentForm((f) => ({ ...f, instructorId: e.target.value }))
-                      }
-                      className="rounded-lg border border-border px-3 py-2 text-sm"
-                    >
-                      <option value="">ללא</option>
-                      {instructors.map((i) => (
-                        <option key={i.id} value={i.id}>
-                          {i.fullName}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="flex flex-col gap-1 text-sm">
-                    מגרש
-                    <input
-                      value={assignmentForm.arena}
-                      onChange={(e) => setAssignmentForm((f) => ({ ...f, arena: e.target.value }))}
-                      placeholder="למשל: מגרש 1"
-                      className="rounded-lg border border-border px-3 py-2 text-sm"
-                    />
-                  </label>
-                  {assignmentFormError && (
-                    <p className="text-sm text-danger">{assignmentFormError}</p>
-                  )}
-                  <div className="flex justify-end gap-2">
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      onClick={() => setEditingAssignmentId(null)}
-                    >
-                      ביטול
-                    </Button>
-                    <Button type="submit" disabled={isSavingAssignment}>
-                      {isSavingAssignment ? "שומר..." : "שמירה"}
-                    </Button>
-                  </div>
-                </form>
+                )
+              )}
+
+              {editingAssignmentId === "new" && (
+                <AssignmentEditForm
+                  assignmentForm={assignmentForm}
+                  setAssignmentForm={setAssignmentForm}
+                  instructors={instructors}
+                  assignmentFormError={assignmentFormError}
+                  isSavingAssignment={isSavingAssignment}
+                  onSubmit={handleAssignmentSubmit}
+                  onCancel={() => setEditingAssignmentId(null)}
+                />
               )}
             </div>
           </>
         )}
+        </div>
 
-        <div className="flex justify-end">
+        <div className="flex shrink-0 justify-end">
           <Button type="button" variant="secondary" onClick={onClose}>
             סגירה
           </Button>

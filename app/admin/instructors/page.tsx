@@ -35,6 +35,9 @@ export default async function InstructorsPage() {
           canEditAttendance: i.canEditAttendance,
           canEditRidingNotes: i.canEditRidingNotes,
           canEditHorseFeeding: i.canEditHorseFeeding,
+          canManageTeachingPracticeAssignments: i.canManageTeachingPracticeAssignments,
+          canManageTeachingPracticeHorses: i.canManageTeachingPracticeHorses,
+          canEditTeachingPracticeFeedback: i.canEditTeachingPracticeFeedback,
           ridingSummary: ridingSummaryByInstructorId.get(i.id) ?? {
             instructorId: i.id,
             totalAssigned: 0,

@@ -11,6 +11,9 @@ import {
   setInstructorCanEditAttendance,
   setInstructorCanEditRidingNotes,
   setInstructorCanEditHorseFeeding,
+  setInstructorCanManageTeachingPracticeAssignments,
+  setInstructorCanManageTeachingPracticeHorses,
+  setInstructorCanEditTeachingPracticeFeedback,
   updateInstructor,
 } from "@/lib/actions/instructors";
 import { maskIdentityNumber } from "@/lib/format";
@@ -36,6 +39,9 @@ interface InstructorRow {
   canEditAttendance: boolean;
   canEditRidingNotes: boolean;
   canEditHorseFeeding: boolean;
+  canManageTeachingPracticeAssignments: boolean;
+  canManageTeachingPracticeHorses: boolean;
+  canEditTeachingPracticeFeedback: boolean;
   ridingSummary: InstructorRidingSummary;
 }
 
@@ -109,6 +115,33 @@ export function InstructorsClient({ instructors }: { instructors: InstructorRow[
     });
   }
 
+  function handleToggleCanManageTeachingPracticeAssignments(instructor: InstructorRow) {
+    startTransition(async () => {
+      await setInstructorCanManageTeachingPracticeAssignments(
+        instructor.id,
+        !instructor.canManageTeachingPracticeAssignments
+      );
+    });
+  }
+
+  function handleToggleCanManageTeachingPracticeHorses(instructor: InstructorRow) {
+    startTransition(async () => {
+      await setInstructorCanManageTeachingPracticeHorses(
+        instructor.id,
+        !instructor.canManageTeachingPracticeHorses
+      );
+    });
+  }
+
+  function handleToggleCanEditTeachingPracticeFeedback(instructor: InstructorRow) {
+    startTransition(async () => {
+      await setInstructorCanEditTeachingPracticeFeedback(
+        instructor.id,
+        !instructor.canEditTeachingPracticeFeedback
+      );
+    });
+  }
+
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap gap-2">
@@ -141,6 +174,9 @@ export function InstructorsClient({ instructors }: { instructors: InstructorRow[
               <th className="px-4 py-3 text-right font-medium">עריכת נוכחות</th>
               <th className="px-4 py-3 text-right font-medium">עריכת הערות רכיבה</th>
               <th className="px-4 py-3 text-right font-medium">עריכת האכלות</th>
+              <th className="px-4 py-3 text-right font-medium">ניהול שיבוץ התנסויות</th>
+              <th className="px-4 py-3 text-right font-medium">ניהול סוסים וציוד בהתנסויות</th>
+              <th className="px-4 py-3 text-right font-medium">עריכת משוב התנסויות</th>
               <th className="px-4 py-3 text-right font-medium">שיבוצי רכיבה (סה&quot;כ)</th>
               <th className="px-4 py-3 text-right font-medium">פעולות</th>
             </tr>
@@ -222,6 +258,36 @@ export function InstructorsClient({ instructors }: { instructors: InstructorRow[
                     title="יכול/ה לערוך האכלות"
                   />
                 </td>
+                <td className="px-4 py-3">
+                  <input
+                    type="checkbox"
+                    checked={instructor.canManageTeachingPracticeAssignments}
+                    disabled={isPending}
+                    onChange={() => handleToggleCanManageTeachingPracticeAssignments(instructor)}
+                    aria-label={`יכול/ה לנהל שיבוץ התנסויות עבור ${instructor.fullName}`}
+                    title="יכול/ה לנהל שיבוץ התנסויות"
+                  />
+                </td>
+                <td className="px-4 py-3">
+                  <input
+                    type="checkbox"
+                    checked={instructor.canManageTeachingPracticeHorses}
+                    disabled={isPending}
+                    onChange={() => handleToggleCanManageTeachingPracticeHorses(instructor)}
+                    aria-label={`יכול/ה לנהל סוסים וציוד בהתנסויות עבור ${instructor.fullName}`}
+                    title="יכול/ה לנהל סוסים וציוד בהתנסויות"
+                  />
+                </td>
+                <td className="px-4 py-3">
+                  <input
+                    type="checkbox"
+                    checked={instructor.canEditTeachingPracticeFeedback}
+                    disabled={isPending}
+                    onChange={() => handleToggleCanEditTeachingPracticeFeedback(instructor)}
+                    aria-label={`יכול/ה לערוך משוב התנסויות עבור ${instructor.fullName}`}
+                    title="יכול/ה לערוך משוב התנסויות"
+                  />
+                </td>
                 <td
                   className="px-4 py-3 text-muted-foreground"
                   title={`היום: ${instructor.ridingSummary.todayAssigned} · עתידיות: ${instructor.ridingSummary.upcomingAssigned} · עברו: ${instructor.ridingSummary.pastAssigned}`}
@@ -257,7 +323,7 @@ export function InstructorsClient({ instructors }: { instructors: InstructorRow[
             ))}
             {filteredInstructors.length === 0 && (
               <tr>
-                <td colSpan={11} className="px-4 py-8 text-center text-muted-foreground">
+                <td colSpan={14} className="px-4 py-8 text-center text-muted-foreground">
                   {instructors.length === 0 ? "אין מדריכים עדיין" : "אין מדריכים התואמים את החיפוש"}
                 </td>
               </tr>

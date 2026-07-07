@@ -164,3 +164,45 @@ export async function setInstructorCanEditHorseFeeding(
   revalidatePath("/instructor");
   return { success: true };
 }
+
+export async function setInstructorCanManageTeachingPracticeAssignments(
+  instructorId: string,
+  canManageTeachingPracticeAssignments: boolean
+): Promise<ActionResult> {
+  await requireAdmin();
+  await prisma.instructor.update({
+    where: { id: instructorId },
+    data: { canManageTeachingPracticeAssignments },
+  });
+  revalidatePath("/admin/instructors");
+  revalidatePath("/instructor");
+  return { success: true };
+}
+
+export async function setInstructorCanManageTeachingPracticeHorses(
+  instructorId: string,
+  canManageTeachingPracticeHorses: boolean
+): Promise<ActionResult> {
+  await requireAdmin();
+  await prisma.instructor.update({
+    where: { id: instructorId },
+    data: { canManageTeachingPracticeHorses },
+  });
+  revalidatePath("/admin/instructors");
+  revalidatePath("/instructor");
+  return { success: true };
+}
+
+export async function setInstructorCanEditTeachingPracticeFeedback(
+  instructorId: string,
+  canEditTeachingPracticeFeedback: boolean
+): Promise<ActionResult> {
+  await requireAdmin();
+  await prisma.instructor.update({
+    where: { id: instructorId },
+    data: { canEditTeachingPracticeFeedback },
+  });
+  revalidatePath("/admin/instructors");
+  revalidatePath("/instructor");
+  return { success: true };
+}

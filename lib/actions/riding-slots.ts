@@ -2,14 +2,20 @@
 
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
+import { Prisma } from "@/app/generated/prisma/client";
 import { revalidatePath } from "next/cache";
 import { requireAdmin } from "@/lib/auth/require-admin";
 import { dateKey, parseDateKey } from "@/lib/dates";
 import { buildScheduleSlots } from "@/lib/schedule-grouping";
 import { getHorseDisplayInfo } from "@/lib/horse-info";
+import { getKnownHorseNames } from "@/lib/actions/horse-feeding";
 import type { ActionResult } from "@/lib/actions/students";
 import type { AttendanceStatusValue } from "@/lib/actions/attendance";
-import { findAssignmentForStudent } from "@/lib/riding-assignment-matching";
+import {
+  findAssignmentForStudent,
+  getAssignmentInstructors,
+  formatInstructorNames,
+} from "@/lib/riding-assignment-matching";
 
 const NOT_FOUND_SCHEDULE_ITEM = 'פריט הלו"ז לא נמצא. נסי לרענן את העמוד.';
 const NOT_FOUND_RIDING_SLOT = "ניהול הרכיבה לא נמצא. נסי לרענן את העמוד.";
@@ -20,8 +26,15 @@ export interface RidingSlotAssignmentRow {
   id: string;
   groupName: string | null;
   subgroupNumber: number | null;
+  // Legacy/primary instructor - kept in sync as the first of instructorIds
+  // below, or null if none. See RidingSlotAssignment.instructorId.
   instructorId: string | null;
   instructorName: string | null;
+  // Full responsible-instructor list (RidingSlotAssignmentInstructor) - the
+  // source of truth going forward; instructorId/instructorName above always
+  // mirror instructorIds[0]/instructors[0].
+  instructorIds: string[];
+  instructors: { id: string; fullName: string }[];
   arena: string | null;
 }
 
@@ -53,18 +66,30 @@ type AssignmentWithInstructor = {
   instructorId: string | null;
   arena: string | null;
   instructor: { fullName: string } | null;
+  instructors: { instructor: { id: string; fullName: string } }[];
 };
 
 function toAssignmentRow(a: AssignmentWithInstructor): RidingSlotAssignmentRow {
+  const instructors = getAssignmentInstructors(a);
   return {
     id: a.id,
     groupName: a.groupName,
     subgroupNumber: a.subgroupNumber,
     instructorId: a.instructorId,
     instructorName: a.instructor?.fullName ?? null,
+    instructorIds: instructors.map((i) => i.id),
+    instructors,
     arena: a.arena,
   };
 }
+
+// Shared include shape for RidingSlotAssignment - fetches both the legacy
+// singular instructor and the full join-table list, in the order instructors
+// were selected/saved (see syncAssignmentInstructors).
+const ASSIGNMENT_WITH_INSTRUCTORS_INCLUDE = {
+  instructor: true,
+  instructors: { include: { instructor: true }, orderBy: { createdAt: "asc" as const } },
+};
 
 function toRidingSlotRow(slot: {
   id: string;
@@ -88,7 +113,7 @@ function toRidingSlotRow(slot: {
 
 const RIDING_SLOT_INCLUDE = {
   assignments: {
-    include: { instructor: true },
+    include: ASSIGNMENT_WITH_INSTRUCTORS_INCLUDE,
     orderBy: [{ groupName: "asc" as const }, { subgroupNumber: "asc" as const }],
   },
   scheduleItems: { select: { scheduleItemId: true } },
@@ -253,11 +278,48 @@ const assignmentInputSchema = z.object({
   ridingSlotId: z.string().min(1),
   groupName: z.string().trim().optional(),
   subgroupNumber: z.coerce.number().int().positive().optional(),
+  // Legacy single-instructor input - still accepted so any caller that
+  // hasn't been upgraded to instructorIds keeps working unchanged.
   instructorId: z.string().trim().optional(),
+  // Full instructor list for this split. When provided (even as an empty
+  // array, meaning "no instructors"), this wins over instructorId. When
+  // omitted, instructorId (if any) is used as a single-element list.
+  instructorIds: z.array(z.string().trim().min(1)).optional(),
   arena: z.string().trim().optional(),
 });
 
 export type RidingSlotAssignmentInput = z.infer<typeof assignmentInputSchema>;
+
+// Resolves the two possible instructor inputs (legacy singular vs. the new
+// list) down to one deduped id list - instructorIds wins when present.
+function resolveInstructorIds(data: { instructorId?: string; instructorIds?: string[] }): string[] {
+  if (data.instructorIds !== undefined) {
+    return Array.from(new Set(data.instructorIds.filter((id) => id.length > 0)));
+  }
+  return data.instructorId ? [data.instructorId] : [];
+}
+
+async function validateInstructorIds(instructorIds: string[]): Promise<boolean> {
+  if (instructorIds.length === 0) return true;
+  const found = await prisma.instructor.findMany({ where: { id: { in: instructorIds } } });
+  return found.length === instructorIds.length;
+}
+
+// Replaces the full RidingSlotAssignmentInstructor set for one assignment -
+// always a full delete+recreate, matching the "each save overwrites" upsert
+// convention used elsewhere in this module (e.g. RidingLessonNote fields).
+async function syncAssignmentInstructors(
+  tx: Prisma.TransactionClient,
+  ridingSlotAssignmentId: string,
+  instructorIds: string[]
+): Promise<void> {
+  await tx.ridingSlotAssignmentInstructor.deleteMany({ where: { ridingSlotAssignmentId } });
+  if (instructorIds.length > 0) {
+    await tx.ridingSlotAssignmentInstructor.createMany({
+      data: instructorIds.map((instructorId) => ({ ridingSlotAssignmentId, instructorId })),
+    });
+  }
+}
 
 // Create (or edit, when input.id is set) one group/subgroup split of a
 // riding slot. Creating without an id upserts on the DB's own unique key
@@ -281,11 +343,9 @@ export async function upsertRidingSlotAssignment(
     return { success: false, error: NOT_FOUND_RIDING_SLOT };
   }
 
-  if (data.instructorId) {
-    const instructor = await prisma.instructor.findUnique({ where: { id: data.instructorId } });
-    if (!instructor) {
-      return { success: false, error: NOT_FOUND_INSTRUCTOR };
-    }
+  const instructorIds = resolveInstructorIds(data);
+  if (!(await validateInstructorIds(instructorIds))) {
+    return { success: false, error: NOT_FOUND_INSTRUCTOR };
   }
 
   if (data.id) {
@@ -299,22 +359,28 @@ export async function upsertRidingSlotAssignment(
 
   const groupName = data.groupName || null;
   const subgroupNumber = data.subgroupNumber ?? null;
-  const instructorId = data.instructorId || null;
+  const primaryInstructorId = instructorIds[0] ?? null;
   const arena = data.arena || null;
 
   try {
     const saved = data.id
-      ? await prisma.ridingSlotAssignment.update({
-          where: { id: data.id },
-          data: { groupName, subgroupNumber, instructorId, arena },
-          include: { instructor: true },
+      ? await prisma.$transaction(async (tx) => {
+          const updated = await tx.ridingSlotAssignment.update({
+            where: { id: data.id! },
+            data: { groupName, subgroupNumber, instructorId: primaryInstructorId, arena },
+          });
+          await syncAssignmentInstructors(tx, updated.id, instructorIds);
+          return tx.ridingSlotAssignment.findUniqueOrThrow({
+            where: { id: updated.id },
+            include: ASSIGNMENT_WITH_INSTRUCTORS_INCLUDE,
+          });
         })
       : (
           await applyAssignmentSplit({
             ridingSlotId: data.ridingSlotId,
             groupName,
             subgroupNumber,
-            instructorId,
+            instructorIds,
             arena,
             skipIfExists: false,
           })
@@ -331,18 +397,22 @@ export async function upsertRidingSlotAssignment(
 }
 
 // Shared core for creating/updating one group/subgroup split, reused by
-// upsertRidingSlotAssignment (single, no id) and bulkApplyRidingAssignment.
-// Postgres unique constraints treat NULL as distinct from any other NULL,
-// so the DB-level @@unique([ridingSlotId, groupName, subgroupNumber])
-// constraint (and Prisma's compound-key upsert shorthand, which requires
-// non-null values for those fields) can't reliably match a "whole slot"
-// (both null) row. findFirst's `where` still filters null fields correctly
-// (translates to IS NULL), so this replicates upsert-by-split manually.
+// upsertRidingSlotAssignment (single, no id) and bulkApplyRidingAssignment
+// (always a single-or-zero-element instructorIds list, per the v1 decision
+// to keep bulk-assign single-instructor). Postgres unique constraints treat
+// NULL as distinct from any other NULL, so the DB-level
+// @@unique([ridingSlotId, groupName, subgroupNumber]) constraint (and
+// Prisma's compound-key upsert shorthand, which requires non-null values for
+// those fields) can't reliably match a "whole slot" (both null) row.
+// findFirst's `where` still filters null fields correctly (translates to IS
+// NULL), so this replicates upsert-by-split manually. The assignment row and
+// its RidingSlotAssignmentInstructor rows are written in one transaction so
+// the legacy instructorId column and the join table never diverge.
 async function applyAssignmentSplit(params: {
   ridingSlotId: string;
   groupName: string | null;
   subgroupNumber: number | null;
-  instructorId: string | null;
+  instructorIds: string[];
   arena: string | null;
   skipIfExists: boolean;
 }): Promise<{ outcome: "created" | "updated" | "skipped"; assignment: AssignmentWithInstructor | null }> {
@@ -354,27 +424,41 @@ async function applyAssignmentSplit(params: {
     },
   });
 
+  const primaryInstructorId = params.instructorIds[0] ?? null;
+
   if (existingMatch) {
     if (params.skipIfExists) {
       return { outcome: "skipped", assignment: null };
     }
-    const updated = await prisma.ridingSlotAssignment.update({
-      where: { id: existingMatch.id },
-      data: { instructorId: params.instructorId, arena: params.arena },
-      include: { instructor: true },
+    const updated = await prisma.$transaction(async (tx) => {
+      const u = await tx.ridingSlotAssignment.update({
+        where: { id: existingMatch.id },
+        data: { instructorId: primaryInstructorId, arena: params.arena },
+      });
+      await syncAssignmentInstructors(tx, u.id, params.instructorIds);
+      return tx.ridingSlotAssignment.findUniqueOrThrow({
+        where: { id: u.id },
+        include: ASSIGNMENT_WITH_INSTRUCTORS_INCLUDE,
+      });
     });
     return { outcome: "updated", assignment: updated };
   }
 
-  const created = await prisma.ridingSlotAssignment.create({
-    data: {
-      ridingSlotId: params.ridingSlotId,
-      groupName: params.groupName,
-      subgroupNumber: params.subgroupNumber,
-      instructorId: params.instructorId,
-      arena: params.arena,
-    },
-    include: { instructor: true },
+  const created = await prisma.$transaction(async (tx) => {
+    const c = await tx.ridingSlotAssignment.create({
+      data: {
+        ridingSlotId: params.ridingSlotId,
+        groupName: params.groupName,
+        subgroupNumber: params.subgroupNumber,
+        instructorId: primaryInstructorId,
+        arena: params.arena,
+      },
+    });
+    await syncAssignmentInstructors(tx, c.id, params.instructorIds);
+    return tx.ridingSlotAssignment.findUniqueOrThrow({
+      where: { id: c.id },
+      include: ASSIGNMENT_WITH_INSTRUCTORS_INCLUDE,
+    });
   });
   return { outcome: "created", assignment: created };
 }
@@ -656,7 +740,7 @@ export async function bulkApplyRidingAssignment(
         ridingSlotId: resolved.ridingSlotId,
         groupName,
         subgroupNumber,
-        instructorId,
+        instructorIds: instructorId ? [instructorId] : [],
         arena,
         skipIfExists,
       });
@@ -752,6 +836,12 @@ export interface RidingSlotStudentRow {
   // RidingLessonNote.sessionHorseName. Null means "no override, use the
   // normal horse."
   sessionHorseName: string | null;
+  // Free-text topic recorded for this student's lesson - see
+  // RidingLessonNote.lessonTopic. Null means none recorded yet.
+  lessonTopic: string | null;
+  // Which חניך/ים this student (as trainee) instructed/taught during this
+  // session - see RidingLessonNoteTaughtStudent. Empty when none recorded.
+  taughtStudents: { id: string; fullName: string }[];
   updatedByName: string | null;
   // ISO string, null when no note/rating has ever been saved for this
   // student+slot - kept for the future student history view too.
@@ -781,7 +871,9 @@ export async function getRidingSlotStudentNotes(ridingSlotId: string): Promise<R
     where: { id: ridingSlotId },
     include: {
       assignments: true,
-      notes: true,
+      notes: {
+        include: { taughtStudents: { include: { student: { select: { id: true, fullName: true } } } } },
+      },
       scheduleItem: { select: { groupName: true, date: true } },
     },
   });
@@ -830,6 +922,8 @@ export async function getRidingSlotStudentNotes(ridingSlotId: string): Promise<R
       note: note?.note ?? null,
       ratingHalfPoints: note?.ratingHalfPoints ?? null,
       sessionHorseName: note?.sessionHorseName ?? null,
+      lessonTopic: note?.lessonTopic ?? null,
+      taughtStudents: note?.taughtStudents.map((t) => ({ id: t.student.id, fullName: t.student.fullName })) ?? [],
       updatedByName: note?.updatedByName ?? null,
       updatedAt: note?.updatedAt ? note.updatedAt.toISOString() : null,
       attendanceStatus: attendance?.status ?? null,
@@ -844,6 +938,11 @@ export interface RidingLessonNoteInput {
   note?: string;
   ratingHalfPoints?: number | null;
   sessionHorseName?: string;
+  lessonTopic?: string;
+  // Full replacement list of taught חניכים - a save always overwrites the
+  // previously recorded set (same convention as note/rating/sessionHorseName),
+  // never a partial add/remove. Omitted or empty clears it.
+  taughtStudentIds?: string[];
 }
 
 export interface RidingLessonNoteActionResult extends ActionResult {
@@ -887,18 +986,49 @@ export async function upsertRidingLessonNoteAsInstructor(
 
   const note = input.note?.trim() || null;
   const sessionHorseName = input.sessionHorseName?.trim() || null;
+  const lessonTopic = input.lessonTopic?.trim() || null;
+  const taughtStudentIds = Array.from(
+    new Set((input.taughtStudentIds ?? []).map((id) => id.trim()).filter((id) => id.length > 0))
+  );
 
-  const saved = await prisma.ridingLessonNote.upsert({
-    where: { ridingSlotId_studentId: { ridingSlotId, studentId } },
-    update: { note, ratingHalfPoints, sessionHorseName, updatedByName: instructor.fullName },
-    create: {
-      ridingSlotId,
-      studentId,
-      note,
-      ratingHalfPoints,
-      sessionHorseName,
-      updatedByName: instructor.fullName,
-    },
+  if (taughtStudentIds.length > 0) {
+    const foundTaughtStudents = await prisma.student.findMany({
+      where: { id: { in: taughtStudentIds } },
+      select: { id: true },
+    });
+    if (foundTaughtStudents.length !== taughtStudentIds.length) {
+      return { success: false, error: "אחד או יותר מהחניכים שנבחרו כמודרכים לא נמצא/ו" };
+    }
+  }
+
+  const saved = await prisma.$transaction(async (tx) => {
+    const savedNote = await tx.ridingLessonNote.upsert({
+      where: { ridingSlotId_studentId: { ridingSlotId, studentId } },
+      update: { note, ratingHalfPoints, sessionHorseName, lessonTopic, updatedByName: instructor.fullName },
+      create: {
+        ridingSlotId,
+        studentId,
+        note,
+        ratingHalfPoints,
+        sessionHorseName,
+        lessonTopic,
+        updatedByName: instructor.fullName,
+      },
+    });
+
+    // Full replace, same as the other fields above - re-running with an
+    // empty/omitted taughtStudentIds clears whatever was previously saved.
+    await tx.ridingLessonNoteTaughtStudent.deleteMany({ where: { ridingLessonNoteId: savedNote.id } });
+    if (taughtStudentIds.length > 0) {
+      await tx.ridingLessonNoteTaughtStudent.createMany({
+        data: taughtStudentIds.map((taughtStudentId) => ({
+          ridingLessonNoteId: savedNote.id,
+          studentId: taughtStudentId,
+        })),
+      });
+    }
+
+    return savedNote;
   });
 
   revalidatePath("/instructor");
@@ -922,6 +1052,8 @@ export interface RidingHistoryRow {
   horseDisplay: string;
   ratingHalfPoints: number | null;
   note: string | null;
+  lessonTopic: string | null;
+  taughtStudents: { id: string; fullName: string }[];
   updatedByName: string | null;
   updatedAt: string;
 }
@@ -952,9 +1084,10 @@ async function buildStudentRidingHistory(studentId: string): Promise<StudentRidi
   const notes = await prisma.ridingLessonNote.findMany({
     where: { studentId },
     include: {
+      taughtStudents: { include: { student: { select: { id: true, fullName: true } } } },
       ridingSlot: {
         include: {
-          assignments: { include: { instructor: true } },
+          assignments: { include: ASSIGNMENT_WITH_INSTRUCTORS_INCLUDE },
           scheduleItems: { include: { scheduleItem: true } },
         },
       },
@@ -989,11 +1122,13 @@ async function buildStudentRidingHistory(studentId: string): Promise<StudentRidi
       title: first.title,
       groupName: student.groupName,
       subgroupNumber: student.subgroupNumber,
-      instructorName: assignment?.instructor?.fullName ?? null,
+      instructorName: assignment ? formatInstructorNames(getAssignmentInstructors(assignment).map((i) => i.fullName)) : null,
       arena: assignment?.arena ?? null,
       horseDisplay,
       ratingHalfPoints: n.ratingHalfPoints,
       note: n.note,
+      lessonTopic: n.lessonTopic,
+      taughtStudents: n.taughtStudents.map((t) => ({ id: t.student.id, fullName: t.student.fullName })),
       updatedByName: n.updatedByName,
       updatedAt: n.updatedAt.toISOString(),
     });
@@ -1025,4 +1160,43 @@ export async function getStudentRidingHistoryForInstructor(
   studentId: string
 ): Promise<StudentRidingHistoryResult | null> {
   return buildStudentRidingHistory(studentId);
+}
+
+// Suggestions for the lesson-topic input - same "grows from whatever gets
+// typed" convention as getKnownHayTypes/getKnownConcentrateTypes, never a
+// closed list.
+export async function getKnownRidingLessonTopics(): Promise<string[]> {
+  const rows = await prisma.ridingLessonNote.findMany({
+    where: { lessonTopic: { not: null } },
+    select: { lessonTopic: true },
+    distinct: ["lessonTopic"],
+  });
+  return rows
+    .map((r) => r.lessonTopic!)
+    .filter((v) => v.trim().length > 0)
+    .sort((a, b) => a.localeCompare(b, "he"));
+}
+
+// Suggestions for the session-horse input - unions the same known-horse-name
+// set horse feeding already exposes (getKnownHorseNames) with horse names
+// previously typed into sessionHorseName, so a name only ever entered as a
+// one-off session override still becomes a future suggestion. No Horse
+// table - horseName stays the natural key everywhere in this app.
+export async function getKnownRidingHorseNames(): Promise<string[]> {
+  const [feedingNames, sessionHorseRows] = await Promise.all([
+    getKnownHorseNames(),
+    prisma.ridingLessonNote.findMany({
+      where: { sessionHorseName: { not: null } },
+      select: { sessionHorseName: true },
+      distinct: ["sessionHorseName"],
+    }),
+  ]);
+
+  const names = new Set(feedingNames);
+  for (const row of sessionHorseRows) {
+    const name = row.sessionHorseName?.trim();
+    if (name) names.add(name);
+  }
+
+  return Array.from(names).sort((a, b) => a.localeCompare(b, "he"));
 }

@@ -48,13 +48,24 @@ async function buildRidingAssignmentSummaries(options: {
   startDateKey?: string;
   endDateKey?: string;
 }): Promise<InstructorRidingAssignmentSummary[]> {
+  // Matches on either the legacy instructorId column or a
+  // RidingSlotAssignmentInstructor join row - a co-instructor who isn't the
+  // assignment's "primary" (legacy) instructor must still be found here.
   const assignments = await prisma.ridingSlotAssignment.findMany({
-    where: {
-      instructorId: options.instructorId ?? { not: null },
-    },
+    where: options.instructorId
+      ? {
+          OR: [
+            { instructorId: options.instructorId },
+            { instructors: { some: { instructorId: options.instructorId } } },
+          ],
+        }
+      : {
+          OR: [{ instructorId: { not: null } }, { instructors: { some: {} } }],
+        },
     select: {
       instructorId: true,
       ridingSlotId: true,
+      instructors: { select: { instructorId: true } },
       ridingSlot: {
         select: {
           scheduleItems: {
@@ -66,14 +77,25 @@ async function buildRidingAssignmentSummaries(options: {
   });
 
   // Dedupe to (ridingSlotId -> set of instructorIds) first, so an instructor
-  // with multiple assignment rows in the same slot (e.g. two subgroups) is
-  // only ever counted once for that slot.
+  // with multiple assignment rows in the same slot (e.g. two subgroups, or a
+  // split they co-instruct alongside someone else) is only ever counted once
+  // for that slot. Legacy instructorId ∪ join-table instructor ids - the
+  // legacy column is always a subset of the join table post-Stage-1-backfill
+  // and post-Stage-2 saves, but unioning keeps this correct defensively.
   const instructorIdsBySlot = new Map<string, Set<string>>();
   const scheduleItemsBySlot = new Map<string, { date: Date; startTime: string }[]>();
   for (const a of assignments) {
-    if (!a.instructorId) continue;
+    const ids = new Set<string>();
+    if (a.instructorId) ids.add(a.instructorId);
+    for (const j of a.instructors) ids.add(j.instructorId);
+    if (ids.size === 0) continue;
+
     if (!instructorIdsBySlot.has(a.ridingSlotId)) instructorIdsBySlot.set(a.ridingSlotId, new Set());
-    instructorIdsBySlot.get(a.ridingSlotId)!.add(a.instructorId);
+    const slotInstructorIds = instructorIdsBySlot.get(a.ridingSlotId)!;
+    for (const id of ids) {
+      if (options.instructorId && id !== options.instructorId) continue;
+      slotInstructorIds.add(id);
+    }
     if (!scheduleItemsBySlot.has(a.ridingSlotId)) {
       scheduleItemsBySlot.set(
         a.ridingSlotId,

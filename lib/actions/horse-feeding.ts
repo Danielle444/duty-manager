@@ -203,6 +203,33 @@ export async function getKnownConcentrateAmounts(): Promise<string[]> {
     .sort((a, b) => a.localeCompare(b, "he"));
 }
 
+// Union of "horses currently claimed by an active student" and "horses with
+// feeding data already entered" - the same set buildHorseFeedingOverview
+// resolves internally, exported on its own so other riding features (e.g.
+// riding lesson note horse autocomplete) can reuse this exact set of known
+// horse names without a separate Horse table.
+export async function getKnownHorseNames(): Promise<string[]> {
+  const [students, meals] = await Promise.all([
+    prisma.student.findMany({
+      where: { isActive: true },
+      select: { hasPrivateHorse: true, privateHorseName: true, assignedHorseName: true },
+    }),
+    prisma.horseFeedingMeal.findMany({ select: { horseName: true } }),
+  ]);
+
+  const names = new Set<string>();
+  for (const s of students) {
+    const name = getHorseDisplayInfo(s).horseName;
+    if (name) names.add(name);
+  }
+  for (const m of meals) {
+    const name = m.horseName.trim();
+    if (name) names.add(name);
+  }
+
+  return Array.from(names).sort((a, b) => a.localeCompare(b, "he"));
+}
+
 const mealFieldsSchema = z.object({
   hayType: z.string().trim().optional(),
   concentrateType: z.string().trim().optional(),

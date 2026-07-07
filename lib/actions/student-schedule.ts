@@ -8,7 +8,12 @@ import {
   formatHebrewWeekday,
   parseDateKey,
 } from "@/lib/dates";
-import { findAssignmentForStudent, type AssignmentForMatching } from "@/lib/riding-assignment-matching";
+import {
+  findAssignmentForStudent,
+  getAssignmentInstructorNames,
+  formatInstructorNames,
+  type AssignmentForMatching,
+} from "@/lib/riding-assignment-matching";
 
 // Only the fields a student is allowed to see about their riding slot's
 // instructor/field/subgroup - never notes, ratings, sessionHorseName, or
@@ -56,10 +61,11 @@ function buildRidingInfoForStudent(
 ): ScheduleItemRidingInfo | null {
   const assignment = findAssignmentForStudent(ridingSlot.assignments, groupName, subgroupNumber);
 
-  const instructorName =
-    ridingSlot.showInstructorToStudents && assignment?.instructor?.fullName
-      ? assignment.instructor.fullName
-      : null;
+  // Multiple co-instructors are joined into one display string (e.g. "דנה,
+  // יעל") - the field itself stays a plain string, so this needs no change
+  // on the student-facing rendering side.
+  const instructorNames = assignment ? getAssignmentInstructorNames(assignment) : [];
+  const instructorName = ridingSlot.showInstructorToStudents ? formatInstructorNames(instructorNames) : null;
   const arena = ridingSlot.showArenaToStudents && assignment?.arena ? assignment.arena : null;
   const subgroupLabel =
     ridingSlot.showSubgroupToStudents && subgroupNumber != null ? `תת-קבוצה ${subgroupNumber}` : null;
@@ -94,7 +100,16 @@ export async function getScheduleForStudent(
         include: {
           ridingSlotLink: {
             include: {
-              ridingSlot: { include: { assignments: { include: { instructor: true } } } },
+              ridingSlot: {
+                include: {
+                  assignments: {
+                    include: {
+                      instructor: true,
+                      instructors: { include: { instructor: true }, orderBy: { createdAt: "asc" } },
+                    },
+                  },
+                },
+              },
             },
           },
         },

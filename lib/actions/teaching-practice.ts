@@ -1,6 +1,7 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
+import { Prisma } from "@/app/generated/prisma/client";
 import { requireAdmin } from "@/lib/auth/require-admin";
 import { dateKey, parseDateKey } from "@/lib/dates";
 import type { ActionResult } from "@/lib/actions/students";
@@ -38,6 +39,25 @@ const VALID_ROLES: TeachingPracticeRoleValue[] = [
   "ASSISTANT_INSTRUCTOR",
   "EVALUATOR",
 ];
+
+// Defensive parse for both directions: reading back whatever's stored in the
+// roleLabelOverrides JSON column, and validating client input before saving.
+// Only known TeachingPracticeRoleValue keys with a non-empty trimmed string
+// value survive - unknown keys, non-string values, and blank strings (which
+// mean "reset to default") are all dropped rather than stored. Returns null
+// (not {}) when nothing survives, so an empty override set is stored/read as
+// "no override" rather than an empty-but-present JSON object.
+function sanitizeRoleLabelOverrides(value: unknown): Partial<Record<TeachingPracticeRoleValue, string>> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const result: Partial<Record<TeachingPracticeRoleValue, string>> = {};
+  for (const role of VALID_ROLES) {
+    const raw = (value as Record<string, unknown>)[role];
+    if (typeof raw !== "string") continue;
+    const trimmed = raw.trim();
+    if (trimmed) result[role] = trimmed;
+  }
+  return Object.keys(result).length > 0 ? result : null;
+}
 
 // Students have no NextAuth session in this app, so ownership/permission is
 // always re-verified by re-reading the instructor row and its
@@ -1045,6 +1065,11 @@ export interface TeachingPracticeLessonSummary {
   isPublished: boolean;
   participantCount: number;
   childCount: number;
+  // Display-only per-role label overrides for this lesson's generated-lessons
+  // table row (e.g. {"LEAD_INSTRUCTOR": "מדריך 1"}) - never read by
+  // rotation/assignment/schedule-check/feedback logic. Missing/null role key
+  // means "use the default ROLE_LABELS text" for that role.
+  roleLabelOverrides: Partial<Record<TeachingPracticeRoleValue, string>> | null;
 }
 
 export interface TeachingPracticeParticipantRow {
@@ -1093,6 +1118,7 @@ interface LessonBase {
   responsibleInstructorId: string | null;
   notes: string | null;
   isPublished: boolean;
+  roleLabelOverrides: unknown;
 }
 
 function toLessonSummary(
@@ -1117,6 +1143,7 @@ function toLessonSummary(
     isPublished: lesson.isPublished,
     participantCount: lesson.participantCount,
     childCount: lesson.childCount,
+    roleLabelOverrides: sanitizeRoleLabelOverrides(lesson.roleLabelOverrides),
   };
 }
 
@@ -1561,6 +1588,10 @@ export interface TeachingPracticeLessonInput {
   responsibleInstructorId?: string | null;
   location?: string | null;
   notes?: string | null;
+  // Display-only role label overrides for the generated-lessons table; a
+  // missing/blank value for a role resets that role back to the default
+  // ROLE_LABELS text. Omit the field entirely to leave overrides untouched.
+  roleLabelOverrides?: Partial<Record<TeachingPracticeRoleValue, string>> | null;
 }
 
 // v1 keeps a single responsible instructor per lesson (overriding the
@@ -1592,6 +1623,15 @@ async function updateTeachingPracticeLessonInternal(
   const responsible = await validateResponsibleInstructor(input.responsibleInstructorId);
   if ("error" in responsible) return { success: false, error: responsible.error };
 
+  // roleLabelOverrides is only touched when the caller explicitly sends the
+  // key (present in `input`, even as null/{} to clear it) - callers that
+  // don't know about this field (e.g. any older client) leave existing
+  // overrides untouched instead of silently wiping them.
+  const updatesRoleLabels = "roleLabelOverrides" in input;
+  const sanitizedRoleLabelOverrides = updatesRoleLabels
+    ? sanitizeRoleLabelOverrides(input.roleLabelOverrides)
+    : undefined;
+
   await prisma.teachingPracticeLesson.update({
     where: { id: lessonId },
     data: {
@@ -1601,6 +1641,9 @@ async function updateTeachingPracticeLessonInternal(
       responsibleInstructorId: responsible.id,
       location: input.location?.trim() || null,
       notes: input.notes?.trim() || null,
+      ...(updatesRoleLabels
+        ? { roleLabelOverrides: sanitizedRoleLabelOverrides ?? Prisma.JsonNull }
+        : {}),
     },
   });
 

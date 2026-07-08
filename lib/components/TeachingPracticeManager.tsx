@@ -4050,15 +4050,27 @@ interface LessonEditFormState {
   responsibleInstructorId: string;
   location: string;
   notes: string;
+  // Keyed by this lesson's roleSlots only - pre-filled with the currently
+  // displayed label (override if set, else the ROLE_LABELS default) so the
+  // input always shows what the table shows right now.
+  roleLabels: Partial<Record<TeachingPracticeRoleValue, string>>;
 }
 
-function lessonToEditForm(lesson: TeachingPracticeLessonSummary): LessonEditFormState {
+function lessonToEditForm(
+  lesson: TeachingPracticeLessonSummary,
+  roleSlots: TeachingPracticeRoleValue[]
+): LessonEditFormState {
+  const roleLabels: Partial<Record<TeachingPracticeRoleValue, string>> = {};
+  for (const role of roleSlots) {
+    roleLabels[role] = lesson.roleLabelOverrides?.[role] ?? ROLE_LABELS[role];
+  }
   return {
     date: lesson.date,
     startTime: lesson.startTime,
     responsibleInstructorId: lesson.responsibleInstructorId ?? "",
     location: lesson.location ?? "",
     notes: lesson.notes ?? "",
+    roleLabels,
   };
 }
 
@@ -4187,18 +4199,26 @@ function LessonTableRow({
   onSave: (input: TeachingPracticeLessonInput) => Promise<ActionResult>;
 }) {
   const [isEditing, setIsEditing] = useState(false);
-  const [editForm, setEditForm] = useState<LessonEditFormState>(() => lessonToEditForm(lesson));
+  const [editForm, setEditForm] = useState<LessonEditFormState>(() => lessonToEditForm(lesson, roleSlots));
   const [editError, setEditError] = useState<string | null>(null);
   const [isSavingEdit, startSaveEditTransition] = useTransition();
 
   function startEdit() {
-    setEditForm(lessonToEditForm(lesson));
+    setEditForm(lessonToEditForm(lesson, roleSlots));
     setEditError(null);
     setIsEditing(true);
   }
 
   function handleSaveEdit() {
     setEditError(null);
+    // Only roles whose input still differs from the default ROLE_LABELS text
+    // are sent as an override - typing the default back in (or clearing the
+    // field) resets that role, exactly like the dedicated reset button does.
+    const roleLabelOverrides: Partial<Record<TeachingPracticeRoleValue, string>> = {};
+    for (const role of roleSlots) {
+      const value = (editForm.roleLabels[role] ?? "").trim();
+      if (value && value !== ROLE_LABELS[role]) roleLabelOverrides[role] = value;
+    }
     startSaveEditTransition(async () => {
       const result = await onSave({
         date: editForm.date,
@@ -4206,6 +4226,7 @@ function LessonTableRow({
         responsibleInstructorId: editForm.responsibleInstructorId || null,
         location: editForm.location.trim() || null,
         notes: editForm.notes.trim() || null,
+        roleLabelOverrides,
       });
       if (!result.success) {
         setEditError(result.error ?? "אירעה שגיאה");
@@ -4258,7 +4279,11 @@ function LessonTableRow({
             </td>
           )}
           <td className="px-2 py-2">{row.participant?.traineeName ?? "—"}</td>
-          <td className="px-2 py-2">{row.participant ? ROLE_LABELS[row.participant.role] : "—"}</td>
+          <td className="px-2 py-2">
+            {row.participant
+              ? (lesson.roleLabelOverrides?.[row.participant.role] ?? ROLE_LABELS[row.participant.role])
+              : "—"}
+          </td>
           {sharedChildColumn ? (
             i === 0 && (
               <>
@@ -4395,6 +4420,37 @@ function LessonTableRow({
                   className="rounded-lg border border-border px-3 py-2 text-sm"
                 />
               </label>
+            </div>
+            <div className="mt-3 border-t border-border pt-3">
+              <p className="text-sm font-medium text-card-foreground">שמות תפקידים לתצוגה</p>
+              <p className="text-xs text-muted-foreground">משנה רק את התצוגה בטבלה, לא את השיבוץ בפועל</p>
+              <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                {roleSlots.map((role) => (
+                  <label key={role} className="flex flex-col gap-1 text-sm">
+                    {ROLE_LABELS[role]}
+                    <span className="flex gap-1.5">
+                      <input
+                        value={editForm.roleLabels[role] ?? ""}
+                        onChange={(e) =>
+                          setEditForm((f) => ({ ...f, roleLabels: { ...f.roleLabels, [role]: e.target.value } }))
+                        }
+                        className="w-full rounded-lg border border-border px-3 py-2 text-sm"
+                      />
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        className="!px-2 !py-1 !text-xs"
+                        disabled={editForm.roleLabels[role] === ROLE_LABELS[role]}
+                        onClick={() =>
+                          setEditForm((f) => ({ ...f, roleLabels: { ...f.roleLabels, [role]: ROLE_LABELS[role] } }))
+                        }
+                      >
+                        איפוס
+                      </Button>
+                    </span>
+                  </label>
+                ))}
+              </div>
             </div>
             {editError && <p className="mt-2 text-sm text-danger">{editError}</p>}
             <div className="mt-2 flex gap-2">

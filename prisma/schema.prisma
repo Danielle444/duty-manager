@@ -864,6 +864,12 @@ model TeachingPracticeLesson {
   responsibleInstructorId String?
   notes                   String?
   isPublished             Boolean              @default(false)
+  // Display-only override of the role labels shown in the generated-lessons
+  // table's "תפקיד" column for this one lesson, e.g. {"LEAD_INSTRUCTOR":
+  // "מדריך 1"} - never read by rotation/assignment/schedule-check/feedback
+  // logic, which all keep working off TeachingPracticeParticipant.role.
+  // Null/missing key means "use the default ROLE_LABELS text".
+  roleLabelOverrides      Json?
   createdAt               DateTime             @default(now())
   updatedAt               DateTime             @updatedAt
 

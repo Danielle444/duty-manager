@@ -637,7 +637,67 @@ async function setTeachingPracticeTrackTraineesInternal(
     }),
   ]);
 
+  if (traineeIdsInRotationOrder.length === expectedSize) {
+    await syncTeachingPracticeTrackParticipants(trackId);
+  }
+
   return { success: true };
+}
+
+// Fills in participants for lessons that were generated before the track's
+// team was complete (or before a prior roster change), now that the team is
+// exactly expectedSize. Only called once the roster reaches full size -
+// never for a partial team, since rotation math requires an exact count.
+//
+// A lesson is only touched if none of its current participants are
+// isManualOverride - one hand-edited row is enough to skip the whole lesson,
+// so a manual fix is never silently clobbered by a later roster change.
+// occurrenceIndex is recomputed per lesson from chronological lesson order
+// (date, then startTime, then createdAt/id as a stable tiebreaker) rather
+// than creation order, since dates can be generated/added out of order and
+// the rotation must follow the actual schedule, not the order they were
+// entered in.
+async function syncTeachingPracticeTrackParticipants(trackId: string): Promise<void> {
+  const track = await prisma.teachingPracticeTrack.findUnique({
+    where: { id: trackId },
+    include: { trainees: { orderBy: { rotationOrder: "asc" } } },
+  });
+  if (!track) return;
+
+  const expectedSize = TEACHING_PRACTICE_TEAM_SIZE[track.practiceType];
+  if (track.trainees.length !== expectedSize) return;
+
+  const traineeInput = track.trainees.map((t) => ({ traineeId: t.traineeId, rotationOrder: t.rotationOrder }));
+
+  const lessons = await prisma.teachingPracticeLesson.findMany({
+    where: { trackId },
+    orderBy: [{ date: "asc" }, { startTime: "asc" }, { createdAt: "asc" }, { id: "asc" }],
+    include: { participants: true },
+  });
+
+  for (let occurrenceIndex = 0; occurrenceIndex < lessons.length; occurrenceIndex++) {
+    const lesson = lessons[occurrenceIndex];
+    if (lesson.participants.some((p) => p.isManualOverride)) continue;
+
+    let roleAssignments: { traineeId: string; role: TeachingPracticeRoleValue }[];
+    try {
+      roleAssignments = computeTeachingPracticeRotation(track.practiceType, traineeInput, occurrenceIndex);
+    } catch {
+      continue;
+    }
+
+    await prisma.$transaction([
+      prisma.teachingPracticeParticipant.deleteMany({ where: { lessonId: lesson.id } }),
+      prisma.teachingPracticeParticipant.createMany({
+        data: roleAssignments.map((r) => ({
+          lessonId: lesson.id,
+          traineeId: r.traineeId,
+          role: r.role,
+          isManualOverride: false,
+        })),
+      }),
+    ]);
+  }
 }
 
 export async function setTeachingPracticeTrackTraineesAsAdmin(
@@ -1205,27 +1265,25 @@ async function generateTeachingPracticeLessonFromTrackInternal(
   }
 
   const expectedSize = TEACHING_PRACTICE_TEAM_SIZE[track.practiceType];
-  if (track.trainees.length !== expectedSize) {
-    return {
-      success: false,
-      error:
-        track.practiceType === "BEGINNER_GROUP"
-          ? "יש להשלים צוות של 3 חניכים במסלול לפני יצירת שיעור"
-          : "יש להשלים צוות של 2 חניכים במסלול לפני יצירת שיעור",
-    };
-  }
-
   const occurrenceIndex = await prisma.teachingPracticeLesson.count({ where: { trackId } });
 
-  let roleAssignments: { traineeId: string; role: TeachingPracticeRoleValue }[];
-  try {
-    roleAssignments = computeTeachingPracticeRotation(
-      track.practiceType,
-      track.trainees.map((t) => ({ traineeId: t.traineeId, rotationOrder: t.rotationOrder })),
-      occurrenceIndex
-    );
-  } catch (err) {
-    return { success: false, error: err instanceof Error ? err.message : "שגיאה בחישוב חלוקת התפקידים" };
+  // A dated lesson can be created before the track's trainee team is
+  // complete (fixed-schedule dates should not have to wait on assignment) -
+  // an incomplete team just means no participants get materialized yet.
+  // Rotation math itself only makes sense for a complete team, so it's only
+  // invoked once the team is exactly expectedSize; setTeachingPracticeTrackTraineesInternal
+  // auto-syncs participants into this lesson once that later happens.
+  let roleAssignments: { traineeId: string; role: TeachingPracticeRoleValue }[] = [];
+  if (track.trainees.length === expectedSize) {
+    try {
+      roleAssignments = computeTeachingPracticeRotation(
+        track.practiceType,
+        track.trainees.map((t) => ({ traineeId: t.traineeId, rotationOrder: t.rotationOrder })),
+        occurrenceIndex
+      );
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : "שגיאה בחישוב חלוקת התפקידים" };
+    }
   }
 
   const createdLessonId = await prisma.$transaction(async (tx) => {

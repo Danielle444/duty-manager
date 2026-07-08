@@ -165,6 +165,11 @@ export function StudentWeeklyFeedbackSection({
                         1 = פחות טוב · 2 = ללא שינוי · 3 = השתפר
                       </p>
                     )}
+                    {q.type === "RATING_5" && (
+                      <p className="text-xs text-muted-foreground">
+                        1 = לא טוב / במידה נמוכה · 5 = טוב מאוד / במידה גבוהה
+                      </p>
+                    )}
                   </div>
                 )}
               </div>

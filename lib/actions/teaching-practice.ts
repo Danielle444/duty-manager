@@ -1620,17 +1620,53 @@ export interface TeachingPracticeTraineeScheduleCheck {
   timeline: TeachingPracticeScheduleCheckEntry[];
 }
 
+// Stage 2 - horse timeline. horseName is free text (TeachingPracticeChildAssignment.horseName,
+// not a FK), so two different spellings of the same real horse show up as two
+// separate entries here - deliberately not normalized/merged in this stage
+// (see report). Grouped by the raw stored string as-is.
+export interface TeachingPracticeHorseScheduleCheckEntry {
+  lessonId: string;
+  date: string;
+  practiceType: TeachingPracticeTypeValue;
+  childFullName: string | null;
+  startTime: string;
+  endTime: string;
+  warnings: TeachingPracticeScheduleWarning[];
+}
+
+export interface TeachingPracticeHorseScheduleCheck {
+  horseName: string;
+  timeline: TeachingPracticeHorseScheduleCheckEntry[];
+}
+
+export interface TeachingPracticeScheduleCheckResult {
+  trainees: TeachingPracticeTraineeScheduleCheck[];
+  horses: TeachingPracticeHorseScheduleCheck[];
+}
+
 export async function getTeachingPracticeScheduleCheckForAdmin(): Promise<
-  TeachingPracticeTraineeScheduleCheck[]
+  TeachingPracticeScheduleCheckResult
 > {
   await requireAdmin();
 
-  const participants = await prisma.teachingPracticeParticipant.findMany({
-    include: {
-      trainee: { select: { fullName: true } },
-      lesson: { select: { id: true, date: true, startTime: true, endTime: true, practiceType: true } },
-    },
-  });
+  const [participants, childAssignments] = await Promise.all([
+    prisma.teachingPracticeParticipant.findMany({
+      include: {
+        trainee: { select: { fullName: true } },
+        lesson: { select: { id: true, date: true, startTime: true, endTime: true, practiceType: true } },
+      },
+    }),
+    // No isAbsent/horseName filter in the where clause here - horseName can't
+    // be filtered for "non-empty" in one Prisma clause (only null-ness), so
+    // both are checked in JS below alongside the isAbsent check for a single
+    // consistent guard.
+    prisma.teachingPracticeChildAssignment.findMany({
+      include: {
+        child: { select: { fullName: true } },
+        lesson: { select: { id: true, date: true, startTime: true, endTime: true, practiceType: true } },
+      },
+    }),
+  ]);
 
   const entriesByTrainee = new Map<
     string,
@@ -1664,11 +1700,50 @@ export async function getTeachingPracticeScheduleCheckForAdmin(): Promise<
     }
   }
 
-  const result: TeachingPracticeTraineeScheduleCheck[] = [];
+  const trainees: TeachingPracticeTraineeScheduleCheck[] = [];
   for (const [traineeId, { traineeName, entries }] of entriesByTrainee) {
-    result.push({ traineeId, traineeName, timeline: attachTeachingPracticeScheduleWarnings(entries) });
+    trainees.push({ traineeId, traineeName, timeline: attachTeachingPracticeScheduleWarnings(entries) });
+  }
+  trainees.sort((a, b) => a.traineeName.localeCompare(b.traineeName, "he"));
+
+  const entriesByHorse = new Map<
+    string,
+    {
+      lessonId: string;
+      date: string;
+      startTime: string;
+      endTime: string;
+      practiceType: TeachingPracticeTypeValue;
+      childFullName: string | null;
+    }[]
+  >();
+
+  for (const ca of childAssignments) {
+    if (ca.isAbsent) continue;
+    const horseName = ca.horseName?.trim();
+    if (!horseName) continue;
+
+    const entry = {
+      lessonId: ca.lesson.id,
+      date: dateKey(ca.lesson.date),
+      startTime: ca.lesson.startTime,
+      endTime: ca.lesson.endTime,
+      practiceType: ca.lesson.practiceType,
+      childFullName: ca.child.fullName,
+    };
+    const existing = entriesByHorse.get(horseName);
+    if (existing) {
+      existing.push(entry);
+    } else {
+      entriesByHorse.set(horseName, [entry]);
+    }
   }
 
-  result.sort((a, b) => a.traineeName.localeCompare(b.traineeName, "he"));
-  return result;
+  const horses: TeachingPracticeHorseScheduleCheck[] = [];
+  for (const [horseName, entries] of entriesByHorse) {
+    horses.push({ horseName, timeline: attachTeachingPracticeScheduleWarnings(entries) });
+  }
+  horses.sort((a, b) => a.horseName.localeCompare(b.horseName, "he"));
+
+  return { trainees, horses };
 }

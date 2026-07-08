@@ -63,7 +63,7 @@ import {
   type TeachingPracticeLessonDetail,
   type TeachingPracticeLessonInput,
   type TeachingPracticeLessonSummary,
-  type TeachingPracticeTraineeScheduleCheck,
+  type TeachingPracticeScheduleCheckResult,
   type TeachingPracticeTrackInput,
   type TeachingPracticeTrackSummary,
 } from "@/lib/actions/teaching-practice";
@@ -86,9 +86,20 @@ const TAB_LABELS: Record<Tab, string> = {
   scheduleCheck: "בדיקת שיבוץ",
 };
 
-const SCHEDULE_CHECK_WARNING_LABELS: Record<"overlap" | "short_gap", string> = {
+const TRAINEE_SCHEDULE_CHECK_WARNING_LABELS: Record<"overlap" | "short_gap", string> = {
   overlap: "חפיפה בזמנים",
   short_gap: "מרווח קצר מדי בין התנסויות",
+};
+
+const HORSE_SCHEDULE_CHECK_WARNING_LABELS: Record<"overlap" | "short_gap", string> = {
+  overlap: "חפיפה בזמנים",
+  short_gap: "מרווח קצר מדי בין שימושים בסוס",
+};
+
+type ScheduleCheckSubTab = "trainees" | "horses";
+const SCHEDULE_CHECK_SUB_TAB_LABELS: Record<ScheduleCheckSubTab, string> = {
+  trainees: "חניכים",
+  horses: "סוסים",
 };
 
 const PRACTICE_TYPE_LABELS: Record<TeachingPracticeTypeValue, string> = {
@@ -510,9 +521,11 @@ export function TeachingPracticeManager({
   // Admin-only (getTeachingPracticeScheduleCheckForAdmin has no instructor
   // variant yet, see report) - fetched lazily on first visit to the tab
   // rather than in the initial Promise.all below, since it's a heavier
-  // cross-lesson query most sessions never open.
-  const [scheduleCheck, setScheduleCheck] = useState<TeachingPracticeTraineeScheduleCheck[] | null>(null);
+  // cross-lesson query most sessions never open. Holds both the trainee and
+  // horse timelines together (one fetch, one round trip).
+  const [scheduleCheck, setScheduleCheck] = useState<TeachingPracticeScheduleCheckResult | null>(null);
   const [scheduleCheckLoading, setScheduleCheckLoading] = useState(false);
+  const [scheduleCheckSubTab, setScheduleCheckSubTab] = useState<ScheduleCheckSubTab>("trainees");
 
   async function refreshTracks() {
     const fresh =
@@ -574,12 +587,21 @@ export function TeachingPracticeManager({
     };
   }, [tab, role, scheduleCheck]);
 
-  // Trainees with at least one warning are surfaced first so the panel reads
-  // as a punch list rather than a full roster dump - Array#sort is stable, so
-  // trainees within each group keep the server's alphabetical order.
-  const scheduleCheckSorted = useMemo(() => {
+  // Trainees/horses with at least one warning are surfaced first so the panel
+  // reads as a punch list rather than a full roster dump - Array#sort is
+  // stable, so entries within each group keep the server's alphabetical order.
+  const scheduleCheckTraineesSorted = useMemo(() => {
     if (!scheduleCheck) return null;
-    return [...scheduleCheck].sort((a, b) => {
+    return [...scheduleCheck.trainees].sort((a, b) => {
+      const aHasWarnings = a.timeline.some((entry) => entry.warnings.length > 0) ? 0 : 1;
+      const bHasWarnings = b.timeline.some((entry) => entry.warnings.length > 0) ? 0 : 1;
+      return aHasWarnings - bHasWarnings;
+    });
+  }, [scheduleCheck]);
+
+  const scheduleCheckHorsesSorted = useMemo(() => {
+    if (!scheduleCheck) return null;
+    return [...scheduleCheck.horses].sort((a, b) => {
       const aHasWarnings = a.timeline.some((entry) => entry.warnings.length > 0) ? 0 : 1;
       const bHasWarnings = b.timeline.some((entry) => entry.warnings.length > 0) ? 0 : 1;
       return aHasWarnings - bHasWarnings;
@@ -3338,61 +3360,146 @@ export function TeachingPracticeManager({
       {tab === "scheduleCheck" && (
         <div className="flex flex-col gap-4">
           <p className="rounded-lg bg-muted px-3 py-2 text-xs text-muted-foreground">
-            בדיקת שיבוץ לחניכים - איתור חפיפות ומרווחים קצרים מדי בין כל סוגי ההתנסות (לונג׳, שיעור פרטני, שיעור
-            קבוצתי) יחד, לפי כל השיעורים שנוצרו כולל טרם פורסמו. תצוגה בלבד - אינה חוסמת שמירה או פרסום.
+            בדיקת שיבוץ - איתור חפיפות ומרווחים קצרים מדי בין כל סוגי ההתנסות (לונג׳, שיעור פרטני, שיעור קבוצתי)
+            יחד, לפי כל השיעורים שנוצרו כולל טרם פורסמו. תצוגה בלבד - אינה חוסמת שמירה או פרסום.
           </p>
+
+          <div className="flex flex-wrap gap-2">
+            {(Object.keys(SCHEDULE_CHECK_SUB_TAB_LABELS) as ScheduleCheckSubTab[]).map((st) => (
+              <button
+                key={st}
+                type="button"
+                onClick={() => setScheduleCheckSubTab(st)}
+                className={`rounded-full px-3 py-1.5 text-xs font-medium ${
+                  scheduleCheckSubTab === st ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"
+                }`}
+              >
+                {SCHEDULE_CHECK_SUB_TAB_LABELS[st]}
+              </button>
+            ))}
+          </div>
+
           {scheduleCheckLoading && <p className="text-sm text-muted-foreground">טוען...</p>}
-          {!scheduleCheckLoading && scheduleCheckSorted && scheduleCheckSorted.length === 0 && (
-            <p className="text-sm text-muted-foreground">אין עדיין שיבוצי חניכים להתנסויות מתחילים.</p>
-          )}
-          {!scheduleCheckLoading &&
-            scheduleCheckSorted &&
-            scheduleCheckSorted.map((trainee) => {
-              const hasWarnings = trainee.timeline.some((entry) => entry.warnings.length > 0);
-              return (
-                <div key={trainee.traineeId} className="rounded-xl border border-border bg-card p-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <h3 className="text-sm font-semibold text-card-foreground">{trainee.traineeName}</h3>
-                    {hasWarnings ? (
-                      <span className="rounded-full bg-danger-muted px-2 py-0.5 text-xs font-medium text-danger">
-                        יש התראות
-                      </span>
-                    ) : (
-                      <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">תקין</span>
-                    )}
-                  </div>
-                  <div className="mt-2 flex flex-col gap-1">
-                    {trainee.timeline.map((entry) => (
-                      <div
-                        key={entry.lessonId}
-                        className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg bg-muted/50 px-2 py-1.5 text-xs"
-                      >
-                        <span className="font-medium text-card-foreground">
-                          {formatHebrewDate(parseDateKey(entry.date))}
-                        </span>
-                        <span className="text-muted-foreground">
-                          {entry.startTime}-{entry.endTime}
-                        </span>
-                        <span className="text-muted-foreground">{PRACTICE_TYPE_LABELS[entry.practiceType]}</span>
-                        <span className="text-muted-foreground">{ROLE_LABELS[entry.role]}</span>
-                        {entry.warnings.map((warning, index) => (
-                          <span
-                            key={index}
-                            className={`rounded-full px-2 py-0.5 text-xs font-medium ${
-                              warning.kind === "overlap"
-                                ? "bg-danger-muted text-danger"
-                                : "bg-warning-muted text-warning"
-                            }`}
-                          >
-                            {SCHEDULE_CHECK_WARNING_LABELS[warning.kind]}
+
+          {!scheduleCheckLoading && scheduleCheckSubTab === "trainees" && (
+            <>
+              {scheduleCheckTraineesSorted && scheduleCheckTraineesSorted.length === 0 && (
+                <p className="text-sm text-muted-foreground">אין עדיין שיבוצי חניכים להתנסויות מתחילים.</p>
+              )}
+              {scheduleCheckTraineesSorted &&
+                scheduleCheckTraineesSorted.map((trainee) => {
+                  const hasWarnings = trainee.timeline.some((entry) => entry.warnings.length > 0);
+                  return (
+                    <div key={trainee.traineeId} className="rounded-xl border border-border bg-card p-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <h3 className="text-sm font-semibold text-card-foreground">{trainee.traineeName}</h3>
+                        {hasWarnings ? (
+                          <span className="rounded-full bg-danger-muted px-2 py-0.5 text-xs font-medium text-danger">
+                            יש התראות
                           </span>
+                        ) : (
+                          <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                            תקין
+                          </span>
+                        )}
+                      </div>
+                      <div className="mt-2 flex flex-col gap-1">
+                        {trainee.timeline.map((entry) => (
+                          <div
+                            key={entry.lessonId}
+                            className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg bg-muted/50 px-2 py-1.5 text-xs"
+                          >
+                            <span className="font-medium text-card-foreground">
+                              {formatHebrewDate(parseDateKey(entry.date))}
+                            </span>
+                            <span className="text-muted-foreground">
+                              {entry.startTime}-{entry.endTime}
+                            </span>
+                            <span className="text-muted-foreground">{PRACTICE_TYPE_LABELS[entry.practiceType]}</span>
+                            <span className="text-muted-foreground">{ROLE_LABELS[entry.role]}</span>
+                            {entry.warnings.map((warning, index) => (
+                              <span
+                                key={index}
+                                className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                                  warning.kind === "overlap"
+                                    ? "bg-danger-muted text-danger"
+                                    : "bg-warning-muted text-warning"
+                                }`}
+                              >
+                                {TRAINEE_SCHEDULE_CHECK_WARNING_LABELS[warning.kind]}
+                              </span>
+                            ))}
+                          </div>
                         ))}
                       </div>
-                    ))}
-                  </div>
-                </div>
-              );
-            })}
+                    </div>
+                  );
+                })}
+            </>
+          )}
+
+          {!scheduleCheckLoading && scheduleCheckSubTab === "horses" && (
+            <>
+              <p className="rounded-lg bg-muted px-3 py-2 text-xs text-muted-foreground">
+                שם הסוס הוא טקסט חופשי - איות שונה של אותו סוס עשוי להופיע כאן כשני סוסים נפרדים. איחוד שמות אינו
+                נעשה בשלב זה.
+              </p>
+              {scheduleCheckHorsesSorted && scheduleCheckHorsesSorted.length === 0 && (
+                <p className="text-sm text-muted-foreground">אין עדיין שיבוצי סוסים להתנסויות מתחילים.</p>
+              )}
+              {scheduleCheckHorsesSorted &&
+                scheduleCheckHorsesSorted.map((horse) => {
+                  const hasWarnings = horse.timeline.some((entry) => entry.warnings.length > 0);
+                  return (
+                    <div key={horse.horseName} className="rounded-xl border border-border bg-card p-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <h3 className="text-sm font-semibold text-card-foreground">{horse.horseName}</h3>
+                        {hasWarnings ? (
+                          <span className="rounded-full bg-danger-muted px-2 py-0.5 text-xs font-medium text-danger">
+                            יש התראות
+                          </span>
+                        ) : (
+                          <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                            תקין
+                          </span>
+                        )}
+                      </div>
+                      <div className="mt-2 flex flex-col gap-1">
+                        {horse.timeline.map((entry) => (
+                          <div
+                            key={entry.lessonId}
+                            className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg bg-muted/50 px-2 py-1.5 text-xs"
+                          >
+                            <span className="font-medium text-card-foreground">
+                              {formatHebrewDate(parseDateKey(entry.date))}
+                            </span>
+                            <span className="text-muted-foreground">
+                              {entry.startTime}-{entry.endTime}
+                            </span>
+                            <span className="text-muted-foreground">{PRACTICE_TYPE_LABELS[entry.practiceType]}</span>
+                            {entry.childFullName && (
+                              <span className="text-muted-foreground">{entry.childFullName}</span>
+                            )}
+                            {entry.warnings.map((warning, index) => (
+                              <span
+                                key={index}
+                                className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                                  warning.kind === "overlap"
+                                    ? "bg-danger-muted text-danger"
+                                    : "bg-warning-muted text-warning"
+                                }`}
+                              >
+                                {HORSE_SCHEDULE_CHECK_WARNING_LABELS[warning.kind]}
+                              </span>
+                            ))}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+            </>
+          )}
         </div>
       )}
     </div>

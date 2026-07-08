@@ -3,6 +3,7 @@
 import { Workbook, type Row, type Worksheet } from "exceljs";
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
+import { requireAdmin } from "@/lib/auth/require-admin";
 import { dateKey, parseDateKey, todayDateKey } from "@/lib/dates";
 import { setCourseDayPlan } from "@/lib/actions/course-day-plan";
 import type { ActionResult } from "@/lib/actions/students";
@@ -649,6 +650,25 @@ export async function commitWeeklySchedule(
 
 export async function deleteWeeklySchedule(weeklyScheduleId: string): Promise<ActionResult> {
   await prisma.weeklySchedule.delete({ where: { id: weeklyScheduleId } });
+  revalidatePath("/admin/weekly-schedule");
+  revalidatePath("/student");
+  revalidatePath("/instructor");
+  return { success: true };
+}
+
+// Admin-only toggle for whether חניכים can see this week at all (see
+// getWeeklyScheduleSelectionForStudent / getScheduleForStudent) - does not
+// touch schedule items, duty assignments, or their own separate publish
+// status.
+export async function setWeeklySchedulePublished(
+  weeklyScheduleId: string,
+  isPublished: boolean
+): Promise<ActionResult> {
+  await requireAdmin();
+  await prisma.weeklySchedule.update({
+    where: { id: weeklyScheduleId },
+    data: { isPublished },
+  });
   revalidatePath("/admin/weekly-schedule");
   revalidatePath("/student");
   revalidatePath("/instructor");

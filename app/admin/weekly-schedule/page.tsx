@@ -43,6 +43,7 @@ export default async function WeeklySchedulePage() {
           startDate: dateKey(w.startDate),
           endDate: dateKey(w.endDate),
           uploadedFileName: w.uploadedFileName,
+          isPublished: w.isPublished,
           dutyStatus: dutyStatusForRange(w.startDate, w.endDate),
           items: w.items.map((i) => ({
             id: i.id,

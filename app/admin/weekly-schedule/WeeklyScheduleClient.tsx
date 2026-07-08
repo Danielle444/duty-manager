@@ -9,6 +9,7 @@ import {
   confirmDayPlanSuggestions,
   deleteWeeklySchedule,
   parseWeeklyScheduleExcel,
+  setWeeklySchedulePublished,
   suggestDayPlanFromSchedule,
   type DayPlanSuggestion,
   type ScheduleImportItem,
@@ -40,6 +41,7 @@ interface WeeklyScheduleView {
   startDate: string;
   endDate: string;
   uploadedFileName: string;
+  isPublished: boolean;
   dutyStatus: DutyStatus;
   items: ScheduleItemView[];
 }
@@ -902,6 +904,16 @@ function WeekCard({
   const [isPending, startTransition] = useTransition();
   const [mode, setMode] = useState<GenerateMode>("regeneratePreserveManual");
   const [message, setMessage] = useState<string | null>(null);
+  const [isPublished, setIsPublished] = useState(week.isPublished);
+  const [publishPending, startPublishTransition] = useTransition();
+
+  function handleTogglePublished() {
+    const next = !isPublished;
+    startPublishTransition(async () => {
+      await setWeeklySchedulePublished(week.id, next);
+      setIsPublished(next);
+    });
+  }
 
   function handleGenerate() {
     setMessage(null);
@@ -934,6 +946,13 @@ function WeekCard({
           <div className="flex flex-wrap items-center gap-2">
             <p className="font-bold text-card-foreground">{week.name}</p>
             <span
+              className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                isPublished ? "bg-success-muted text-success" : "bg-muted text-muted-foreground"
+              }`}
+            >
+              {isPublished ? "לו״ז פורסם" : "טיוטת לו״ז"}
+            </span>
+            <span
               className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${dutyStatusBadge(week.dutyStatus).className}`}
             >
               {dutyStatusBadge(week.dutyStatus).label}
@@ -954,6 +973,14 @@ function WeekCard({
           </Link>
           <Button variant="ghost" className="!px-2 !py-1" onClick={onSuggest}>
             הצעת תכנון קבוצות
+          </Button>
+          <Button
+            variant="secondary"
+            className="!px-2 !py-1"
+            disabled={publishPending}
+            onClick={handleTogglePublished}
+          >
+            {isPublished ? "הסתרת לו״ז מחניכים" : "פרסום לו״ז לחניכים"}
           </Button>
           <Button variant="secondary" className="!px-2 !py-1" onClick={onReplace}>
             החלפת קובץ

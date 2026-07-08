@@ -699,17 +699,18 @@ model WeeklyFeedbackForm {
 // never retroactively changes an already-drafted form's questions, same
 // materialize-at-creation principle as MessageTaskRecipient.
 model WeeklyFeedbackQuestion {
-  id        String                 @id @default(cuid())
-  formId    String
+  id         String                 @id @default(cuid())
+  formId     String
   // Free text (e.g. "אוכל", "מגורים", "רכיבה"), not an enum - matches this
   // schema's existing preference for content-ish fields over a rigid list
   // (see HorseFeedingMeal.hayType).
-  section   String
-  prompt    String
-  type      FeedbackQuestionType
-  source    FeedbackQuestionSource
-  sortOrder Int
-  createdAt DateTime               @default(now())
+  section    String
+  prompt     String
+  type       FeedbackQuestionType
+  source     FeedbackQuestionSource
+  sortOrder  Int
+  isRequired Boolean                @default(true)
+  createdAt  DateTime               @default(now())
 
   form    WeeklyFeedbackForm     @relation(fields: [formId], references: [id], onDelete: Cascade)
   answers WeeklyFeedbackAnswer[]

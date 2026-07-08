@@ -72,11 +72,13 @@ export function StudentWeeklyFeedbackSection({
     if (!data || data.status !== "open") return;
     const { formId, formTitle, questions } = data;
 
-    const missingRating = questions.some(
-      (q) => q.type !== "FREE_TEXT" && answers[q.id]?.ratingValue == null
-    );
-    if (missingRating) {
-      setSubmitError("יש למלא את כל שאלות הדירוג");
+    const hasMissingRequired = questions.some((q) => {
+      if (!q.isRequired) return false;
+      if (q.type === "FREE_TEXT") return !answers[q.id]?.textValue?.trim();
+      return answers[q.id]?.ratingValue == null;
+    });
+    if (hasMissingRequired) {
+      setSubmitError("יש למלא את כל שאלות החובה");
       return;
     }
 
@@ -134,7 +136,10 @@ export function StudentWeeklyFeedbackSection({
           <div className="flex flex-col gap-4">
             {questions.map((q) => (
               <div key={q.id} className="flex flex-col gap-2">
-                <p className="text-sm font-semibold text-card-foreground">{q.prompt}</p>
+                <p className="text-sm font-semibold text-card-foreground">
+                  {q.prompt}
+                  {!q.isRequired && <span className="mr-1.5 text-xs font-normal text-muted-foreground">רשות</span>}
+                </p>
                 {q.type === "FREE_TEXT" ? (
                   <textarea
                     value={answers[q.id]?.textValue ?? ""}

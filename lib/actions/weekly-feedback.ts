@@ -21,6 +21,14 @@ interface FixedQuestionTemplateItem {
   section: string;
   prompt: string;
   type: FeedbackQuestionTypeValue;
+  // Defaults to true for RATING_5/COMPARISON_3 and false for FREE_TEXT
+  // (see fixedQuestionIsRequired) unless explicitly set here.
+  isRequired?: boolean;
+}
+
+function fixedQuestionIsRequired(item: FixedQuestionTemplateItem): boolean {
+  if (item.isRequired !== undefined) return item.isRequired;
+  return item.type !== "FREE_TEXT";
 }
 
 // The recurring weekly feedback question set for חניכים, copied into
@@ -154,6 +162,7 @@ export async function createWeeklyFeedbackDraft(weeklyScheduleId: string): Promi
           type: q.type,
           source: "FIXED",
           sortOrder: index,
+          isRequired: fixedQuestionIsRequired(q),
         })),
       },
     },
@@ -169,6 +178,7 @@ export interface WeeklyFeedbackDraftQuestion {
   type: FeedbackQuestionTypeValue;
   source: FeedbackQuestionSourceValue;
   sortOrder: number;
+  isRequired: boolean;
 }
 
 export interface WeeklyFeedbackDraft {
@@ -223,6 +233,7 @@ export async function getWeeklyFeedbackDraftForAdmin(formId: string): Promise<We
       type: q.type,
       source: q.source,
       sortOrder: q.sortOrder,
+      isRequired: q.isRequired,
     })),
   };
 }
@@ -303,7 +314,8 @@ export async function addWeeklyFeedbackQuestion(
   formId: string,
   section: string,
   prompt: string,
-  type: EditableFeedbackQuestionTypeValue
+  type: EditableFeedbackQuestionTypeValue,
+  isRequired: boolean
 ): Promise<ActionResult> {
   await requireAdmin();
 
@@ -329,6 +341,7 @@ export async function addWeeklyFeedbackQuestion(
       type,
       source: "DYNAMIC",
       sortOrder: maxSortOrder + 1,
+      isRequired,
     },
   });
 
@@ -339,7 +352,8 @@ export async function updateWeeklyFeedbackQuestion(
   questionId: string,
   section: string,
   prompt: string,
-  type: EditableFeedbackQuestionTypeValue
+  type: EditableFeedbackQuestionTypeValue,
+  isRequired: boolean
 ): Promise<ActionResult> {
   await requireAdmin();
 
@@ -357,7 +371,7 @@ export async function updateWeeklyFeedbackQuestion(
 
   await prisma.weeklyFeedbackQuestion.update({
     where: { id: questionId },
-    data: { section: validated.section, prompt: validated.prompt, type },
+    data: { section: validated.section, prompt: validated.prompt, type, isRequired },
   });
 
   return { success: true };
@@ -613,6 +627,7 @@ export interface WeeklyFeedbackQuestionForStudent {
   prompt: string;
   type: FeedbackQuestionTypeValue;
   sortOrder: number;
+  isRequired: boolean;
 }
 
 // A discriminated union rather than one flat shape - "submitted" intentionally
@@ -668,6 +683,7 @@ export async function getOpenWeeklyFeedbackForStudent(studentId: string): Promis
       prompt: q.prompt,
       type: q.type,
       sortOrder: q.sortOrder,
+      isRequired: q.isRequired,
     })),
   };
 }
@@ -680,10 +696,11 @@ export interface WeeklyFeedbackAnswerInput {
 
 // Re-validates everything server-side rather than trusting the client's
 // question list - opensAt/closesAt/status are re-read fresh, and every
-// RATING_5 (or, if one ever exists, COMPARISON_3) question in the form must
-// have a valid in-range answer, FREE_TEXT stays optional. The @@unique on
-// (formId, studentId) is the last line of defense against a duplicate
-// submission race, on top of the findUnique check below.
+// question with isRequired=true must have a valid answer (in-range rating,
+// or non-empty text for FREE_TEXT); optional questions may be left
+// unanswered. The @@unique on (formId, studentId) is the last line of
+// defense against a duplicate submission race, on top of the findUnique
+// check below.
 export async function submitWeeklyFeedback(
   studentId: string,
   formId: string,
@@ -727,14 +744,20 @@ export async function submitWeeklyFeedback(
       const text = answer?.textValue?.trim();
       if (text) {
         answerRowsToCreate.push({ questionId: question.id, textValue: text });
+      } else if (question.isRequired) {
+        return { success: false, error: "יש למלא את כל שאלות החובה" };
       }
       continue;
     }
 
     const max = question.type === "COMPARISON_3" ? 3 : 5;
     const rating = answer?.ratingValue;
-    if (rating == null || !Number.isInteger(rating) || rating < 1 || rating > max) {
-      return { success: false, error: "יש למלא את כל שאלות הדירוג" };
+    const hasValidRating = rating != null && Number.isInteger(rating) && rating >= 1 && rating <= max;
+    if (!hasValidRating) {
+      if (question.isRequired) {
+        return { success: false, error: "יש למלא את כל שאלות החובה" };
+      }
+      continue;
     }
     answerRowsToCreate.push({ questionId: question.id, ratingValue: rating });
   }

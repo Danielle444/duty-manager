@@ -269,12 +269,14 @@ export function WeeklyFeedbackTabs({
   const [newSection, setNewSection] = useState("");
   const [newPrompt, setNewPrompt] = useState("");
   const [newType, setNewType] = useState<EditableFeedbackQuestionTypeValue>("RATING_5");
+  const [newIsRequired, setNewIsRequired] = useState(true);
   const [addQuestionError, setAddQuestionError] = useState<string | null>(null);
 
   const [editingQuestionId, setEditingQuestionId] = useState<string | null>(null);
   const [editSection, setEditSection] = useState("");
   const [editPrompt, setEditPrompt] = useState("");
   const [editType, setEditType] = useState<EditableFeedbackQuestionTypeValue>("RATING_5");
+  const [editIsRequired, setEditIsRequired] = useState(true);
   const [editQuestionError, setEditQuestionError] = useState<string | null>(null);
 
   const [questionActionError, setQuestionActionError] = useState<string | null>(null);
@@ -297,7 +299,7 @@ export function WeeklyFeedbackTabs({
     if (!draft) return;
     setAddQuestionError(null);
     startQuestionMutation(async () => {
-      const result = await addWeeklyFeedbackQuestion(draft.id, newSection, newPrompt, newType);
+      const result = await addWeeklyFeedbackQuestion(draft.id, newSection, newPrompt, newType, newIsRequired);
       if (!result.success) {
         setAddQuestionError(result.error ?? "אירעה שגיאה");
         return;
@@ -305,6 +307,7 @@ export function WeeklyFeedbackTabs({
       setNewSection("");
       setNewPrompt("");
       setNewType("RATING_5");
+      setNewIsRequired(true);
       await refreshDraft();
     });
   }
@@ -352,7 +355,8 @@ export function WeeklyFeedbackTabs({
           draft.id,
           suggestion.section,
           suggestion.prompt,
-          suggestion.type
+          suggestion.type,
+          suggestion.type !== "FREE_TEXT"
         );
         if (!result.success) {
           setSuggestionsError(result.error ?? "אירעה שגיאה בהוספת אחת ההצעות");
@@ -370,6 +374,7 @@ export function WeeklyFeedbackTabs({
     setEditSection(question.section);
     setEditPrompt(question.prompt);
     setEditType(question.type);
+    setEditIsRequired(question.isRequired);
     setEditQuestionError(null);
   }
 
@@ -382,7 +387,13 @@ export function WeeklyFeedbackTabs({
     if (!editingQuestionId) return;
     setEditQuestionError(null);
     startQuestionMutation(async () => {
-      const result = await updateWeeklyFeedbackQuestion(editingQuestionId, editSection, editPrompt, editType);
+      const result = await updateWeeklyFeedbackQuestion(
+        editingQuestionId,
+        editSection,
+        editPrompt,
+        editType,
+        editIsRequired
+      );
       if (!result.success) {
         setEditQuestionError(result.error ?? "אירעה שגיאה");
         return;
@@ -847,7 +858,9 @@ export function WeeklyFeedbackTabs({
                               className="flex flex-wrap items-center justify-between gap-2 border-b border-border py-1.5 text-sm last:border-0"
                             >
                               <span className="text-card-foreground">{q.prompt}</span>
-                              <span className="text-xs text-muted-foreground">{TYPE_LABELS[q.type]}</span>
+                              <span className="text-xs text-muted-foreground">
+                                {TYPE_LABELS[q.type]} · {q.isRequired ? "חובה" : "רשות"}
+                              </span>
                             </div>
                           );
                         }
@@ -883,6 +896,14 @@ export function WeeklyFeedbackTabs({
                                   ))}
                                 </select>
                               </div>
+                              <label className="flex items-center gap-1.5 text-sm">
+                                <input
+                                  type="checkbox"
+                                  checked={editIsRequired}
+                                  onChange={(e) => setEditIsRequired(e.target.checked)}
+                                />
+                                שאלת חובה
+                              </label>
                               {editQuestionError && <p className="text-sm text-danger">{editQuestionError}</p>}
                               <div className="flex gap-2">
                                 <Button
@@ -912,7 +933,9 @@ export function WeeklyFeedbackTabs({
                           >
                             <span className="text-card-foreground">{q.prompt}</span>
                             <div className="flex flex-wrap items-center gap-1">
-                              <span className="text-xs text-muted-foreground">{TYPE_LABELS[q.type]}</span>
+                              <span className="text-xs text-muted-foreground">
+                                {TYPE_LABELS[q.type]} · {q.isRequired ? "חובה" : "רשות"}
+                              </span>
                               <Button
                                 variant="ghost"
                                 className="!px-1.5 !py-0.5 !text-xs"
@@ -985,6 +1008,14 @@ export function WeeklyFeedbackTabs({
                       הוספה
                     </Button>
                   </div>
+                  <label className="mt-2 flex items-center gap-1.5 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={newIsRequired}
+                      onChange={(e) => setNewIsRequired(e.target.checked)}
+                    />
+                    שאלת חובה
+                  </label>
                   {addQuestionError && <p className="mt-2 text-sm text-danger">{addQuestionError}</p>}
                 </div>
               )}

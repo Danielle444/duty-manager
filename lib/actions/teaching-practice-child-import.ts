@@ -477,3 +477,130 @@ export async function parseTeachingPracticeChildrenExcelAsInstructor(
   }
   return parseTeachingPracticeChildrenExcelInternal(formData);
 }
+
+// One row as the client wants it committed - the reviewed/edited version of
+// TeachingPracticeChildImportCandidate (action may have been changed by the
+// admin/instructor after previewing; every other field may have been
+// hand-edited too). matchedChildId is only ever honored for action="update" -
+// carried through from the preview's own duplicate detection, never
+// re-resolved here, so a row can't silently retarget a different existing
+// child than the one shown in the preview.
+export interface TeachingPracticeChildImportCommitRow {
+  action: ChildImportRowAction;
+  firstName: string;
+  lastName: string;
+  age: number | null;
+  gender: string;
+  parentName: string;
+  parentPhone: string;
+  notes: string;
+  matchedChildId: string | null;
+}
+
+export interface CommitTeachingPracticeChildrenImportResult {
+  success: boolean;
+  error?: string;
+  createdCount: number;
+  updatedCount: number;
+  skippedCount: number;
+}
+
+const EMPTY_COMMIT_COUNTS = { createdCount: 0, updatedCount: 0, skippedCount: 0 };
+
+// Validates every row before writing anything - the whole commit fails (and
+// nothing is saved) if any row is invalid, rather than silently skipping bad
+// rows, so the admin/instructor always knows exactly what did or didn't get
+// saved. Never upserts blindly: "update" is only ever applied to the specific
+// matchedChildId carried over from the preview's duplicate detection - a
+// row can't be saved as an update without one, and ambiguous/low-confidence
+// preview matches (which the preview never auto-selects as "update") are
+// never silently merged here.
+async function commitTeachingPracticeChildrenImportInternal(
+  rows: TeachingPracticeChildImportCommitRow[]
+): Promise<CommitTeachingPracticeChildrenImportResult> {
+  for (const row of rows) {
+    if (row.action === "skip") continue;
+    const firstName = row.firstName?.trim();
+    const lastName = row.lastName?.trim();
+    if (!firstName || !lastName) {
+      return {
+        success: false,
+        error: `שורה חסרה שם פרטי/שם משפחה (${row.firstName || "?"} ${row.lastName || "?"})`,
+        ...EMPTY_COMMIT_COUNTS,
+      };
+    }
+    if (row.age != null && (!Number.isInteger(row.age) || row.age < 0 || row.age > 120)) {
+      return {
+        success: false,
+        error: `גיל לא תקין עבור ${firstName} ${lastName}`,
+        ...EMPTY_COMMIT_COUNTS,
+      };
+    }
+    if (row.action === "update" && !row.matchedChildId) {
+      return {
+        success: false,
+        error: `השורה של ${firstName} ${lastName} מסומנת לעדכון אך לא נמצא/ה ילד/ה קיים/ת תואם/ת`,
+        ...EMPTY_COMMIT_COUNTS,
+      };
+    }
+  }
+
+  let createdCount = 0;
+  let updatedCount = 0;
+  let skippedCount = 0;
+
+  await prisma.$transaction(async (tx) => {
+    for (const row of rows) {
+      if (row.action === "skip") {
+        skippedCount++;
+        continue;
+      }
+
+      const firstName = row.firstName.trim();
+      const lastName = row.lastName.trim();
+      const fullName = normalizeFullName(`${firstName} ${lastName}`);
+      const data = {
+        firstName,
+        lastName,
+        fullName,
+        age: row.age,
+        gender: row.gender?.trim() || null,
+        parentName: row.parentName?.trim() || null,
+        parentPhone: row.parentPhone ? normalizePhone(row.parentPhone) : null,
+        notes: row.notes?.trim() || null,
+      };
+
+      if (row.action === "update" && row.matchedChildId) {
+        await tx.teachingPracticeChild.update({ where: { id: row.matchedChildId }, data });
+        updatedCount++;
+      } else if (row.action === "create") {
+        await tx.teachingPracticeChild.create({ data: { ...data, isActive: true } });
+        createdCount++;
+      }
+    }
+  });
+
+  return { success: true, createdCount, updatedCount, skippedCount };
+}
+
+export async function commitTeachingPracticeChildrenImportAsAdmin(
+  rows: TeachingPracticeChildImportCommitRow[]
+): Promise<CommitTeachingPracticeChildrenImportResult> {
+  await requireAdmin();
+  return commitTeachingPracticeChildrenImportInternal(rows);
+}
+
+export async function commitTeachingPracticeChildrenImportAsInstructor(
+  instructorId: string,
+  rows: TeachingPracticeChildImportCommitRow[]
+): Promise<CommitTeachingPracticeChildrenImportResult> {
+  const instructor = await prisma.instructor.findUnique({ where: { id: instructorId } });
+  if (!instructor || !instructor.isActive || !instructor.canManageTeachingPracticeAssignments) {
+    return {
+      success: false,
+      error: "אין הרשאה לניהול שיבוצי התנסויות מתחילים",
+      ...EMPTY_COMMIT_COUNTS,
+    };
+  }
+  return commitTeachingPracticeChildrenImportInternal(rows);
+}

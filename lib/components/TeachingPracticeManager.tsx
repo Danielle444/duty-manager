@@ -66,6 +66,8 @@ import {
   type TeachingPracticeTrackSummary,
 } from "@/lib/actions/teaching-practice";
 import {
+  commitTeachingPracticeChildrenImportAsAdmin,
+  commitTeachingPracticeChildrenImportAsInstructor,
   parseTeachingPracticeChildrenExcelAsAdmin,
   parseTeachingPracticeChildrenExcelAsInstructor,
   type ChildImportRowAction,
@@ -1311,6 +1313,7 @@ export function TeachingPracticeManager({
     e.preventDefault();
     setChildImportError(null);
     setChildImportDebugInfo(null);
+    setChildImportSummary(null);
     const formData = new FormData(e.currentTarget);
     startChildImportTransition(async () => {
       const result =
@@ -1340,6 +1343,52 @@ export function TeachingPracticeManager({
     setChildImportCandidates(null);
     setChildImportError(null);
     setChildImportDebugInfo(null);
+    setChildImportSummary(null);
+  }
+
+  // -------------------------------------------------------------------------
+  // Children: Excel import commit (Stage C - actually saves the reviewed
+  // preview rows; "skip" rows are never sent to the server at all).
+  // -------------------------------------------------------------------------
+
+  const [isCommittingChildImport, startCommitChildImportTransition] = useTransition();
+  const [childImportSummary, setChildImportSummary] = useState<string | null>(null);
+
+  function handleCommitChildImport() {
+    if (!childImportCandidates) return;
+    setChildImportError(null);
+    setChildImportSummary(null);
+    const rows = childImportCandidates.map((c) => ({
+      action: c.action,
+      firstName: c.firstName,
+      lastName: c.lastName,
+      age: c.age,
+      gender: c.gender,
+      parentName: c.parentName,
+      parentPhone: c.parentPhone,
+      notes: c.notes,
+      matchedChildId: c.matchedChildId,
+    }));
+    startCommitChildImportTransition(async () => {
+      const result =
+        role === "admin"
+          ? await commitTeachingPracticeChildrenImportAsAdmin(rows)
+          : await commitTeachingPracticeChildrenImportAsInstructor(actorId!, rows);
+      if (!result.success) {
+        setChildImportError(result.error ?? "אירעה שגיאה בשמירת הייבוא");
+        return;
+      }
+      setChildImportSummary(
+        `נוצרו ${result.createdCount} ילדים, עודכנו ${result.updatedCount}, דולגו ${result.skippedCount}`
+      );
+      // Cleared on success (not left open) - re-running the same saved
+      // preview would otherwise be an easy way to accidentally create
+      // duplicate children, since a "create" row has no matchedChildId to
+      // fall back to.
+      setChildImportCandidates(null);
+      setChildImportDebugInfo(null);
+      await refreshChildren();
+    });
   }
 
   return (
@@ -2793,13 +2842,13 @@ export function TeachingPracticeManager({
           {effectiveCanEdit && (
             <div className="rounded-xl border border-border bg-card p-4">
               <h2 className="mb-3 text-base font-semibold text-card-foreground">
-                ייבוא ילדים מקובץ Excel (תצוגה מקדימה בלבד)
+                ייבוא ילדים מקובץ Excel
               </h2>
               {!childImportCandidates && (
                 <form onSubmit={handleParseChildImport} className="flex flex-col gap-3">
                   <p className="text-sm text-muted-foreground">
-                    יש לבחור קובץ Excel עם עמודות שם פרטי/שם משפחה של הילד/ה ופרטים נלווים. שלב זה
-                    מציג תצוגה מקדימה בלבד - לא נשמר דבר במסד הנתונים.
+                    יש לבחור קובץ Excel עם עמודות שם פרטי/שם משפחה של הילד/ה ופרטים נלווים. לאחר
+                    הפענוח ניתן לבדוק ולערוך כל שורה לפני השמירה בפועל.
                   </p>
                   <input
                     type="file"
@@ -2817,11 +2866,15 @@ export function TeachingPracticeManager({
                 </form>
               )}
 
+              {childImportSummary && (
+                <p className="text-sm text-success">{childImportSummary}</p>
+              )}
+
               {childImportCandidates && (
                 <div className="flex flex-col gap-3">
                   <p className="text-sm text-muted-foreground">
-                    נמצאו {childImportCandidates.length} שורות. זוהי תצוגה מקדימה בלבד - ניתן לערוך
-                    את פעולת השורה, אך אין עדיין אפשרות לשמור את הייבוא במסד הנתונים.
+                    נמצאו {childImportCandidates.length} שורות. ניתן לערוך את פעולת השורה (יצירה /
+                    עדכון / דילוג) לפני השמירה. שמירה תיצור/תעדכן רק את השורות שאינן מסומנות לדילוג.
                   </p>
                   {childImportDebugInfo && (
                     <p className="whitespace-pre-line text-xs text-muted-foreground">
@@ -2977,12 +3030,24 @@ export function TeachingPracticeManager({
                       </div>
                     ))}
                   </div>
+                  {childImportError && (
+                    <p className="whitespace-pre-line text-sm text-danger">{childImportError}</p>
+                  )}
                   <div className="flex justify-end gap-2">
-                    <Button type="button" variant="secondary" onClick={resetChildImport}>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      onClick={resetChildImport}
+                      disabled={isCommittingChildImport}
+                    >
                       ביטול
                     </Button>
-                    <Button type="button" disabled title="שמירת הייבוא תתאפשר בשלב הבא">
-                      שמירת הייבוא (בקרוב)
+                    <Button
+                      type="button"
+                      onClick={handleCommitChildImport}
+                      disabled={isCommittingChildImport}
+                    >
+                      {isCommittingChildImport ? "שומר..." : "שמירת הייבוא"}
                     </Button>
                   </div>
                 </div>

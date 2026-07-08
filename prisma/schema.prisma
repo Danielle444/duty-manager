@@ -305,6 +305,11 @@ model WeeklySchedule {
   startDate        DateTime @db.Date
   endDate          DateTime @db.Date
   uploadedFileName String
+  // Controls whether חניכים can see this week yet - lets admins prepare
+  // future weeks in advance without exposing them early. Existing rows are
+  // backfilled to true at migration time so weeks already live today stay
+  // visible; new rows default to false until an admin explicitly publishes.
+  isPublished      Boolean  @default(false)
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 

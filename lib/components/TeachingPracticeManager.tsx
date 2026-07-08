@@ -165,7 +165,8 @@ type TrackColumnKey =
   | "horse"
   | "equipment"
   | "parentName"
-  | "parentPhone";
+  | "parentPhone"
+  | "notes";
 
 // "חניך מדריך" (LUNGE) and "חניך מתרגל" (Beginners/unlinked) share one key
 // (leadTrainee) per the product decision - same slot-0 concept, just a
@@ -185,6 +186,7 @@ const ALL_TRACK_COLUMNS: { key: TrackColumnKey; label: string }[] = [
   { key: "equipment", label: "ציוד" },
   { key: "parentName", label: "שם ההורה" },
   { key: "parentPhone", label: "טלפון" },
+  { key: "notes", label: "הערות" },
 ];
 
 // Which columns actually appear in each table - used both for the "don't
@@ -204,6 +206,7 @@ const LUNGE_COLUMN_KEYS: TrackColumnKey[] = [
   "equipment",
   "parentName",
   "parentPhone",
+  "notes",
 ];
 const BEGINNER_PRIVATE_SIDE_COLUMN_KEYS: TrackColumnKey[] = [
   "privateTime",
@@ -217,6 +220,7 @@ const BEGINNER_PRIVATE_SIDE_COLUMN_KEYS: TrackColumnKey[] = [
   "equipment",
   "parentName",
   "parentPhone",
+  "notes",
 ];
 const BEGINNER_BLOCK_COLUMN_KEYS: TrackColumnKey[] = ["groupTime", ...BEGINNER_PRIVATE_SIDE_COLUMN_KEYS];
 const UNLINKED_COLUMN_KEYS: TrackColumnKey[] = BEGINNER_PRIVATE_SIDE_COLUMN_KEYS;
@@ -246,6 +250,7 @@ const DEFAULT_TRACK_COLUMN_VISIBILITY: TrackColumnVisibility = {
   equipment: true,
   parentName: true,
   parentPhone: true,
+  notes: true,
 };
 
 // Bumped to v2 - the column set changed shape (every column is now part of
@@ -254,7 +259,8 @@ const DEFAULT_TRACK_COLUMN_VISIBILITY: TrackColumnVisibility = {
 // hidden" for anyone who'd previously hidden something. A fresh key means
 // everyone simply starts over at all-visible, which matches "all columns
 // visible by default" regardless of any prior v1 preference.
-const TRACK_COLUMN_VISIBILITY_STORAGE_KEY = "duty-manager:teaching-practice-columns:v2";
+// Bumped again to v3 when the "הערות" column was added, for the same reason.
+const TRACK_COLUMN_VISIBILITY_STORAGE_KEY = "duty-manager:teaching-practice-columns:v3";
 
 // Reads the stored preference defensively: missing key, malformed JSON, a
 // non-object value, or unknown/non-boolean fields all safely fall back to
@@ -2142,6 +2148,9 @@ export function TeachingPracticeManager({
                                 {columnVisibility.parentPhone && (
                                   <th className="px-2 py-2 text-right font-bold">טלפון</th>
                                 )}
+                                {columnVisibility.notes && (
+                                  <th className="px-2 py-2 text-right font-bold">הערות</th>
+                                )}
                               </tr>
                             </thead>
                             <tbody>
@@ -2212,6 +2221,11 @@ export function TeachingPracticeManager({
                                   )}
                                   {columnVisibility.parentPhone && (
                                     <td className="px-2 py-2">{row.parentPhone}</td>
+                                  )}
+                                  {columnVisibility.notes && (
+                                    <td className="max-w-[220px] truncate px-2 py-2" title={row.track.notes ?? undefined}>
+                                      {row.track.notes || "—"}
+                                    </td>
                                   )}
                                 </tr>
                               ))}
@@ -2376,6 +2390,9 @@ export function TeachingPracticeManager({
                                 {columnVisibility.parentPhone && (
                                   <th className="px-2 py-2 text-right font-bold">טלפון</th>
                                 )}
+                                {columnVisibility.notes && (
+                                  <th className="px-2 py-2 text-right font-bold">הערות</th>
+                                )}
                               </tr>
                             </thead>
                             <tbody>
@@ -2520,6 +2537,19 @@ export function TeachingPracticeManager({
                                                   {privateRow.parentPhone}
                                                 </ClickableCell>
                                               )}
+                                              {columnVisibility.notes && (
+                                                <ClickableCell
+                                                  isActive={privateRow.track.isActive}
+                                                  onOpen={() => openTrackManager(privateRow.track)}
+                                                >
+                                                  <span
+                                                    className="block max-w-[220px] truncate"
+                                                    title={privateRow.track.notes ?? undefined}
+                                                  >
+                                                    {privateRow.track.notes || "—"}
+                                                  </span>
+                                                </ClickableCell>
+                                              )}
                                             </>
                                           ) : (
                                             <td
@@ -2601,6 +2631,9 @@ export function TeachingPracticeManager({
                                   )}
                                   {columnVisibility.parentPhone && (
                                     <th className="px-2 py-2 text-right font-bold">טלפון</th>
+                                  )}
+                                  {columnVisibility.notes && (
+                                    <th className="px-2 py-2 text-right font-bold">הערות</th>
                                   )}
                                 </tr>
                               </thead>
@@ -2690,6 +2723,13 @@ export function TeachingPracticeManager({
                                     {columnVisibility.parentPhone && (
                                       <ClickableCell isActive={row.track.isActive} onOpen={() => openTrackManager(row.track)}>
                                         {row.parentPhone}
+                                      </ClickableCell>
+                                    )}
+                                    {columnVisibility.notes && (
+                                      <ClickableCell isActive={row.track.isActive} onOpen={() => openTrackManager(row.track)}>
+                                        <span className="block max-w-[220px] truncate" title={row.track.notes ?? undefined}>
+                                          {row.track.notes || "—"}
+                                        </span>
                                       </ClickableCell>
                                     )}
                                   </tr>
@@ -4141,6 +4181,7 @@ function LessonGroupTable({
               <th className="px-2 py-2 text-right font-bold">ציוד</th>
               <th className="px-2 py-2 text-right font-bold">שם ההורה</th>
               <th className="px-2 py-2 text-right font-bold">טלפון הורה</th>
+              <th className="px-2 py-2 text-right font-bold">הערות</th>
               <th className="px-2 py-2 text-right font-bold">סטטוס</th>
               <th className="px-2 py-2 text-right font-bold">פעולות</th>
             </tr>
@@ -4236,7 +4277,7 @@ function LessonTableRow({
     });
   }
 
-  const colSpan = 12;
+  const colSpan = 13;
   // Sort participants into roleSlots order (LEAD before SECOND/ASSISTANT
   // before EVALUATOR) so "row 0" is always the lead, matching the child
   // list's own order - then index-pair the two lists rather than keying off
@@ -4322,6 +4363,13 @@ function LessonTableRow({
               <td className="px-2 py-2">{row.child?.parentName ?? "—"}</td>
               <td className="px-2 py-2">{row.child?.parentPhone ?? "—"}</td>
             </>
+          )}
+          {i === 0 && (
+            <td rowSpan={rowCount} className="max-w-[220px] px-2 py-2 align-top">
+              <span className="block truncate" title={lesson.notes ?? undefined}>
+                {lesson.notes || "—"}
+              </span>
+            </td>
           )}
           {i === 0 && (
             <td rowSpan={rowCount} className="px-2 py-2 align-top">

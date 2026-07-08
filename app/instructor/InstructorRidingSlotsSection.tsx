@@ -4,6 +4,7 @@ import { useEffect, useImperativeHandle, useMemo, useRef, useState, useTransitio
 import { Button } from "@/lib/components/Button";
 import { Modal } from "@/lib/components/Modal";
 import { RidingHistoryList } from "@/lib/components/RidingHistoryList";
+import { SearchableSelect } from "@/lib/components/SearchableSelect";
 import { SuggestInput } from "@/lib/components/SuggestInput";
 import {
   formatHebrewDate,
@@ -369,11 +370,14 @@ function StudentEditor({
   instructorId,
   canEdit,
   students,
+  switchOptions,
   knownLessonTopics,
   knownHorseNames,
   onBack,
   onSaved,
   onAutoSaved,
+  onSwitchTo,
+  onSavedAndSwitchTo,
   ref,
 }: {
   row: RidingSlotStudentRow;
@@ -381,6 +385,11 @@ function StudentEditor({
   instructorId: string;
   canEdit: boolean;
   students: RidingStudentOption[];
+  // Every trainee in the current riding activity context (the same
+  // slotStudents list the grouped list view already renders), including the
+  // current row itself so it shows as selected. Compact label already
+  // includes group/subgroup where available.
+  switchOptions: { studentId: string; label: string }[];
   knownLessonTopics: string[];
   knownHorseNames: string[];
   onBack: () => void;
@@ -390,6 +399,12 @@ function StudentEditor({
   // row without closing the editor, unlike onSaved which also returns to the
   // list (see handleStudentSaved vs handleStudentAutoSaved in the parent).
   onAutoSaved: (updated: RidingSlotStudentRow) => void;
+  // View-only path: nothing to save, just switch which row is shown.
+  onSwitchTo: (studentId: string) => void;
+  // Editable path: called only after a successful save-before-switch,
+  // updates the parent's copy of the just-saved row AND moves editingStudent
+  // to the target in one step (see handleStudentSavedAndSwitchTo).
+  onSavedAndSwitchTo: (updated: RidingSlotStudentRow, studentId: string) => void;
   ref?: Ref<StudentEditorHandle>;
 }) {
   const [note, setNote] = useState(row.note ?? "");
@@ -401,13 +416,15 @@ function StudentEditor({
   const [isSaving, startSaveTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
   // Synchronous guard (isSaving from useTransition only updates on the next
-  // render) so a manual save, an autosave, and requestClose can never
+  // render) so a manual save, an autosave, and requestClose/switch can never
   // overlap - a duplicate save request that arrives while one is already in
-  // flight is simply dropped rather than racing it. requestClose is the one
-  // exception (see pendingCloseRef/requestClose below) - a close must never
-  // be silently dropped just because an autosave happened to be mid-flight.
+  // flight is simply dropped rather than racing it. requestClose and
+  // switching trainees are the two exceptions (see pendingCloseRef/
+  // pendingSwitchToRef below) - neither may be silently dropped just because
+  // an autosave happened to be mid-flight.
   const isSavingRef = useRef(false);
   const pendingCloseRef = useRef(false);
+  const pendingSwitchToRef = useRef<string | null>(null);
 
   // A trainee can't be recorded as teaching themselves - excluded from the
   // "who did they teach" options rather than left selectable-but-nonsensical.
@@ -419,15 +436,19 @@ function StudentEditor({
     [students, row.studentId]
   );
 
-  // Single save path for the manual button, every autosave trigger, and
-  // requestClose - always sends the full current snapshot of every field
-  // (never a partial diff), per the product rule that note/rating stay
-  // optional while topic/taught-students/session-horse must be independently
-  // saveable. `overrideTaughtStudentIds` exists only because a just-computed
-  // toggle result isn't in `taughtStudentIds` yet (state updates are async) -
-  // every other field is read directly from current state, which is already
-  // up to date by the time a blur fires.
-  function performSave(options?: { manual?: boolean; overrideTaughtStudentIds?: string[] }) {
+  // Single save path for the manual button, every autosave trigger,
+  // requestClose, and switching trainees - always sends the full current
+  // snapshot of every field (never a partial diff), per the product rule
+  // that note/rating stay optional while topic/taught-students/session-horse
+  // must be independently saveable. `overrideTaughtStudentIds` exists only
+  // because a just-computed toggle result isn't in `taughtStudentIds` yet
+  // (state updates are async) - every other field is read directly from
+  // current state, which is already up to date by the time a blur fires.
+  function performSave(options?: {
+    manual?: boolean;
+    overrideTaughtStudentIds?: string[];
+    switchToStudentId?: string;
+  }) {
     if (isSavingRef.current) return;
     isSavingRef.current = true;
     setError(null);
@@ -442,11 +463,15 @@ function StudentEditor({
         taughtStudentIds: nextTaughtStudentIds,
       });
       isSavingRef.current = false;
-      // A close requested while THIS save was already in flight (see
-      // requestClose below, which sets pendingCloseRef instead of starting a
-      // second overlapping save) must still be honored once this save
-      // finishes, even if this particular save was only an autosave.
+      // A close or switch requested while THIS save was already in flight
+      // (see requestClose/handleSwitchTo below, which set the pending*Ref
+      // instead of starting a second overlapping save) must still be
+      // honored once this save finishes, even if this particular save was
+      // only an autosave. A switch takes priority over a plain close if
+      // somehow both were queued against the same in-flight save.
+      const switchTarget = options?.switchToStudentId ?? pendingSwitchToRef.current;
       const shouldReturnToList = options?.manual || pendingCloseRef.current;
+      pendingSwitchToRef.current = null;
       pendingCloseRef.current = false;
       if (!result.success) {
         setError(result.error ?? "אירעה שגיאה");
@@ -465,7 +490,10 @@ function StudentEditor({
         updatedByName: result.updatedByName ?? row.updatedByName,
         updatedAt: result.updatedAt ?? row.updatedAt,
       };
-      if (shouldReturnToList) {
+      if (switchTarget) {
+        setIsEditingHorse(false);
+        onSavedAndSwitchTo(updated, switchTarget);
+      } else if (shouldReturnToList) {
         setIsEditingHorse(false);
         onSaved(updated);
       } else {
@@ -484,6 +512,24 @@ function StudentEditor({
       : [...taughtStudentIds, id];
     setTaughtStudentIds(next);
     performSave({ overrideTaughtStudentIds: next });
+  }
+
+  // Selecting a different trainee from the switcher: view-only instructors
+  // have nothing to save, so this just switches immediately. Editors get the
+  // same full save the manual button performs first - the switch only
+  // happens once that save actually succeeds (see performSave above), so an
+  // unsaved note/rating is never silently discarded by picking someone else.
+  function handleSwitchTo(studentId: string) {
+    if (!studentId || studentId === row.studentId) return;
+    if (!canEdit) {
+      onSwitchTo(studentId);
+      return;
+    }
+    if (isSavingRef.current) {
+      pendingSwitchToRef.current = studentId;
+      return;
+    }
+    performSave({ manual: true, switchToStudentId: studentId });
   }
 
   useImperativeHandle(ref, () => ({
@@ -519,6 +565,18 @@ function StudentEditor({
       >
         › חזרה לרשימה
       </button>
+
+      {switchOptions.length > 1 && (
+        <label className="flex flex-col gap-1 text-sm">
+          מעבר לחניך/ה אחר/ת
+          <SearchableSelect
+            value={row.studentId}
+            options={switchOptions.map((o) => ({ value: o.studentId, label: o.label }))}
+            onChange={handleSwitchTo}
+            placeholder="בחרו חניך/ה"
+          />
+        </label>
+      )}
 
       <div>
         <p className="font-semibold text-card-foreground">{row.studentName}</p>
@@ -780,6 +838,27 @@ export function InstructorRidingSlotsSection({
   // never a request to leave this student).
   function handleStudentAutoSaved(updated: RidingSlotStudentRow) {
     setSlotStudents((prev) => (prev ? prev.map((s) => (s.studentId === updated.studentId ? updated : s)) : prev));
+    loadKnownValues();
+  }
+
+  // View-only path for the trainee switcher - nothing was saved, just move
+  // to the target row already in slotStudents.
+  function handleSwitchToStudent(studentId: string) {
+    const target = slotStudents?.find((s) => s.studentId === studentId) ?? null;
+    if (target) setEditingStudent(target);
+  }
+
+  // Editable path for the trainee switcher - StudentEditor only calls this
+  // after its own save already succeeded, so this is a single state
+  // transition (update the list, then move editingStudent to the target)
+  // rather than two separate close-then-reopen steps.
+  function handleStudentSavedAndSwitchTo(updated: RidingSlotStudentRow, studentId: string) {
+    const nextList = slotStudents
+      ? slotStudents.map((s) => (s.studentId === updated.studentId ? updated : s))
+      : slotStudents;
+    setSlotStudents(nextList);
+    const target = nextList?.find((s) => s.studentId === studentId) ?? null;
+    if (target) setEditingStudent(target);
     loadKnownValues();
   }
 
@@ -1112,11 +1191,21 @@ export function InstructorRidingSlotsSection({
               instructorId={instructorId}
               canEdit={canEdit}
               students={students}
+              switchOptions={(slotStudents ?? []).map((s) => ({
+                studentId: s.studentId,
+                label: `${s.studentName}${
+                  s.groupName
+                    ? ` (קבוצה ${s.groupName}${s.subgroupNumber != null ? ` / תת-קבוצה ${s.subgroupNumber}` : ""})`
+                    : ""
+                }`,
+              }))}
               knownLessonTopics={knownLessonTopics}
               knownHorseNames={knownHorseNames}
               onBack={() => setEditingStudent(null)}
               onSaved={handleStudentSaved}
               onAutoSaved={handleStudentAutoSaved}
+              onSwitchTo={handleSwitchToStudent}
+              onSavedAndSwitchTo={handleStudentSavedAndSwitchTo}
             />
           ) : slotStudents === null ? (
             <p className="text-sm text-muted-foreground">טוען...</p>

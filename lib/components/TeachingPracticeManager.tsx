@@ -258,6 +258,27 @@ function trackTableMinWidthPx(keys: TrackColumnKey[], visibility: TrackColumnVis
   return TABLE_MIN_WIDTH_BASE_PX + visibleColumnCount(keys, visibility) * COLUMN_MIN_WIDTH_PX;
 }
 
+// Stage C: which column is currently "the" sticky (pinned-while-scrolling)
+// one per table. Deliberately NOT "the first visible column, whichever one
+// that is" - that would mean every one of a table's 11-12 columns needs its
+// own sticky-styling variant (background/z-index) for what's normally a
+// rare situation. Instead each table gets a short, ordered list of the two
+// columns most likely to be first (its own time column(s), then the lead-
+// trainee column) - sticky falls through this list to the first one still
+// visible, and if the user hides both, the table simply has no sticky
+// column until one of them is shown again (same graceful degradation as
+// before Stage C, just less likely to happen now that there's a fallback).
+const LUNGE_STICKY_PRIORITY: TrackColumnKey[] = ["lungeTime", "leadTrainee"];
+const BEGINNER_STICKY_PRIORITY: TrackColumnKey[] = ["groupTime", "privateTime", "leadTrainee"];
+const UNLINKED_STICKY_PRIORITY: TrackColumnKey[] = ["privateTime", "leadTrainee"];
+
+function stickyColumnKey(
+  priority: TrackColumnKey[],
+  visibility: TrackColumnVisibility
+): TrackColumnKey | null {
+  return priority.find((key) => visibility[key]) ?? null;
+}
+
 interface StudentOption {
   id: string;
   fullName: string;
@@ -572,6 +593,12 @@ export function TeachingPracticeManager({
   function showAllTrackColumns() {
     persistColumnVisibility(DEFAULT_TRACK_COLUMN_VISIBILITY);
   }
+
+  // Computed once per render (not per section/block) since none of these
+  // depend on anything but the current column visibility.
+  const lungeStickyKey = stickyColumnKey(LUNGE_STICKY_PRIORITY, columnVisibility);
+  const beginnerStickyKey = stickyColumnKey(BEGINNER_STICKY_PRIORITY, columnVisibility);
+  const unlinkedStickyKey = stickyColumnKey(UNLINKED_STICKY_PRIORITY, columnVisibility);
 
   function joinAssignmentField(values: (string | number | null)[]): string {
     if (values.length === 0) return "—";
@@ -1239,20 +1266,33 @@ export function TeachingPracticeManager({
             </button>
           ))}
         </div>
-        {/* Only ever rendered for canEdit users - someone without edit
-            permission never sees this button, and therefore never has a way
-            to reach isEditMode=true (view-only stays view-only for them,
-            with no client-side path around it). */}
-        {canEdit && (
-          <Button
-            type="button"
-            variant={isEditMode ? "secondary" : "primary"}
-            className="!px-3 !py-1.5 !text-sm"
-            onClick={() => setIsEditMode((prev) => !prev)}
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Stage C: an explicit visual cue of the current mode, shown for
+              everyone (not just canEdit users) - the toggle button's own
+              label already implies this, but this badge makes it readable
+              at a glance without reading the button text. */}
+          <span
+            className={`rounded-full px-3 py-1 text-xs font-medium ${
+              effectiveCanEdit ? "bg-warning-muted text-warning" : "bg-muted text-muted-foreground"
+            }`}
           >
-            {isEditMode ? "יציאה ממצב עריכה" : "מעבר למצב עריכה"}
-          </Button>
-        )}
+            {effectiveCanEdit ? "מצב עריכה פעיל" : "מצב צפייה"}
+          </span>
+          {/* Only ever rendered for canEdit users - someone without edit
+              permission never sees this button, and therefore never has a
+              way to reach isEditMode=true (view-only stays view-only for
+              them, with no client-side path around it). */}
+          {canEdit && (
+            <Button
+              type="button"
+              variant={isEditMode ? "secondary" : "primary"}
+              className="!px-3 !py-1.5 !text-sm"
+              onClick={() => setIsEditMode((prev) => !prev)}
+            >
+              {isEditMode ? "יציאה ממצב עריכה" : "מעבר למצב עריכה"}
+            </Button>
+          )}
+        </div>
       </div>
 
       {!canEdit && (
@@ -1616,7 +1656,7 @@ export function TeachingPracticeManager({
                     >
                       הצג הכל
                     </button>
-                    <div className="flex flex-wrap gap-x-4 gap-y-1.5 text-xs">
+                    <div className="flex flex-wrap gap-x-3 gap-y-1.5 text-xs">
                       {ALL_TRACK_COLUMNS.map((col) => {
                         const locked = isLastVisibleTrackColumn(col.key);
                         return (
@@ -1672,12 +1712,22 @@ export function TeachingPracticeManager({
                             <thead>
                               <tr className="bg-muted text-muted-foreground">
                                 {columnVisibility.lungeTime && (
-                                  <th className="sticky right-0 z-10 bg-muted px-2 py-2 text-right font-bold">
+                                  <th
+                                    className={`px-2 py-2 text-right font-bold ${
+                                      lungeStickyKey === "lungeTime" ? "sticky right-0 z-10 bg-muted" : ""
+                                    }`}
+                                  >
                                     שעה
                                   </th>
                                 )}
                                 {columnVisibility.leadTrainee && (
-                                  <th className="px-2 py-2 text-right font-bold">חניך מדריך</th>
+                                  <th
+                                    className={`px-2 py-2 text-right font-bold ${
+                                      lungeStickyKey === "leadTrainee" ? "sticky right-0 z-10 bg-muted" : ""
+                                    }`}
+                                  >
+                                    חניך מדריך
+                                  </th>
                                 )}
                                 {columnVisibility.assistantTrainee && (
                                   <th className="px-2 py-2 text-right font-bold">עוזר מדריך</th>
@@ -1727,7 +1777,11 @@ export function TeachingPracticeManager({
                                   }`}
                                 >
                                   {columnVisibility.lungeTime && (
-                                    <td className="sticky right-0 z-10 bg-card px-2 py-2 font-medium text-card-foreground">
+                                    <td
+                                      className={`px-2 py-2 font-medium text-card-foreground ${
+                                        lungeStickyKey === "lungeTime" ? "sticky right-0 z-10 bg-card" : ""
+                                      }`}
+                                    >
                                       {row.track.defaultStartTime}
                                       {!row.track.isActive && (
                                         <span className="mr-1 text-[10px] text-muted-foreground">(לא פעיל)</span>
@@ -1740,6 +1794,7 @@ export function TeachingPracticeManager({
                                       label={row.traineeNamesBySlot[0] ?? "—"}
                                       options={traineeSelectOptions(row.track, row.traineeIdsBySlot[0] ?? "")}
                                       editable={effectiveCanEdit}
+                                      sticky={lungeStickyKey === "leadTrainee"}
                                       disabled={savingCellKey === `${row.track.id}-0`}
                                       onAssign={(traineeId) => handleInlineAssignTrainee(row.track, 0, traineeId)}
                                     />
@@ -1839,15 +1894,31 @@ export function TeachingPracticeManager({
                               </tr>
                               <tr className="bg-muted text-muted-foreground">
                                 {columnVisibility.groupTime && (
-                                  <th className="sticky right-0 z-10 bg-muted px-2 py-2 text-right font-bold">
+                                  <th
+                                    className={`px-2 py-2 text-right font-bold ${
+                                      beginnerStickyKey === "groupTime" ? "sticky right-0 z-10 bg-muted" : ""
+                                    }`}
+                                  >
                                     שעה לקבוצתי
                                   </th>
                                 )}
                                 {columnVisibility.privateTime && (
-                                  <th className="px-2 py-2 text-right font-bold">שעה לפרטני</th>
+                                  <th
+                                    className={`px-2 py-2 text-right font-bold ${
+                                      beginnerStickyKey === "privateTime" ? "sticky right-0 z-10 bg-muted" : ""
+                                    }`}
+                                  >
+                                    שעה לפרטני
+                                  </th>
                                 )}
                                 {columnVisibility.leadTrainee && (
-                                  <th className="px-2 py-2 text-right font-bold">חניך מתרגל</th>
+                                  <th
+                                    className={`px-2 py-2 text-right font-bold ${
+                                      beginnerStickyKey === "leadTrainee" ? "sticky right-0 z-10 bg-muted" : ""
+                                    }`}
+                                  >
+                                    חניך מתרגל
+                                  </th>
                                 )}
                                 {columnVisibility.assistantTrainee && (
                                   <th className="px-2 py-2 text-right font-bold">עוזר מדריך</th>
@@ -1893,7 +1964,7 @@ export function TeachingPracticeManager({
                                           {i === 0 && columnVisibility.groupTime && (
                                             <ClickableCell
                                               rowSpan={rowCount}
-                                              sticky
+                                              sticky={beginnerStickyKey === "groupTime"}
                                               isActive={block.groupTrack.isActive}
                                               onOpen={() => openTrackManager(block.groupTrack)}
                                             >
@@ -1911,6 +1982,7 @@ export function TeachingPracticeManager({
                                                 <ClickableCell
                                                   isActive={privateRow.track.isActive}
                                                   onOpen={() => openTrackManager(privateRow.track)}
+                                                  sticky={beginnerStickyKey === "privateTime"}
                                                 >
                                                   {privateRow.track.defaultStartTime}
                                                   {!privateRow.track.isActive && (
@@ -1929,6 +2001,7 @@ export function TeachingPracticeManager({
                                                     privateRow.traineeIdsBySlot[0] ?? ""
                                                   )}
                                                   editable={effectiveCanEdit}
+                                                  sticky={beginnerStickyKey === "leadTrainee"}
                                                   disabled={savingCellKey === `${privateRow.track.id}-0`}
                                                   onAssign={(traineeId) =>
                                                     handleInlineAssignTrainee(privateRow.track, 0, traineeId)
@@ -2056,12 +2129,22 @@ export function TeachingPracticeManager({
                               <thead>
                                 <tr className="bg-muted text-muted-foreground">
                                   {columnVisibility.privateTime && (
-                                    <th className="sticky right-0 z-10 bg-muted px-2 py-2 text-right font-bold">
+                                    <th
+                                      className={`px-2 py-2 text-right font-bold ${
+                                        unlinkedStickyKey === "privateTime" ? "sticky right-0 z-10 bg-muted" : ""
+                                      }`}
+                                    >
                                       שעה לפרטני
                                     </th>
                                   )}
                                   {columnVisibility.leadTrainee && (
-                                    <th className="px-2 py-2 text-right font-bold">חניך מתרגל</th>
+                                    <th
+                                      className={`px-2 py-2 text-right font-bold ${
+                                        unlinkedStickyKey === "leadTrainee" ? "sticky right-0 z-10 bg-muted" : ""
+                                      }`}
+                                    >
+                                      חניך מתרגל
+                                    </th>
                                   )}
                                   {columnVisibility.assistantTrainee && (
                                     <th className="px-2 py-2 text-right font-bold">עוזר מדריך</th>
@@ -2094,10 +2177,18 @@ export function TeachingPracticeManager({
                               </thead>
                               <tbody>
                                 {unlinkedPrivate.map((row) => (
-                                  <tr key={row.key} className="border-t border-border">
+                                  // Whole-row hover (unlike the Beginners block
+                                  // table below, every cell in this row always
+                                  // belongs to the same track, so highlighting
+                                  // the row as one unit is never misleading) -
+                                  // matches the LUNGE table's row-level hover.
+                                  // isActive dimming stays per-cell (each
+                                  // ClickableCell already applies it) - adding
+                                  // it here too would double-dim inactive rows.
+                                  <tr key={row.key} className="border-t border-border hover:bg-muted/40">
                                     {columnVisibility.privateTime && (
                                       <ClickableCell
-                                        sticky
+                                        sticky={unlinkedStickyKey === "privateTime"}
                                         isActive={row.track.isActive}
                                         onOpen={() => openTrackManager(row.track)}
                                       >
@@ -2113,6 +2204,7 @@ export function TeachingPracticeManager({
                                         label={row.traineeNamesBySlot[0] ?? "—"}
                                         options={traineeSelectOptions(row.track, row.traineeIdsBySlot[0] ?? "")}
                                         editable={effectiveCanEdit}
+                                        sticky={unlinkedStickyKey === "leadTrainee"}
                                         disabled={savingCellKey === `${row.track.id}-0`}
                                         onAssign={(traineeId) => handleInlineAssignTrainee(row.track, 0, traineeId)}
                                         onOpen={() => openTrackManager(row.track)}
@@ -2861,6 +2953,7 @@ function TraineeAssignmentCell({
   onOpen,
   isActive = true,
   rowSpan,
+  sticky,
 }: {
   value: string;
   // Resolved display name for the currently-assigned trainee (or "—") -
@@ -2879,23 +2972,42 @@ function TraineeAssignmentCell({
   // Set when this cell represents a BEGINNER_GROUP block's own team slot,
   // shared (merged) across all of that block's private sub-rows.
   rowSpan?: number;
+  // Set when this cell is currently the table's designated fallback sticky
+  // column (Stage C) - only ever true when the table's own time column is
+  // hidden, so the table doesn't lose its pinned-while-scrolling column
+  // just because one specific column was hidden. Works the same whether
+  // this cell is showing plain text or a live SearchableSelect - sticky
+  // positioning on the wrapping <td> doesn't affect where the select's own
+  // dropdown (itself position:relative-anchored one level in) renders.
+  sticky?: boolean;
 }) {
   if (!editable) {
     if (onOpen) {
       return (
-        <ClickableCell rowSpan={rowSpan} isActive={isActive} onOpen={onOpen}>
+        <ClickableCell rowSpan={rowSpan} isActive={isActive} onOpen={onOpen} sticky={sticky}>
           {label}
         </ClickableCell>
       );
     }
     return (
-      <td rowSpan={rowSpan} className="px-2 py-2">
+      <td
+        rowSpan={rowSpan}
+        className={`px-2 py-2 ${sticky ? "sticky right-0 z-10 bg-card" : ""}`}
+      >
         {label}
       </td>
     );
   }
   return (
-    <td rowSpan={rowSpan} className="px-2 py-2" onClick={(e) => e.stopPropagation()}>
+    <td
+      rowSpan={rowSpan}
+      // max-w keeps this select from stretching the whole column just
+      // because one option's name happens to be long - SearchableSelect's
+      // own trigger already truncates its selected-label text, the column
+      // just needs a cap so that truncation actually kicks in.
+      className={`max-w-[150px] px-2 py-2 ${sticky ? "sticky right-0 z-10 bg-card" : ""}`}
+      onClick={(e) => e.stopPropagation()}
+    >
       <SearchableSelect
         value={value}
         options={options}

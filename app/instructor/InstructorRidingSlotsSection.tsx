@@ -1,11 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useState, useTransition } from "react";
+import { Dispatch, SetStateAction, useEffect, useMemo, useState, useTransition } from "react";
 import { Button } from "@/lib/components/Button";
 import { Modal } from "@/lib/components/Modal";
 import { RidingHistoryList } from "@/lib/components/RidingHistoryList";
 import { SuggestInput } from "@/lib/components/SuggestInput";
-import { SearchableMultiSelect } from "@/lib/components/SearchableMultiSelect";
 import {
   formatHebrewDate,
   formatHebrewDateTime,
@@ -279,6 +278,81 @@ function StudentCompactRow({
   );
 }
 
+// Deliberately NOT SearchableMultiSelect here - see the identical note on
+// InstructorChecklist in RidingSlotModal.tsx: that component kept its own
+// internal open/search/highlight state, and combining it with this editor's
+// other field re-renders made a freshly-toggled id disappear a moment after
+// being selected. This checklist holds no selection state of its own -
+// every checkbox's checked value reads taughtStudentIds directly, and
+// toggling writes straight back into it via a functional setState.
+function TaughtStudentsChecklist({
+  options,
+  selectedIds,
+  setTaughtStudentIds,
+}: {
+  options: { value: string; label: string }[];
+  selectedIds: string[];
+  setTaughtStudentIds: Dispatch<SetStateAction<string[]>>;
+}) {
+  const [search, setSearch] = useState("");
+
+  const filteredOptions = options.filter((o) => o.label.toLowerCase().includes(search.trim().toLowerCase()));
+  const selectedOptions = options.filter((o) => selectedIds.includes(o.value));
+
+  function toggle(id: string) {
+    setTaughtStudentIds((current) =>
+      current.includes(id) ? current.filter((v) => v !== id) : [...current, id]
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      {selectedOptions.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {selectedOptions.map((o) => (
+            <span
+              key={o.value}
+              className="flex items-center gap-1 rounded-full bg-secondary px-2 py-0.5 text-xs text-secondary-foreground"
+            >
+              {o.label}
+              <button
+                type="button"
+                onClick={() => toggle(o.value)}
+                aria-label={`הסרת ${o.label}`}
+                className="text-secondary-foreground/70 hover:text-secondary-foreground"
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      <input
+        type="text"
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        placeholder="הקלידו שם..."
+        className="rounded-lg border border-border px-3 py-2 text-sm"
+      />
+      <div className="flex max-h-40 flex-col gap-0.5 overflow-y-auto rounded-lg border border-border p-1.5">
+        {filteredOptions.length === 0 ? (
+          <p className="px-1.5 py-1 text-xs text-muted-foreground">לא נמצאו חניכים</p>
+        ) : (
+          filteredOptions.map((o) => (
+            <label
+              key={o.value}
+              className="flex items-center gap-2 rounded px-1.5 py-1 text-sm hover:bg-muted"
+            >
+              <input type="checkbox" checked={selectedIds.includes(o.value)} onChange={() => toggle(o.value)} />
+              {o.label}
+            </label>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
 // Full note/rating detail for exactly one student - opened from a compact
 // row, never rendered for every student at once. The session-horse input
 // stays collapsed behind its own small button so the default view is just
@@ -490,13 +564,10 @@ function StudentEditor({
           </label>
           <label className="flex flex-col gap-1 text-sm">
             את מי החניך/ה הדריך/ה
-            <SearchableMultiSelect
-              values={taughtStudentIds}
+            <TaughtStudentsChecklist
               options={taughtStudentOptions}
-              onChange={setTaughtStudentIds}
-              placeholder="לא הדריך/ה אף אחד"
-              searchPlaceholder="הקלידו שם..."
-              emptyMessage="לא נמצאו חניכים"
+              selectedIds={taughtStudentIds}
+              setTaughtStudentIds={setTaughtStudentIds}
             />
           </label>
           {error && <p className="text-sm text-danger">{error}</p>}

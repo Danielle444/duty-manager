@@ -44,6 +44,10 @@ import {
   setTeachingPracticeChildActiveAsAdmin,
   setTeachingPracticeChildActiveAsInstructor,
   setTeachingPracticeDatesForBlockAsAdmin,
+  setTeachingPracticeLessonChildAssignmentsAsAdmin,
+  setTeachingPracticeLessonChildAssignmentsAsInstructor,
+  setTeachingPracticeLessonParticipantsAsAdmin,
+  setTeachingPracticeLessonParticipantsAsInstructor,
   setTeachingPracticeLessonPublishedAsAdmin,
   setTeachingPracticeLessonPublishedAsInstructor,
   setTeachingPracticeTrackActiveAsAdmin,
@@ -58,6 +62,7 @@ import {
   updateTeachingPracticeLessonAsInstructor,
   updateTeachingPracticeTrackAsAdmin,
   updateTeachingPracticeTrackAsInstructor,
+  type TeachingPracticeChildAssignmentInput,
   type TeachingPracticeChildInput,
   type TeachingPracticeChildRow,
   type TeachingPracticeDateBlockType,
@@ -65,6 +70,7 @@ import {
   type TeachingPracticeLessonDetail,
   type TeachingPracticeLessonInput,
   type TeachingPracticeLessonSummary,
+  type TeachingPracticeParticipantInput,
   type TeachingPracticeScheduleCheckResult,
   type TeachingPracticeTrackInput,
   type TeachingPracticeTrackSummary,
@@ -129,6 +135,15 @@ const ROLE_SLOTS_BY_PRACTICE_TYPE: Record<TeachingPracticeTypeValue, TeachingPra
   LUNGE: ["LEAD_INSTRUCTOR", "ASSISTANT_INSTRUCTOR"],
   BEGINNER_PRIVATE: ["LEAD_INSTRUCTOR", "ASSISTANT_INSTRUCTOR"],
   BEGINNER_GROUP: ["LEAD_INSTRUCTOR", "SECOND_INSTRUCTOR", "EVALUATOR"],
+};
+
+// Expected number of TeachingPracticeChildAssignment rows per practiceType
+// for this one lesson's edit form - LUNGE/BEGINNER_PRIVATE normally share one
+// child between both trainee rows, BEGINNER_GROUP has one child per trainee.
+const EXPECTED_CHILD_SLOTS_BY_PRACTICE_TYPE: Record<TeachingPracticeTypeValue, number> = {
+  LUNGE: 1,
+  BEGINNER_PRIVATE: 1,
+  BEGINNER_GROUP: 3,
 };
 
 const WEEKDAY_LABELS = ["ראשון", "שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת"];
@@ -1433,23 +1448,61 @@ export function TeachingPracticeManager({
     });
   }
 
+  // Saves this one lesson's own fields, then (only on success) its
+  // participants/roles, then (only on success) its child assignments -
+  // each call already scoped to this single lessonId by the actions
+  // themselves, so this never touches any other date/lesson/track. Refreshes
+  // after every step regardless of outcome so the table reflects whatever
+  // partial progress was actually saved, and reports which stage failed
+  // rather than a generic error.
   async function handleUpdateLesson(
     lessonId: string,
-    input: TeachingPracticeLessonInput
+    input: TeachingPracticeLessonInput,
+    participantRows: TeachingPracticeParticipantInput[],
+    childAssignmentRows: TeachingPracticeChildAssignmentInput[]
   ): Promise<ActionResult> {
-    const result =
+    const lessonResult =
       role === "admin"
         ? await updateTeachingPracticeLessonAsAdmin(lessonId, input)
         : await updateTeachingPracticeLessonAsInstructor(actorId!, lessonId, input);
-    if (result.success) {
+    if (!lessonResult.success) {
       await refreshLessons();
       // The edit may have moved the lesson to a different date than the one
       // currently selected - refresh whichever date is selected now (its
       // old date if the date field wasn't touched, or the tab will re-pick
       // once `lessons` no longer has anything on the stale selection).
       if (selectedLessonDate) await refreshLessonDateDetail(selectedLessonDate);
+      return lessonResult;
     }
-    return result;
+
+    const participantsResult =
+      role === "admin"
+        ? await setTeachingPracticeLessonParticipantsAsAdmin(lessonId, participantRows)
+        : await setTeachingPracticeLessonParticipantsAsInstructor(actorId!, lessonId, participantRows);
+    if (!participantsResult.success) {
+      await refreshLessons();
+      if (selectedLessonDate) await refreshLessonDateDetail(selectedLessonDate);
+      return {
+        success: false,
+        error: `פרטי השיעור נשמרו, אך שגיאה בשמירת חניכים/תפקידים: ${participantsResult.error ?? ""}`,
+      };
+    }
+
+    const childAssignmentsResult =
+      role === "admin"
+        ? await setTeachingPracticeLessonChildAssignmentsAsAdmin(lessonId, childAssignmentRows)
+        : await setTeachingPracticeLessonChildAssignmentsAsInstructor(actorId!, lessonId, childAssignmentRows);
+
+    await refreshLessons();
+    if (selectedLessonDate) await refreshLessonDateDetail(selectedLessonDate);
+
+    if (!childAssignmentsResult.success) {
+      return {
+        success: false,
+        error: `השיעור והחניכים/תפקידים נשמרו, אך שגיאה בשמירת ילדים/סוסים/ציוד: ${childAssignmentsResult.error ?? ""}`,
+      };
+    }
+    return { success: true };
   }
 
   // -------------------------------------------------------------------------
@@ -3309,6 +3362,8 @@ export function TeachingPracticeManager({
                                   canEdit={effectiveCanEdit}
                                   isPending={isLessonActionPending}
                                   instructors={instructors}
+                                  trainees={students}
+                                  childRegistry={children ?? []}
                                   onTogglePublished={handleToggleLessonPublished}
                                   onSave={handleUpdateLesson}
                                 />
@@ -3329,6 +3384,8 @@ export function TeachingPracticeManager({
                                   canEdit={effectiveCanEdit}
                                   isPending={isLessonActionPending}
                                   instructors={instructors}
+                                  trainees={students}
+                                  childRegistry={children ?? []}
                                   onTogglePublished={handleToggleLessonPublished}
                                   onSave={handleUpdateLesson}
                                 />
@@ -3349,6 +3406,8 @@ export function TeachingPracticeManager({
                                   canEdit={effectiveCanEdit}
                                   isPending={isLessonActionPending}
                                   instructors={instructors}
+                                  trainees={students}
+                                  childRegistry={children ?? []}
                                   onTogglePublished={handleToggleLessonPublished}
                                   onSave={handleUpdateLesson}
                                 />
@@ -4084,6 +4143,23 @@ function ClickableCell({
   );
 }
 
+// One editable row per expected role slot - a plain (traineeId, role) pair
+// rather than keyed by role, since the whole point of this form is letting
+// the admin change which trainee holds which role for this one date.
+interface LessonParticipantFormRow {
+  traineeId: string;
+  role: TeachingPracticeRoleValue;
+}
+
+// One editable row per expected child slot (see EXPECTED_CHILD_SLOTS_BY_PRACTICE_TYPE).
+// No isAbsent field here by design (see report) - marking a child absent for
+// this date stays a separate concern, not part of this edit form.
+interface LessonChildAssignmentFormRow {
+  childId: string;
+  horseName: string;
+  equipmentNotes: string;
+}
+
 interface LessonEditFormState {
   date: string;
   startTime: string;
@@ -4094,16 +4170,40 @@ interface LessonEditFormState {
   // displayed label (override if set, else the ROLE_LABELS default) so the
   // input always shows what the table shows right now.
   roleLabels: Partial<Record<TeachingPracticeRoleValue, string>>;
+  participants: LessonParticipantFormRow[];
+  childAssignments: LessonChildAssignmentFormRow[];
 }
 
 function lessonToEditForm(
-  lesson: TeachingPracticeLessonSummary,
+  lesson: TeachingPracticeLessonDetail,
   roleSlots: TeachingPracticeRoleValue[]
 ): LessonEditFormState {
   const roleLabels: Partial<Record<TeachingPracticeRoleValue, string>> = {};
   for (const role of roleSlots) {
     roleLabels[role] = lesson.roleLabelOverrides?.[role] ?? ROLE_LABELS[role];
   }
+
+  // Sort existing participants into roleSlots order (lead before
+  // second/assistant before evaluator) so row 0 is always the lead, matching
+  // the read-only table's own ordering - then index-pair onto one row per
+  // expected slot so a lesson with fewer participants than expected still
+  // shows the remaining slots as empty, editable rows instead of hiding them.
+  const roleIndex = new Map(roleSlots.map((role, i) => [role, i]));
+  const sortedParticipants = [...lesson.participants].sort(
+    (a, b) => (roleIndex.get(a.role) ?? roleSlots.length) - (roleIndex.get(b.role) ?? roleSlots.length)
+  );
+  const participants: LessonParticipantFormRow[] = roleSlots.map((role, i) => ({
+    traineeId: sortedParticipants[i]?.traineeId ?? "",
+    role: sortedParticipants[i]?.role ?? role,
+  }));
+
+  const expectedChildSlots = EXPECTED_CHILD_SLOTS_BY_PRACTICE_TYPE[lesson.practiceType];
+  const childAssignments: LessonChildAssignmentFormRow[] = Array.from({ length: expectedChildSlots }, (_, i) => ({
+    childId: lesson.childAssignments[i]?.childId ?? "",
+    horseName: lesson.childAssignments[i]?.horseName ?? "",
+    equipmentNotes: lesson.childAssignments[i]?.equipmentNotes ?? "",
+  }));
+
   return {
     date: lesson.date,
     startTime: lesson.startTime,
@@ -4111,6 +4211,8 @@ function lessonToEditForm(
     location: lesson.location ?? "",
     notes: lesson.notes ?? "",
     roleLabels,
+    participants,
+    childAssignments,
   };
 }
 
@@ -4148,6 +4250,8 @@ function LessonGroupTable({
   canEdit,
   isPending,
   instructors,
+  trainees,
+  childRegistry,
   onTogglePublished,
   onSave,
 }: {
@@ -4156,8 +4260,15 @@ function LessonGroupTable({
   canEdit: boolean;
   isPending: boolean;
   instructors: InstructorOption[];
+  trainees: StudentOption[];
+  childRegistry: TeachingPracticeChildRow[];
   onTogglePublished: (lesson: TeachingPracticeLessonDetail) => void;
-  onSave: (lessonId: string, input: TeachingPracticeLessonInput) => Promise<ActionResult>;
+  onSave: (
+    lessonId: string,
+    input: TeachingPracticeLessonInput,
+    participantRows: TeachingPracticeParticipantInput[],
+    childAssignmentRows: TeachingPracticeChildAssignmentInput[]
+  ) => Promise<ActionResult>;
 }) {
   if (lessons.length === 0) return null;
   const roleSlots = ROLE_SLOTS_BY_PRACTICE_TYPE[lessons[0].practiceType];
@@ -4195,8 +4306,12 @@ function LessonGroupTable({
                 canEdit={canEdit}
                 isPending={isPending}
                 instructors={instructors}
+                trainees={trainees}
+                childRegistry={childRegistry}
                 onTogglePublished={() => onTogglePublished(lesson)}
-                onSave={(input) => onSave(lesson.id, input)}
+                onSave={(input, participantRows, childAssignmentRows) =>
+                  onSave(lesson.id, input, participantRows, childAssignmentRows)
+                }
               />
             ))}
           </tbody>
@@ -4228,6 +4343,8 @@ function LessonTableRow({
   canEdit,
   isPending,
   instructors,
+  trainees,
+  childRegistry,
   onTogglePublished,
   onSave,
 }: {
@@ -4236,8 +4353,14 @@ function LessonTableRow({
   canEdit: boolean;
   isPending: boolean;
   instructors: InstructorOption[];
+  trainees: StudentOption[];
+  childRegistry: TeachingPracticeChildRow[];
   onTogglePublished: () => void;
-  onSave: (input: TeachingPracticeLessonInput) => Promise<ActionResult>;
+  onSave: (
+    input: TeachingPracticeLessonInput,
+    participantRows: TeachingPracticeParticipantInput[],
+    childAssignmentRows: TeachingPracticeChildAssignmentInput[]
+  ) => Promise<ActionResult>;
 }) {
   const [isEditing, setIsEditing] = useState(false);
   const [editForm, setEditForm] = useState<LessonEditFormState>(() => lessonToEditForm(lesson, roleSlots));
@@ -4260,21 +4383,53 @@ function LessonTableRow({
       const value = (editForm.roleLabels[role] ?? "").trim();
       if (value && value !== ROLE_LABELS[role]) roleLabelOverrides[role] = value;
     }
+    // Empty slots are simply omitted rather than submitted as invalid rows -
+    // both target actions are replace-all for this lessonId, so the full
+    // remaining set is what ends up stored (an intentionally cleared slot
+    // really does drop that participant/child assignment for this date).
+    const participantRows: TeachingPracticeParticipantInput[] = editForm.participants
+      .filter((p) => p.traineeId !== "")
+      .map((p) => ({ traineeId: p.traineeId, role: p.role }));
+    const childAssignmentRows: TeachingPracticeChildAssignmentInput[] = editForm.childAssignments
+      .filter((c) => c.childId !== "")
+      .map((c) => ({
+        childId: c.childId,
+        horseName: c.horseName.trim() || null,
+        equipmentNotes: c.equipmentNotes.trim() || null,
+      }));
     startSaveEditTransition(async () => {
-      const result = await onSave({
-        date: editForm.date,
-        startTime: editForm.startTime,
-        responsibleInstructorId: editForm.responsibleInstructorId || null,
-        location: editForm.location.trim() || null,
-        notes: editForm.notes.trim() || null,
-        roleLabelOverrides,
-      });
+      const result = await onSave(
+        {
+          date: editForm.date,
+          startTime: editForm.startTime,
+          responsibleInstructorId: editForm.responsibleInstructorId || null,
+          location: editForm.location.trim() || null,
+          notes: editForm.notes.trim() || null,
+          roleLabelOverrides,
+        },
+        participantRows,
+        childAssignmentRows
+      );
       if (!result.success) {
         setEditError(result.error ?? "אירעה שגיאה");
         return;
       }
       setIsEditing(false);
     });
+  }
+
+  // Same group-filtered-with-visible-outlier pattern as the track-level
+  // teamOptionsForSlot - trainees outside this lesson's own group still show
+  // up if already selected, so an existing cross-group assignment is never
+  // silently hidden by the filter.
+  function traineeOptionsFor(selectedId: string): StudentOption[] {
+    const groupName = lesson.groupName ?? "";
+    const filtered = groupName ? trainees.filter((s) => s.groupName === groupName) : trainees;
+    if (selectedId && !filtered.some((s) => s.id === selectedId)) {
+      const selected = trainees.find((s) => s.id === selectedId);
+      if (selected) return [selected, ...filtered];
+    }
+    return filtered;
   }
 
   const colSpan = 13;
@@ -4497,6 +4652,124 @@ function LessonTableRow({
                       </Button>
                     </span>
                   </label>
+                ))}
+              </div>
+            </div>
+            <div className="mt-3 border-t border-border pt-3">
+              <p className="text-sm font-medium text-card-foreground">חניכים ותפקידים</p>
+              <p className="text-xs text-muted-foreground">
+                משפיע רק על השיעור הזה בתאריך זה - לא משנה את הצוות הקבוע במסלול
+              </p>
+              <div className="mt-2 flex flex-col gap-2">
+                {editForm.participants.map((row, i) => (
+                  <div key={i} className="flex flex-col gap-2 rounded-lg border border-border p-2 sm:flex-row">
+                    <label className="flex flex-1 flex-col gap-1 text-sm">
+                      חניך/ה
+                      <select
+                        value={row.traineeId}
+                        onChange={(e) =>
+                          setEditForm((f) => {
+                            const next = [...f.participants];
+                            next[i] = { ...next[i], traineeId: e.target.value };
+                            return { ...f, participants: next };
+                          })
+                        }
+                        className="rounded-lg border border-border px-3 py-2 text-sm"
+                      >
+                        <option value="">ללא</option>
+                        {traineeOptionsFor(row.traineeId).map((s) => (
+                          <option key={s.id} value={s.id}>
+                            {s.fullName}
+                            {s.groupName ? ` (קבוצה ${s.groupName})` : ""}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="flex flex-1 flex-col gap-1 text-sm">
+                      תפקיד
+                      <select
+                        value={row.role}
+                        onChange={(e) =>
+                          setEditForm((f) => {
+                            const next = [...f.participants];
+                            next[i] = { ...next[i], role: e.target.value as TeachingPracticeRoleValue };
+                            return { ...f, participants: next };
+                          })
+                        }
+                        className="rounded-lg border border-border px-3 py-2 text-sm"
+                      >
+                        {roleSlots.map((role) => (
+                          <option key={role} value={role}>
+                            {ROLE_LABELS[role]}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="mt-3 border-t border-border pt-3">
+              <p className="text-sm font-medium text-card-foreground">ילדים / סוסים / ציוד</p>
+              <p className="text-xs text-muted-foreground">
+                משפיע רק על השיעור הזה בתאריך זה - לא משנה את שיוך הילדים הקבוע במסלול
+              </p>
+              <div className="mt-2 flex flex-col gap-2">
+                {editForm.childAssignments.map((row, i) => (
+                  <div
+                    key={i}
+                    className="flex flex-col gap-2 rounded-lg border border-border p-2 sm:flex-row sm:items-end"
+                  >
+                    <label className="flex flex-1 flex-col gap-1 text-sm">
+                      ילד/ה
+                      <select
+                        value={row.childId}
+                        onChange={(e) =>
+                          setEditForm((f) => {
+                            const next = [...f.childAssignments];
+                            next[i] = { ...next[i], childId: e.target.value };
+                            return { ...f, childAssignments: next };
+                          })
+                        }
+                        className="rounded-lg border border-border px-3 py-2 text-sm"
+                      >
+                        <option value="">ללא</option>
+                        {childRegistry.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.fullName}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="flex flex-1 flex-col gap-1 text-sm">
+                      סוס
+                      <input
+                        value={row.horseName}
+                        onChange={(e) =>
+                          setEditForm((f) => {
+                            const next = [...f.childAssignments];
+                            next[i] = { ...next[i], horseName: e.target.value };
+                            return { ...f, childAssignments: next };
+                          })
+                        }
+                        className="rounded-lg border border-border px-3 py-2 text-sm"
+                      />
+                    </label>
+                    <label className="flex flex-1 flex-col gap-1 text-sm">
+                      ציוד
+                      <input
+                        value={row.equipmentNotes}
+                        onChange={(e) =>
+                          setEditForm((f) => {
+                            const next = [...f.childAssignments];
+                            next[i] = { ...next[i], equipmentNotes: e.target.value };
+                            return { ...f, childAssignments: next };
+                          })
+                        }
+                        className="rounded-lg border border-border px-3 py-2 text-sm"
+                      />
+                    </label>
+                  </div>
                 ))}
               </div>
             </div>

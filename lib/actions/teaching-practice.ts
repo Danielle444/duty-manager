@@ -1060,6 +1060,7 @@ export interface TeachingPracticeChildAssignmentRow {
   childId: string;
   childFullName: string;
   childAge: number | null;
+  childGender: string | null;
   parentName: string | null;
   parentPhone: string | null;
   horseName: string | null;
@@ -1175,7 +1176,9 @@ const LESSON_DETAIL_INCLUDE = {
     include: { trainee: { select: { fullName: true } } },
   },
   childAssignments: {
-    include: { child: { select: { fullName: true, age: true, parentName: true, parentPhone: true } } },
+    include: {
+      child: { select: { fullName: true, age: true, gender: true, parentName: true, parentPhone: true } },
+    },
   },
 };
 
@@ -1202,6 +1205,7 @@ function toLessonDetail(lesson: LessonWithDetailIncludes): TeachingPracticeLesso
       childId: c.childId,
       childFullName: c.child.fullName,
       childAge: c.child.age,
+      childGender: c.child.gender,
       parentName: c.child.parentName,
       parentPhone: c.child.parentPhone,
       horseName: c.horseName,
@@ -1235,6 +1239,39 @@ export async function getTeachingPracticeLessonDetailForInstructor(
   const instructor = await prisma.instructor.findUnique({ where: { id: instructorId } });
   if (!instructor || !instructor.isActive) return null;
   return getTeachingPracticeLessonDetailInternal(lessonId);
+}
+
+// One day's lessons, with participants/childAssignments already joined -
+// used by the scheduled-lessons table view (Stage A), which needs trainee
+// and child names up front for every lesson on the selected date rather
+// than lazily per row. Scoped to a single date (not a range) so it stays
+// cheap even as the lessons table grows.
+async function listTeachingPracticeLessonsDetailForDateInternal(
+  date: string
+): Promise<TeachingPracticeLessonDetail[]> {
+  const day = parseDateKey(date);
+  const lessons = await prisma.teachingPracticeLesson.findMany({
+    where: { date: day },
+    include: LESSON_DETAIL_INCLUDE,
+    orderBy: [{ startTime: "asc" }],
+  });
+  return lessons.map(toLessonDetail);
+}
+
+export async function listTeachingPracticeLessonsDetailForDateAsAdmin(
+  date: string
+): Promise<TeachingPracticeLessonDetail[]> {
+  await requireAdmin();
+  return listTeachingPracticeLessonsDetailForDateInternal(date);
+}
+
+export async function listTeachingPracticeLessonsDetailForDateAsInstructor(
+  instructorId: string,
+  date: string
+): Promise<TeachingPracticeLessonDetail[]> {
+  const instructor = await prisma.instructor.findUnique({ where: { id: instructorId } });
+  if (!instructor || !instructor.isActive) return [];
+  return listTeachingPracticeLessonsDetailForDateInternal(date);
 }
 
 // ---------------------------------------------------------------------------

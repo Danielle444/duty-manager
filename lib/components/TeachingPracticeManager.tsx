@@ -12,7 +12,7 @@ import {
 import { Button } from "@/lib/components/Button";
 import { Modal } from "@/lib/components/Modal";
 import { SearchableSelect, type SearchableSelectOption } from "@/lib/components/SearchableSelect";
-import { formatHebrewDate, formatHebrewWeekday, parseDateKey } from "@/lib/dates";
+import { formatHebrewDate, formatHebrewWeekday, parseDateKey, todayDateKey } from "@/lib/dates";
 import type { ActionResult } from "@/lib/actions/students";
 import {
   addMinutesToTimeString,
@@ -32,11 +32,11 @@ import {
   deleteTeachingPracticeTrackAsInstructor,
   generateTeachingPracticeLessonFromTrackAsAdmin,
   generateTeachingPracticeLessonFromTrackAsInstructor,
-  getTeachingPracticeLessonDetailForAdmin,
-  getTeachingPracticeLessonDetailForInstructor,
   getTeachingPracticeScheduleCheckForAdmin,
   listTeachingPracticeChildrenForAdmin,
   listTeachingPracticeChildrenForInstructor,
+  listTeachingPracticeLessonsDetailForDateAsAdmin,
+  listTeachingPracticeLessonsDetailForDateAsInstructor,
   listTeachingPracticeLessonsForAdmin,
   listTeachingPracticeLessonsForInstructor,
   listTeachingPracticeTracksForAdmin,
@@ -118,6 +118,17 @@ const ROLE_LABELS: Record<TeachingPracticeRoleValue, string> = {
   SECOND_INSTRUCTOR: "מדריך שני",
   ASSISTANT_INSTRUCTOR: "עוזר מדריך",
   EVALUATOR: "ממשב",
+};
+
+// The fixed role columns shown per practiceType in the scheduled-lessons
+// table (Stage A) - mirrors the 2-role LUNGE/BEGINNER_PRIVATE rotation and
+// the 3-role BEGINNER_GROUP rotation from computeTeachingPracticeRotation,
+// just as column headers instead of rotation math. Default labels only
+// (ROLE_LABELS above) - no per-date override in this stage.
+const ROLE_SLOTS_BY_PRACTICE_TYPE: Record<TeachingPracticeTypeValue, TeachingPracticeRoleValue[]> = {
+  LUNGE: ["LEAD_INSTRUCTOR", "ASSISTANT_INSTRUCTOR"],
+  BEGINNER_PRIVATE: ["LEAD_INSTRUCTOR", "ASSISTANT_INSTRUCTOR"],
+  BEGINNER_GROUP: ["LEAD_INSTRUCTOR", "SECOND_INSTRUCTOR", "EVALUATOR"],
 };
 
 const WEEKDAY_LABELS = ["ראשון", "שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת"];
@@ -522,6 +533,14 @@ export function TeachingPracticeManager({
   const [tracks, setTracks] = useState<TeachingPracticeTrackSummary[] | null>(null);
   const [lessons, setLessons] = useState<TeachingPracticeLessonSummary[] | null>(null);
   const [children, setChildren] = useState<TeachingPracticeChildRow[] | null>(null);
+  // Stage A (scheduled-lessons table redesign): which date tab is selected,
+  // and the full per-lesson detail (participants/childAssignments) for just
+  // that date - fetched separately from the lightweight `lessons` summary
+  // list so switching dates never re-fetches every lesson's roster at once.
+  const [selectedLessonDate, setSelectedLessonDate] = useState<string | null>(null);
+  const [lessonDateDetail, setLessonDateDetail] = useState<TeachingPracticeLessonDetail[] | null>(null);
+  const [lessonDateDetailLoading, setLessonDateDetailLoading] = useState(false);
+  const [lessonDateDetailError, setLessonDateDetailError] = useState<string | null>(null);
   // Admin-only (getTeachingPracticeScheduleCheckForAdmin has no instructor
   // variant yet, see report) - fetched lazily on first visit to the tab
   // rather than in the initial Promise.all below, since it's a heavier
@@ -544,6 +563,13 @@ export function TeachingPracticeManager({
         ? await listTeachingPracticeLessonsForAdmin()
         : await listTeachingPracticeLessonsForInstructor(actorId!);
     setLessons(fresh);
+  }
+  async function refreshLessonDateDetail(date: string) {
+    const fresh =
+      role === "admin"
+        ? await listTeachingPracticeLessonsDetailForDateAsAdmin(date)
+        : await listTeachingPracticeLessonsDetailForDateAsInstructor(actorId!, date);
+    setLessonDateDetail(fresh);
   }
   async function refreshChildren() {
     const fresh =
@@ -624,6 +650,53 @@ export function TeachingPracticeManager({
     }
     return Array.from(map.entries());
   }, [lessons]);
+
+  // Dates that actually have at least one generated lesson, ascending
+  // (lessonsByDate's Map preserves the server's [date, startTime] sort
+  // order) - drives the date-tab strip in the redesigned lessons tab.
+  const availableLessonDates = useMemo(() => lessonsByDate.map(([date]) => date), [lessonsByDate]);
+
+  // Re-picks the selected date tab whenever the current selection is no
+  // longer in the list (first load, or its last lesson got moved/deleted) -
+  // nearest upcoming date first, falling back to the latest past date, then
+  // simply the first available one, per the product's stated default order.
+  useEffect(() => {
+    if (tab !== "lessons") return;
+    if (availableLessonDates.length === 0) {
+      if (selectedLessonDate !== null) {
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        setSelectedLessonDate(null);
+      }
+      return;
+    }
+    if (selectedLessonDate !== null && availableLessonDates.includes(selectedLessonDate)) return;
+    const today = todayDateKey();
+    const upcoming = availableLessonDates.find((d) => d >= today);
+    setSelectedLessonDate(upcoming ?? availableLessonDates[availableLessonDates.length - 1]);
+  }, [tab, availableLessonDates, selectedLessonDate]);
+
+  // Full per-lesson detail (participants/childAssignments) for just the
+  // selected date - kept separate from the lightweight `lessons` summary
+  // list above so switching date tabs never re-fetches every date's roster
+  // at once, only the one currently shown.
+  useEffect(() => {
+    if (tab !== "lessons" || selectedLessonDate === null) return;
+    let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setLessonDateDetailError(null);
+    setLessonDateDetailLoading(true);
+    refreshLessonDateDetail(selectedLessonDate)
+      .catch(() => {
+        if (!cancelled) setLessonDateDetailError("שגיאה בטעינת פרטי השיעורים לתאריך זה");
+      })
+      .finally(() => {
+        if (!cancelled) setLessonDateDetailLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, selectedLessonDate, role, actorId]);
 
   // -------------------------------------------------------------------------
   // Tracks: fixed-structure assignment tables (LUNGE, and BEGINNER_PRIVATE +
@@ -1350,6 +1423,7 @@ export function TeachingPracticeManager({
         return;
       }
       await refreshLessons();
+      if (selectedLessonDate) await refreshLessonDateDetail(selectedLessonDate);
     });
   }
 
@@ -1363,6 +1437,11 @@ export function TeachingPracticeManager({
         : await updateTeachingPracticeLessonAsInstructor(actorId!, lessonId, input);
     if (result.success) {
       await refreshLessons();
+      // The edit may have moved the lesson to a different date than the one
+      // currently selected - refresh whichever date is selected now (its
+      // old date if the date field wasn't touched, or the tab will re-pick
+      // once `lessons` no longer has anything on the stale selection).
+      if (selectedLessonDate) await refreshLessonDateDetail(selectedLessonDate);
     }
     return result;
   }
@@ -3068,44 +3147,183 @@ export function TeachingPracticeManager({
         </div>
       )}
 
-      {tab === "lessons" && (
-        <div className="flex flex-col gap-4">
-          {lessonActionError && <p className="text-sm text-danger">{lessonActionError}</p>}
-          {lessons === null ? (
-            <p className="text-sm text-muted-foreground">טוען...</p>
-          ) : lessons.length === 0 ? (
-            <p className="rounded-xl border border-border bg-card p-5 text-center text-sm text-muted-foreground">
-              טרם נוצרו שיעורי התנסות מתחילים.
-            </p>
-          ) : (
-            lessonsByDate.map(([date, dateLessons]) => (
-              <div key={date} className="flex flex-col gap-2">
-                <div className="rounded-lg bg-secondary px-3 py-2 text-sm font-bold text-secondary-foreground">
-                  {formatHebrewWeekday(parseDateKey(date))} · {formatHebrewDate(parseDateKey(date))}
-                </div>
-                <div className="flex flex-col gap-3">
-                  {dateLessons.map((lesson) => (
-                    <LessonCard
-                      key={lesson.id}
-                      lesson={lesson}
-                      canEdit={effectiveCanEdit}
-                      isPending={isLessonActionPending}
-                      instructors={instructors}
-                      onTogglePublished={() => handleToggleLessonPublished(lesson)}
-                      onSave={(input) => handleUpdateLesson(lesson.id, input)}
-                      loadDetail={() =>
-                        role === "admin"
-                          ? getTeachingPracticeLessonDetailForAdmin(lesson.id)
-                          : getTeachingPracticeLessonDetailForInstructor(actorId!, lesson.id)
-                      }
-                    />
-                  ))}
-                </div>
-              </div>
-            ))
-          )}
-        </div>
-      )}
+      {tab === "lessons" &&
+        (() => {
+          const dateLessons = lessonDateDetail ?? [];
+          const lungeGroups = groupLessonsByGroupName(
+            dateLessons.filter((l) => l.practiceType === "LUNGE")
+          );
+          const beginnerPrivateGroups = groupLessonsByGroupName(
+            dateLessons.filter((l) => l.practiceType === "BEGINNER_PRIVATE")
+          );
+          const beginnerGroupGroups = groupLessonsByGroupName(
+            dateLessons.filter((l) => l.practiceType === "BEGINNER_GROUP")
+          );
+          // Normal workflow is one course group and one beginner lesson type
+          // per date - these only turn true for data that doesn't match
+          // that shape, in which case nothing below is hidden, only flagged.
+          const distinctGroupNames = Array.from(new Set(dateLessons.map((l) => l.groupName ?? null)));
+          const hasMultipleGroups = distinctGroupNames.length > 1;
+          const hasBothBeginnerTypes = beginnerPrivateGroups.length > 0 && beginnerGroupGroups.length > 0;
+          const groupSummaryLabel =
+            distinctGroupNames.length === 0
+              ? null
+              : distinctGroupNames.map((g) => (g ? `קבוצה ${g}` : "ללא קבוצה")).join(" + ");
+          const beginnerTypeSummaryLabel = hasBothBeginnerTypes
+            ? "שיעורים פרטניים + שיעורים קבוצתיים"
+            : beginnerPrivateGroups.length > 0
+              ? "שיעורים פרטניים"
+              : beginnerGroupGroups.length > 0
+                ? "שיעורים קבוצתיים"
+                : null;
+          const hasAnySection =
+            lungeGroups.length > 0 || beginnerPrivateGroups.length > 0 || beginnerGroupGroups.length > 0;
+
+          return (
+            <div className="flex flex-col gap-4">
+              {lessonActionError && <p className="text-sm text-danger">{lessonActionError}</p>}
+              {lessons === null ? (
+                <p className="text-sm text-muted-foreground">טוען...</p>
+              ) : lessons.length === 0 ? (
+                <p className="rounded-xl border border-border bg-card p-5 text-center text-sm text-muted-foreground">
+                  טרם נוצרו שיעורי התנסות מתחילים.
+                </p>
+              ) : (
+                <>
+                  {/* Date tabs - one per date that actually has a generated
+                      lesson, oldest to newest. */}
+                  <div className="flex flex-wrap gap-1.5">
+                    {availableLessonDates.map((date) => (
+                      <button
+                        key={date}
+                        type="button"
+                        onClick={() => setSelectedLessonDate(date)}
+                        className={`shrink-0 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+                          selectedLessonDate === date
+                            ? "bg-primary text-primary-foreground"
+                            : "bg-muted text-muted-foreground hover:bg-muted/70"
+                        }`}
+                      >
+                        {formatHebrewWeekday(parseDateKey(date))} · {formatHebrewDate(parseDateKey(date))}
+                      </button>
+                    ))}
+                  </div>
+
+                  {selectedLessonDate === null ? (
+                    <p className="rounded-xl border border-border bg-card p-5 text-center text-sm text-muted-foreground">
+                      בחר/י תאריך.
+                    </p>
+                  ) : lessonDateDetailLoading ? (
+                    <p className="text-sm text-muted-foreground">טוען...</p>
+                  ) : (
+                    <>
+                      {lessonDateDetailError && (
+                        <p className="text-sm text-danger">{lessonDateDetailError}</p>
+                      )}
+
+                      {/* Selected-date summary: date + detected course
+                          group + detected beginner lesson type. */}
+                      <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-card p-4">
+                        <p className="text-base font-bold text-card-foreground">
+                          {formatHebrewWeekday(parseDateKey(selectedLessonDate))} ·{" "}
+                          {formatHebrewDate(parseDateKey(selectedLessonDate))}
+                        </p>
+                        {groupSummaryLabel && (
+                          <span className="rounded-full bg-secondary px-2.5 py-1 text-xs font-medium text-secondary-foreground">
+                            {groupSummaryLabel}
+                          </span>
+                        )}
+                        {beginnerTypeSummaryLabel && (
+                          <span className="rounded-full bg-secondary px-2.5 py-1 text-xs font-medium text-secondary-foreground">
+                            {beginnerTypeSummaryLabel}
+                          </span>
+                        )}
+                      </div>
+
+                      {(hasMultipleGroups || hasBothBeginnerTypes) && (
+                        <p className="rounded-xl border border-warning bg-warning-muted p-3 text-xs text-warning">
+                          תאריך זה חורג מהמבנה הרגיל (
+                          {hasMultipleGroups && "יותר מקבוצה אחת"}
+                          {hasMultipleGroups && hasBothBeginnerTypes && " וגם "}
+                          {hasBothBeginnerTypes && "גם שיעורים פרטניים וגם קבוצתיים"}) - כל השיעורים עדיין
+                          מוצגים למטה, שום דבר לא הוסתר.
+                        </p>
+                      )}
+
+                      {!hasAnySection ? (
+                        <p className="rounded-xl border border-dashed border-border bg-card p-3 text-center text-xs text-muted-foreground">
+                          אין שיעורים בתאריך זה.
+                        </p>
+                      ) : (
+                        <>
+                          {lungeGroups.length > 0 && (
+                            <div className="flex flex-col gap-3">
+                              <h3 className="rounded-lg bg-secondary px-3 py-2 text-sm font-bold text-secondary-foreground">
+                                לונג׳
+                              </h3>
+                              {lungeGroups.map(([groupName, groupLessons]) => (
+                                <LessonGroupTable
+                                  key={`lunge-${groupName ?? "none"}`}
+                                  groupName={groupName}
+                                  lessons={groupLessons}
+                                  canEdit={effectiveCanEdit}
+                                  isPending={isLessonActionPending}
+                                  instructors={instructors}
+                                  onTogglePublished={handleToggleLessonPublished}
+                                  onSave={handleUpdateLesson}
+                                />
+                              ))}
+                            </div>
+                          )}
+
+                          {beginnerPrivateGroups.length > 0 && (
+                            <div className="flex flex-col gap-3">
+                              <h3 className="rounded-lg bg-secondary px-3 py-2 text-sm font-bold text-secondary-foreground">
+                                שיעורים פרטניים
+                              </h3>
+                              {beginnerPrivateGroups.map(([groupName, groupLessons]) => (
+                                <LessonGroupTable
+                                  key={`private-${groupName ?? "none"}`}
+                                  groupName={groupName}
+                                  lessons={groupLessons}
+                                  canEdit={effectiveCanEdit}
+                                  isPending={isLessonActionPending}
+                                  instructors={instructors}
+                                  onTogglePublished={handleToggleLessonPublished}
+                                  onSave={handleUpdateLesson}
+                                />
+                              ))}
+                            </div>
+                          )}
+
+                          {beginnerGroupGroups.length > 0 && (
+                            <div className="flex flex-col gap-3">
+                              <h3 className="rounded-lg bg-secondary px-3 py-2 text-sm font-bold text-secondary-foreground">
+                                שיעורים קבוצתיים
+                              </h3>
+                              {beginnerGroupGroups.map(([groupName, groupLessons]) => (
+                                <LessonGroupTable
+                                  key={`group-${groupName ?? "none"}`}
+                                  groupName={groupName}
+                                  lessons={groupLessons}
+                                  canEdit={effectiveCanEdit}
+                                  isPending={isLessonActionPending}
+                                  instructors={instructors}
+                                  onTogglePublished={handleToggleLessonPublished}
+                                  onSave={handleUpdateLesson}
+                                />
+                              ))}
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </>
+                  )}
+                </>
+              )}
+            </div>
+          );
+        })()}
 
       {tab === "children" && (
         <div className="flex flex-col gap-4">
@@ -3844,47 +4062,134 @@ function lessonToEditForm(lesson: TeachingPracticeLessonSummary): LessonEditForm
   };
 }
 
-// Detail (participants/child assignments) is view-only in this stage -
-// editing them is deferred to a later stage. Fetched lazily on first expand
-// rather than for every card up front, to avoid N lesson-detail queries
-// firing on every list load.
-function LessonCard({
-  lesson,
+// Groups an already-filtered (single practiceType) lesson list by groupName,
+// sorted so א/ב come before "ללא קבוצה" - used for the LUNGE and beginner
+// sections in the scheduled-lessons table (Stage A). Normally yields exactly
+// one entry (one course group is on any given date), but never collapses or
+// hides a second one if the data has it - see the fallback banner in the
+// "lessons" tab render.
+function groupLessonsByGroupName(
+  lessons: TeachingPracticeLessonDetail[]
+): [string | null, TeachingPracticeLessonDetail[]][] {
+  const map = new Map<string | null, TeachingPracticeLessonDetail[]>();
+  for (const lesson of lessons) {
+    const key = lesson.groupName ?? null;
+    if (!map.has(key)) map.set(key, []);
+    map.get(key)!.push(lesson);
+  }
+  return Array.from(map.entries()).sort((a, b) => (a[0] ?? "￿").localeCompare(b[0] ?? "￿"));
+}
+
+// One group's worth of same-practiceType lessons on the selected date,
+// rendered as a compact table (time / role columns / per-child operational
+// details / status / actions) - the scheduled-lessons equivalent of the
+// fixed-schedule LUNGE/Beginners tables, but one row-group per
+// already-generated lesson instead of one row per recurring track. A
+// BEGINNER_GROUP lesson's 3 children each get their own sub-row under the
+// same shared time/role/status/actions cells (see LessonTableRow) rather
+// than being collapsed into one row, since the point of this table is
+// "who is teaching whom" - location/responsible-instructor aren't shown
+// here, they stay in the edit form below each lesson.
+function LessonGroupTable({
+  groupName,
+  lessons,
   canEdit,
   isPending,
   instructors,
   onTogglePublished,
   onSave,
-  loadDetail,
 }: {
-  lesson: TeachingPracticeLessonSummary;
+  groupName: string | null;
+  lessons: TeachingPracticeLessonDetail[];
+  canEdit: boolean;
+  isPending: boolean;
+  instructors: InstructorOption[];
+  onTogglePublished: (lesson: TeachingPracticeLessonDetail) => void;
+  onSave: (lessonId: string, input: TeachingPracticeLessonInput) => Promise<ActionResult>;
+}) {
+  if (lessons.length === 0) return null;
+  const roleSlots = ROLE_SLOTS_BY_PRACTICE_TYPE[lessons[0].practiceType];
+  const sorted = [...lessons].sort((a, b) => a.startTime.localeCompare(b.startTime));
+  return (
+    <div>
+      <h4 className="mb-1.5 rounded-lg bg-muted px-3 py-1.5 text-xs font-bold text-muted-foreground">
+        {groupName ? `קבוצה ${groupName}` : "ללא קבוצה"}
+      </h4>
+      <div className="-mx-1 overflow-x-auto px-1 pb-1">
+        <table className="w-full min-w-[980px] border-collapse text-xs">
+          <thead>
+            <tr className="bg-muted text-muted-foreground">
+              <th className="sticky right-0 z-10 bg-muted px-2 py-2 text-right font-bold">שעה</th>
+              <th className="px-2 py-2 text-right font-bold">חניך</th>
+              <th className="px-2 py-2 text-right font-bold">תפקיד</th>
+              <th className="px-2 py-2 text-right font-bold">שם הילד</th>
+              <th className="px-2 py-2 text-right font-bold">גיל</th>
+              <th className="px-2 py-2 text-right font-bold">מין</th>
+              <th className="px-2 py-2 text-right font-bold">סוס</th>
+              <th className="px-2 py-2 text-right font-bold">ציוד</th>
+              <th className="px-2 py-2 text-right font-bold">שם ההורה</th>
+              <th className="px-2 py-2 text-right font-bold">טלפון הורה</th>
+              <th className="px-2 py-2 text-right font-bold">סטטוס</th>
+              <th className="px-2 py-2 text-right font-bold">פעולות</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map((lesson) => (
+              <LessonTableRow
+                key={lesson.id}
+                lesson={lesson}
+                roleSlots={roleSlots}
+                canEdit={canEdit}
+                isPending={isPending}
+                instructors={instructors}
+                onTogglePublished={() => onTogglePublished(lesson)}
+                onSave={(input) => onSave(lesson.id, input)}
+              />
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// A single generated lesson's row-group, plus (when editing) a colSpan'd
+// edit row beneath it reusing the same date/startTime/instructor/location/
+// notes fields the old card view had - participants/children are already
+// loaded for the whole selected date (see refreshLessonDateDetail), so
+// unlike the old card this never needs its own lazy detail fetch/toggle.
+//
+// Trainee/role and child are shown as row-based pairs (חניך + תפקיד columns,
+// not one column per role slot) - built by index-pairing
+// participants[i]/childAssignments[i] after sorting participants into
+// roleSlots order, for rowCount = max(participants.length,
+// childAssignments.length, 1). A BEGINNER_GROUP lesson's 3
+// trainees/roles/children line up 1:1 into 3 rows; LUNGE/BEGINNER_PRIVATE's
+// 2 trainees against a single child produce 2 rows so neither trainee is
+// ever hidden, with the second row's child columns as "—". The shared
+// per-lesson cells (time, status, actions) get rowSpan across every row in
+// the group and are only rendered once, on the first one.
+function LessonTableRow({
+  lesson,
+  roleSlots,
+  canEdit,
+  isPending,
+  instructors,
+  onTogglePublished,
+  onSave,
+}: {
+  lesson: TeachingPracticeLessonDetail;
+  roleSlots: TeachingPracticeRoleValue[];
   canEdit: boolean;
   isPending: boolean;
   instructors: InstructorOption[];
   onTogglePublished: () => void;
   onSave: (input: TeachingPracticeLessonInput) => Promise<ActionResult>;
-  loadDetail: () => Promise<TeachingPracticeLessonDetail | null>;
 }) {
-  const [detail, setDetail] = useState<TeachingPracticeLessonDetail | null>(null);
-  const [isDetailOpen, setIsDetailOpen] = useState(false);
-  const [isDetailLoading, setIsDetailLoading] = useState(false);
-
   const [isEditing, setIsEditing] = useState(false);
   const [editForm, setEditForm] = useState<LessonEditFormState>(() => lessonToEditForm(lesson));
   const [editError, setEditError] = useState<string | null>(null);
   const [isSavingEdit, startSaveEditTransition] = useTransition();
-
-  function handleToggleDetail() {
-    const opening = !isDetailOpen;
-    setIsDetailOpen(opening);
-    if (opening && detail === null) {
-      setIsDetailLoading(true);
-      loadDetail().then((result) => {
-        setDetail(result);
-        setIsDetailLoading(false);
-      });
-    }
-  }
 
   function startEdit() {
     setEditForm(lessonToEditForm(lesson));
@@ -3910,188 +4215,204 @@ function LessonCard({
     });
   }
 
+  const colSpan = 12;
+  // Sort participants into roleSlots order (LEAD before SECOND/ASSISTANT
+  // before EVALUATOR) so "row 0" is always the lead, matching the child
+  // list's own order - then index-pair the two lists rather than keying off
+  // role, so a trainee with no matching child (or vice versa) still gets its
+  // own row instead of being dropped.
+  const roleIndex = new Map(roleSlots.map((role, i) => [role, i]));
+  const sortedParticipants = [...lesson.participants].sort(
+    (a, b) => (roleIndex.get(a.role) ?? roleSlots.length) - (roleIndex.get(b.role) ?? roleSlots.length)
+  );
+  const expectedRows = TEACHING_PRACTICE_TEAM_SIZE[lesson.practiceType];
+  // BEGINNER_GROUP always index-pairs one child per trainee/role row (3+3).
+  // LUNGE/BEGINNER_PRIVATE normally have one child shared by both trainee
+  // rows, so its columns are shown once with rowSpan instead of repeated
+  // (or blanked) per row - unless there's unexpectedly more than one child,
+  // in which case this falls back to the same per-row pairing as the group
+  // table so nothing is silently hidden.
+  const sharedChildColumn = lesson.practiceType !== "BEGINNER_GROUP" && lesson.childAssignments.length <= 1;
+  const rowCount = sharedChildColumn
+    ? Math.max(sortedParticipants.length, expectedRows)
+    : Math.max(sortedParticipants.length, lesson.childAssignments.length, expectedRows);
+  const displayRows = Array.from({ length: rowCount }, (_, i) => ({
+    participant: sortedParticipants[i] ?? null,
+    child: sharedChildColumn ? null : (lesson.childAssignments[i] ?? null),
+  }));
+  const soleChild = lesson.childAssignments[0] ?? null;
+
   return (
-    <div className="rounded-xl border border-border bg-card p-4">
-      {isEditing ? (
-        <div className="flex flex-col gap-2">
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-            <label className="flex flex-col gap-1 text-sm">
-              תאריך
-              <input
-                type="date"
-                value={editForm.date}
-                onChange={(e) => setEditForm((f) => ({ ...f, date: e.target.value }))}
-                className="rounded-lg border border-border px-3 py-2 text-sm"
-              />
-            </label>
-            <label className="flex flex-col gap-1 text-sm">
-              שעת התחלה
-              <input
-                value={editForm.startTime}
-                onChange={(e) => setEditForm((f) => ({ ...f, startTime: e.target.value }))}
-                placeholder="HH:MM"
-                className="rounded-lg border border-border px-3 py-2 text-sm"
-              />
-              <span className="text-xs text-muted-foreground">
-                שעת סיום משוערת: {previewEndTime(editForm.startTime, lesson.practiceType)} (
-                {TEACHING_PRACTICE_DURATION_MINUTES[lesson.practiceType]} דק&apos;)
-              </span>
-            </label>
-            <label className="flex flex-col gap-1 text-sm sm:col-span-2">
-              מדריך/ה אחראי/ת
-              <select
-                value={editForm.responsibleInstructorId}
-                onChange={(e) =>
-                  setEditForm((f) => ({ ...f, responsibleInstructorId: e.target.value }))
-                }
-                className="rounded-lg border border-border px-3 py-2 text-sm"
-              >
-                <option value="">ללא</option>
-                {instructors.map((i) => (
-                  <option key={i.id} value={i.id}>
-                    {i.fullName}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="flex flex-col gap-1 text-sm">
-              מיקום
-              <input
-                value={editForm.location}
-                onChange={(e) => setEditForm((f) => ({ ...f, location: e.target.value }))}
-                className="rounded-lg border border-border px-3 py-2 text-sm"
-              />
-            </label>
-            <label className="flex flex-col gap-1 text-sm sm:col-span-2">
-              הערות
-              <textarea
-                value={editForm.notes}
-                onChange={(e) => setEditForm((f) => ({ ...f, notes: e.target.value }))}
-                rows={2}
-                className="rounded-lg border border-border px-3 py-2 text-sm"
-              />
-            </label>
-          </div>
-          {editError && <p className="text-sm text-danger">{editError}</p>}
-          <div className="flex gap-2">
-            <Button className="!px-3 !py-1.5 !text-sm" disabled={isSavingEdit} onClick={handleSaveEdit}>
-              {isSavingEdit ? "שומר..." : "שמירה"}
-            </Button>
-            <Button
-              variant="ghost"
-              className="!px-3 !py-1.5 !text-sm"
-              disabled={isSavingEdit}
-              onClick={() => setIsEditing(false)}
+    <Fragment>
+      {displayRows.map((row, i) => (
+        <tr
+          key={row.participant?.participantId ?? row.child?.id ?? `${lesson.id}-row-${i}`}
+          className="border-t border-border hover:bg-muted/60"
+        >
+          {i === 0 && (
+            <td
+              rowSpan={rowCount}
+              className="sticky right-0 z-10 bg-card px-2 py-2 align-top font-medium text-card-foreground"
             >
-              ביטול
-            </Button>
-          </div>
-        </div>
-      ) : (
-        <>
-          <div className="mb-1 flex flex-wrap items-center gap-2">
-            <span
-              className={`rounded-full px-2.5 py-1 text-xs font-medium ${
-                lesson.isPublished ? "bg-success-muted text-success" : "bg-secondary text-secondary-foreground"
-              }`}
-            >
-              {lesson.isPublished ? "פורסם" : "טיוטה"}
-            </span>
-            <p className="text-base font-bold text-card-foreground">
-              {PRACTICE_TYPE_LABELS[lesson.practiceType]}
-              {lesson.groupName ? ` · קבוצה ${lesson.groupName}` : ""}
-            </p>
-          </div>
-          <p className="mb-1 text-xs text-muted-foreground">
-            {formatHebrewDate(parseDateKey(lesson.date))} · {lesson.startTime}-{lesson.endTime}
-            {lesson.location ? ` · ${lesson.location}` : ""}
-          </p>
-          <p className="mb-1 text-xs text-muted-foreground">
-            מדריך/ה אחראי/ת: {lesson.responsibleInstructorName ?? "ללא"}
-          </p>
-          <p className="mb-1 text-xs text-muted-foreground">
-            {lesson.participantCount} משתתפים · {lesson.childCount} ילדים
-          </p>
-          {lesson.notes && <p className="mb-1 text-xs text-muted-foreground">הערות: {lesson.notes}</p>}
-
-          <div className="mt-2 flex flex-wrap gap-2">
-            <Button variant="ghost" className="!px-3 !py-1.5 !text-sm" onClick={handleToggleDetail}>
-              {isDetailOpen ? "הסתרת פרטים" : "פרטים"}
-            </Button>
-            {canEdit && (
-              <>
-                <Button
-                  variant="ghost"
-                  className="!px-3 !py-1.5 !text-sm"
-                  disabled={isPending}
-                  onClick={startEdit}
-                >
-                  עריכת שיעור
-                </Button>
-                <Button
-                  variant="secondary"
-                  className="!px-3 !py-1.5 !text-sm"
-                  disabled={isPending}
-                  onClick={onTogglePublished}
-                >
-                  {lesson.isPublished ? "ביטול פרסום" : "פרסום"}
-                </Button>
-              </>
-            )}
-          </div>
-
-          {isDetailOpen && (
-            <div className="mt-3 flex flex-col gap-3 border-t border-border pt-3">
-              {isDetailLoading || !detail ? (
-                <p className="text-xs text-muted-foreground">טוען...</p>
-              ) : (
-                <>
-                  <div>
-                    <p className="mb-1 text-xs font-semibold text-muted-foreground">משתתפים</p>
-                    {detail.participants.length === 0 ? (
-                      <p className="text-xs text-muted-foreground">טרם שובצו משתתפים</p>
-                    ) : (
-                      <ul className="flex flex-col gap-1">
-                        {detail.participants.map((p) => (
-                          <li key={p.participantId} className="text-xs text-card-foreground">
-                            {p.traineeName} - {ROLE_LABELS[p.role]}
-                            {p.isManualOverride ? " (שינוי ידני)" : ""}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </div>
-                  <div>
-                    <p className="mb-1 text-xs font-semibold text-muted-foreground">ילדים</p>
-                    {detail.childAssignments.length === 0 ? (
-                      <p className="text-xs text-muted-foreground">טרם שובצו ילדים</p>
-                    ) : (
-                      <ul className="flex flex-col gap-1.5">
-                        {detail.childAssignments.map((c) => (
-                          <li key={c.id} className="rounded-lg bg-muted p-2 text-xs">
-                            <p className="font-medium text-card-foreground">
-                              {c.childFullName}
-                              {c.childAge != null ? ` (גיל ${c.childAge})` : ""}
-                              {c.isAbsent && <span className="text-danger"> · נעדר/ת</span>}
-                            </p>
-                            <p className="text-muted-foreground">
-                              הורה: {c.parentName ?? "—"}
-                              {c.parentPhone ? ` · ${c.parentPhone}` : ""}
-                            </p>
-                            <p className="text-muted-foreground">
-                              סוס: {c.horseName ?? "—"} · ציוד: {c.equipmentNotes ?? "—"}
-                            </p>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </div>
-                </>
-              )}
-            </div>
+              {lesson.startTime}-{lesson.endTime}
+            </td>
           )}
-        </>
+          <td className="px-2 py-2">{row.participant?.traineeName ?? "—"}</td>
+          <td className="px-2 py-2">{row.participant ? ROLE_LABELS[row.participant.role] : "—"}</td>
+          {sharedChildColumn ? (
+            i === 0 && (
+              <>
+                <td rowSpan={rowCount} className="px-2 py-2 align-top">
+                  {soleChild ? `${soleChild.childFullName}${soleChild.isAbsent ? " (נעדר/ת)" : ""}` : "—"}
+                </td>
+                <td rowSpan={rowCount} className="px-2 py-2 align-top">
+                  {soleChild?.childAge ?? "—"}
+                </td>
+                <td rowSpan={rowCount} className="px-2 py-2 align-top">
+                  {soleChild?.childGender ?? "—"}
+                </td>
+                <td rowSpan={rowCount} className="px-2 py-2 align-top">
+                  {soleChild?.horseName ?? "—"}
+                </td>
+                <td rowSpan={rowCount} className="px-2 py-2 align-top">
+                  {soleChild?.equipmentNotes ?? "—"}
+                </td>
+                <td rowSpan={rowCount} className="px-2 py-2 align-top">
+                  {soleChild?.parentName ?? "—"}
+                </td>
+                <td rowSpan={rowCount} className="px-2 py-2 align-top">
+                  {soleChild?.parentPhone ?? "—"}
+                </td>
+              </>
+            )
+          ) : (
+            <>
+              <td className="px-2 py-2">
+                {row.child ? `${row.child.childFullName}${row.child.isAbsent ? " (נעדר/ת)" : ""}` : "—"}
+              </td>
+              <td className="px-2 py-2">{row.child?.childAge ?? "—"}</td>
+              <td className="px-2 py-2">{row.child?.childGender ?? "—"}</td>
+              <td className="px-2 py-2">{row.child?.horseName ?? "—"}</td>
+              <td className="px-2 py-2">{row.child?.equipmentNotes ?? "—"}</td>
+              <td className="px-2 py-2">{row.child?.parentName ?? "—"}</td>
+              <td className="px-2 py-2">{row.child?.parentPhone ?? "—"}</td>
+            </>
+          )}
+          {i === 0 && (
+            <td rowSpan={rowCount} className="px-2 py-2 align-top">
+              <span
+                className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                  lesson.isPublished ? "bg-success-muted text-success" : "bg-secondary text-secondary-foreground"
+                }`}
+              >
+                {lesson.isPublished ? "פורסם" : "טיוטה"}
+              </span>
+            </td>
+          )}
+          {i === 0 && (
+            <td rowSpan={rowCount} className="px-2 py-2 align-top">
+              <div className="flex flex-wrap gap-1.5">
+                {canEdit && (
+                  <Button
+                    variant="ghost"
+                    className="!px-2 !py-1 !text-[11px]"
+                    disabled={isPending}
+                    onClick={onTogglePublished}
+                  >
+                    {lesson.isPublished ? "ביטול פרסום" : "פרסום"}
+                  </Button>
+                )}
+                {canEdit && (
+                  <Button
+                    variant="ghost"
+                    className="!px-2 !py-1 !text-[11px]"
+                    disabled={isPending}
+                    onClick={() => (isEditing ? setIsEditing(false) : startEdit())}
+                  >
+                    {isEditing ? "ביטול" : "עריכה"}
+                  </Button>
+                )}
+              </div>
+            </td>
+          )}
+        </tr>
+      ))}
+      {isEditing && (
+        <tr className="border-t border-border bg-muted/30">
+          <td colSpan={colSpan} className="px-2 py-3">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <label className="flex flex-col gap-1 text-sm">
+                תאריך
+                <input
+                  type="date"
+                  value={editForm.date}
+                  onChange={(e) => setEditForm((f) => ({ ...f, date: e.target.value }))}
+                  className="rounded-lg border border-border px-3 py-2 text-sm"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-sm">
+                שעת התחלה
+                <input
+                  value={editForm.startTime}
+                  onChange={(e) => setEditForm((f) => ({ ...f, startTime: e.target.value }))}
+                  placeholder="HH:MM"
+                  className="rounded-lg border border-border px-3 py-2 text-sm"
+                />
+                <span className="text-xs text-muted-foreground">
+                  שעת סיום משוערת: {previewEndTime(editForm.startTime, lesson.practiceType)} (
+                  {TEACHING_PRACTICE_DURATION_MINUTES[lesson.practiceType]} דק&apos;)
+                </span>
+              </label>
+              <label className="flex flex-col gap-1 text-sm sm:col-span-2">
+                מדריך/ה אחראי/ת
+                <select
+                  value={editForm.responsibleInstructorId}
+                  onChange={(e) => setEditForm((f) => ({ ...f, responsibleInstructorId: e.target.value }))}
+                  className="rounded-lg border border-border px-3 py-2 text-sm"
+                >
+                  <option value="">ללא</option>
+                  {instructors.map((i) => (
+                    <option key={i.id} value={i.id}>
+                      {i.fullName}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="flex flex-col gap-1 text-sm">
+                מיקום
+                <input
+                  value={editForm.location}
+                  onChange={(e) => setEditForm((f) => ({ ...f, location: e.target.value }))}
+                  className="rounded-lg border border-border px-3 py-2 text-sm"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-sm sm:col-span-2">
+                הערות
+                <textarea
+                  value={editForm.notes}
+                  onChange={(e) => setEditForm((f) => ({ ...f, notes: e.target.value }))}
+                  rows={2}
+                  className="rounded-lg border border-border px-3 py-2 text-sm"
+                />
+              </label>
+            </div>
+            {editError && <p className="mt-2 text-sm text-danger">{editError}</p>}
+            <div className="mt-2 flex gap-2">
+              <Button className="!px-3 !py-1.5 !text-sm" disabled={isSavingEdit} onClick={handleSaveEdit}>
+                {isSavingEdit ? "שומר..." : "שמירה"}
+              </Button>
+              <Button
+                variant="ghost"
+                className="!px-3 !py-1.5 !text-sm"
+                disabled={isSavingEdit}
+                onClick={() => setIsEditing(false)}
+              >
+                ביטול
+              </Button>
+            </div>
+          </td>
+        </tr>
       )}
-    </div>
+    </Fragment>
   );
 }

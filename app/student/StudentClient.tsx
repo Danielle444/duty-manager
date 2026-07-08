@@ -21,6 +21,7 @@ import { StudentWeeklyFeedbackSection } from "@/app/student/StudentWeeklyFeedbac
 import { StudentPushSection } from "@/app/student/StudentPushSection";
 import { StudentMessagesSummary } from "@/app/student/StudentMessagesSummary";
 import { StudentAttendanceNotice } from "@/app/student/StudentAttendanceNotice";
+import { StudentTeachingPracticeSection } from "@/app/student/StudentTeachingPracticeSection";
 import { ContactsSection } from "@/lib/components/ContactsSection";
 import { HelpContent } from "@/lib/components/HelpContent";
 import { NotificationsList, type MessagePreviewItem } from "@/lib/components/NotificationsList";
@@ -67,6 +68,7 @@ const STUDENT_MORE_ITEMS: { id: MainTabId; label: string }[] = [
   { id: "profile", label: "פרופיל" },
   { id: "contacts", label: "אנשי קשר" },
   { id: "materials", label: "חומרי קורס" },
+  { id: "teachingPractice", label: "התנסויות מתחילים" },
   { id: "notifications", label: "עדכונים" },
   { id: "weeklyFeedback", label: "משוב שבועי" },
   { id: "help", label: "עזרה" },
@@ -694,6 +696,8 @@ export function StudentClient() {
         {activeTab === "contacts" && <ContactsSection />}
 
         {activeTab === "materials" && <CourseMaterialsSection role="student" />}
+
+        {activeTab === "teachingPractice" && <StudentTeachingPracticeSection studentId={session.id} />}
 
         {activeTab === "weeklyFeedback" && (
           <StudentWeeklyFeedbackSection studentId={session.id} onOpenChange={setHasOpenWeeklyFeedback} />

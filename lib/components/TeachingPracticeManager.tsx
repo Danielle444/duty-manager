@@ -1802,7 +1802,12 @@ export function TeachingPracticeManager({
   }
 
   return (
-    <div className="flex flex-col gap-4">
+    // min-w-0 defensively overrides the default flex-item min-width:auto -
+    // without it, a wide table further down (min-w-[980px], inside its own
+    // overflow-x-auto wrapper) can still inflate every ancestor's shrink-to-
+    // fit width and break the whole admin page horizontally instead of just
+    // scrolling within that one table's wrapper.
+    <div className="flex min-w-0 flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap gap-2">
           {(Object.keys(TAB_LABELS) as Tab[])
@@ -1859,7 +1864,7 @@ export function TeachingPracticeManager({
       )}
 
       {tab === "tracks" && (
-        <div className="flex flex-col gap-4">
+        <div className="flex min-w-0 flex-col gap-4">
           {effectiveCanEdit && (
             <div className="rounded-xl border border-border bg-card p-4">
               <button
@@ -2274,7 +2279,7 @@ export function TeachingPracticeManager({
                         // Horizontal scroll is contained to this table only
                         // (never the page) - min-width keeps columns from
                         // being squeezed illegibly narrow on small screens.
-                        <div className="-mx-1 overflow-x-auto px-1 pb-1">
+                        <div className="-mx-1 min-w-0 overflow-x-auto px-1 pb-1">
                           <table
                             className="w-full border-collapse text-xs"
                             style={{
@@ -2520,7 +2525,7 @@ export function TeachingPracticeManager({
                           אין עדיין שיעורים קבוצתיים בקטגוריה זו.
                         </p>
                       ) : (
-                        <div className="-mx-1 overflow-x-auto px-1 pb-1">
+                        <div className="-mx-1 min-w-0 overflow-x-auto px-1 pb-1">
                           <table
                             className="w-full border-collapse text-xs"
                             style={{
@@ -2819,7 +2824,7 @@ export function TeachingPracticeManager({
                           <h4 className="mb-1 text-xs font-bold text-muted-foreground">
                             שיעורים פרטיים ללא שיוך
                           </h4>
-                          <div className="-mx-1 overflow-x-auto px-1 pb-1">
+                          <div className="-mx-1 min-w-0 overflow-x-auto px-1 pb-1">
                             <table
                               className="w-full border-collapse text-xs"
                               style={{
@@ -3491,7 +3496,7 @@ export function TeachingPracticeManager({
             lungeGroups.length > 0 || beginnerPrivateGroups.length > 0 || beginnerGroupGroups.length > 0;
 
           return (
-            <div className="flex flex-col gap-4">
+            <div className="flex min-w-0 flex-col gap-4">
               {lessonActionError && <p className="text-sm text-danger">{lessonActionError}</p>}
               {lessons === null ? (
                 <p className="text-sm text-muted-foreground">טוען...</p>
@@ -3576,7 +3581,7 @@ export function TeachingPracticeManager({
                       ) : (
                         <>
                           {lungeGroups.length > 0 && (
-                            <div className="flex flex-col gap-3">
+                            <div className="flex min-w-0 flex-col gap-3">
                               <h3 className="rounded-lg bg-secondary px-3 py-2 text-sm font-bold text-secondary-foreground">
                                 לונג׳
                               </h3>
@@ -3598,7 +3603,7 @@ export function TeachingPracticeManager({
                           )}
 
                           {beginnerPrivateGroups.length > 0 && (
-                            <div className="flex flex-col gap-3">
+                            <div className="flex min-w-0 flex-col gap-3">
                               <h3 className="rounded-lg bg-secondary px-3 py-2 text-sm font-bold text-secondary-foreground">
                                 שיעורים פרטניים
                               </h3>
@@ -3620,7 +3625,7 @@ export function TeachingPracticeManager({
                           )}
 
                           {beginnerGroupGroups.length > 0 && (
-                            <div className="flex flex-col gap-3">
+                            <div className="flex min-w-0 flex-col gap-3">
                               <h3 className="rounded-lg bg-secondary px-3 py-2 text-sm font-bold text-secondary-foreground">
                                 שיעורים קבוצתיים
                               </h3>
@@ -4660,7 +4665,7 @@ function LessonGroupTable({
       <h4 className="mb-1.5 rounded-lg bg-muted px-3 py-1.5 text-xs font-bold text-muted-foreground">
         {groupName ? `קבוצה ${groupName}` : "ללא קבוצה"}
       </h4>
-      <div className="-mx-1 overflow-x-auto px-1 pb-1">
+      <div className="-mx-1 min-w-0 overflow-x-auto px-1 pb-1">
         <table className="w-full min-w-[980px] border-collapse text-xs">
           <thead>
             <tr className="bg-muted text-muted-foreground">

@@ -9,6 +9,24 @@ const MAX_HEADER_SCAN_ROWS = 20;
 export type ChildImportRowAction = "create" | "update" | "skip";
 export type ChildImportMatchConfidence = "high" | "low" | "sibling" | null;
 
+// Preview-only structured view of the Excel form's constraint/request
+// columns - never persisted as-is (composeNotes below is what actually gets
+// stored into TeachingPracticeChild.notes). Exists purely so the review UI
+// can show each answer as its own labeled line instead of forcing the admin
+// to parse it back out of the composed notes text before saving.
+export interface TeachingPracticeChildImportConstraints {
+  parentEmail: string;
+  grade: string;
+  city: string;
+  preferredTimesGroupA: string;
+  preferredTimesGroupB: string;
+  previousCourseParticipation: string;
+  priorRidingExperience: string;
+  canAttendAllLessons: string;
+  unavailableDetails: string;
+  specialRequests: string;
+}
+
 export interface TeachingPracticeChildImportCandidate {
   key: string;
   rowNumber: number;
@@ -20,6 +38,7 @@ export interface TeachingPracticeChildImportCandidate {
   parentName: string;
   parentPhone: string;
   notes: string;
+  constraints: TeachingPracticeChildImportConstraints;
   action: ChildImportRowAction;
   matchedChildId: string | null;
   matchConfidence: ChildImportMatchConfidence;
@@ -65,6 +84,24 @@ const HEADER_SYNONYMS: Record<string, string[]> = {
     "פירוט מתי לא יוכל להגיע",
   ],
   specialNotes: ["הערות/ בקשות מיוחדות", "הערות/בקשות מיוחדות", "הערות"],
+};
+
+// The real Google Forms export headers for these three fields are long,
+// free-form sentences (form instructions baked into the header itself) that
+// will never match HEADER_SYNONYMS by exact equality, and are liable to be
+// reworded slightly (punctuation, line breaks) between exports. Detected
+// instead by requiring a set of normalized substrings all be present in the
+// (whitespace/punctuation-stripped) header - each inner array is an AND-group,
+// multiple groups are OR'd together. Only used as a fallback: exact
+// HEADER_SYNONYMS matches above still win first.
+//
+// Group A vs Group B is disambiguated by "קבוצהא" vs "קבוצהב" specifically
+// (not just "קבוצה") since the two real headers are otherwise near-identical
+// ("קבוצה א׳ יתקיימו בימים א+ג..." vs "קבוצה ב יתקיימו בימים ב+ד...").
+const CONTAINS_RULES: Record<string, string[][]> = {
+  groupAHours: [["קבוצהא", "שעות"]],
+  groupBHours: [["קבוצהב", "שעות"]],
+  specialNotes: [["הערות", "בקשותמיוחדות"], ["מגבלתשעות"], ["חברים"], ["אחים"]],
 };
 
 // Strips zero-width/bidi-control characters (common in Hebrew Excel exports),
@@ -128,6 +165,12 @@ function detectHeaderRow(worksheet: Worksheet): HeaderDetection | null {
       for (const [field, synonyms] of Object.entries(HEADER_SYNONYMS)) {
         if (columnIndex[field]) continue;
         if (synonyms.some((s) => normalizeHeader(s) === normalized)) {
+          columnIndex[field] = c;
+        }
+      }
+      for (const [field, andGroups] of Object.entries(CONTAINS_RULES)) {
+        if (columnIndex[field]) continue;
+        if (andGroups.some((group) => group.every((substr) => normalized.includes(substr)))) {
           columnIndex[field] = c;
         }
       }
@@ -205,11 +248,24 @@ function composeNotes(fields: {
   ageRawNote: string | null;
 }): string {
   const lines: string[] = [];
+
+  // Scheduling constraints and free-text requests are the fields most likely
+  // to affect whether this child can actually be placed in a track/lesson -
+  // surfaced first, under their own heading, rather than mixed in with the
+  // rest of the child's general info below.
+  const constraintLines: string[] = [];
+  if (fields.groupAHours) constraintLines.push(`שעות מועדפות קבוצה א: ${fields.groupAHours}`);
+  if (fields.groupBHours) constraintLines.push(`שעות מועדפות קבוצה ב: ${fields.groupBHours}`);
+  if (fields.specialNotes) {
+    constraintLines.push(`הערות / בקשות מיוחדות: ${fields.specialNotes}`);
+  }
+  if (constraintLines.length > 0) {
+    lines.push("אילוצי זמנים ובקשות:", ...constraintLines);
+  }
+
   if (fields.grade) lines.push(`כיתה: ${fields.grade}`);
   if (fields.city) lines.push(`יישוב: ${fields.city}`);
   if (fields.email) lines.push(`אימייל הורה: ${fields.email}`);
-  if (fields.groupAHours) lines.push(`שעות מועדפות קבוצה א: ${fields.groupAHours}`);
-  if (fields.groupBHours) lines.push(`שעות מועדפות קבוצה ב: ${fields.groupBHours}`);
   if (fields.priorInstructorsCourse) {
     lines.push(`השתתפות קודמת בקורס מדריכים: ${fields.priorInstructorsCourse}`);
   }
@@ -224,7 +280,6 @@ function composeNotes(fields: {
       `⚠ אילוץ נוכחות: ${fields.attendanceExceptionDetails || fields.attendanceCommitment}`
     );
   }
-  if (fields.specialNotes) lines.push(`הערות: ${fields.specialNotes}`);
   if (fields.ageRawNote) lines.push(fields.ageRawNote);
   return lines.join("\n");
 }
@@ -303,19 +358,43 @@ async function parseTeachingPracticeChildrenExcelInternal(
     const parentPhoneRaw = cellText(row, columnIndex.parentPhone);
     const parentPhone = parentPhoneRaw ? normalizePhone(parentPhoneRaw) : "";
 
+    const grade = cellText(row, columnIndex.grade);
+    const city = cellText(row, columnIndex.city);
+    const email = cellText(row, columnIndex.email);
+    const groupAHours = cellText(row, columnIndex.groupAHours);
+    const groupBHours = cellText(row, columnIndex.groupBHours);
+    const priorInstructorsCourse = cellText(row, columnIndex.priorInstructorsCourse);
+    const priorRidingExperience = cellText(row, columnIndex.priorRidingExperience);
+    const attendanceCommitment = cellText(row, columnIndex.attendanceCommitment);
+    const attendanceExceptionDetails = cellText(row, columnIndex.attendanceExceptionDetails);
+    const specialNotes = cellText(row, columnIndex.specialNotes);
+
     const notes = composeNotes({
-      grade: cellText(row, columnIndex.grade),
-      city: cellText(row, columnIndex.city),
-      email: cellText(row, columnIndex.email),
-      groupAHours: cellText(row, columnIndex.groupAHours),
-      groupBHours: cellText(row, columnIndex.groupBHours),
-      priorInstructorsCourse: cellText(row, columnIndex.priorInstructorsCourse),
-      priorRidingExperience: cellText(row, columnIndex.priorRidingExperience),
-      attendanceCommitment: cellText(row, columnIndex.attendanceCommitment),
-      attendanceExceptionDetails: cellText(row, columnIndex.attendanceExceptionDetails),
-      specialNotes: cellText(row, columnIndex.specialNotes),
+      grade,
+      city,
+      email,
+      groupAHours,
+      groupBHours,
+      priorInstructorsCourse,
+      priorRidingExperience,
+      attendanceCommitment,
+      attendanceExceptionDetails,
+      specialNotes,
       ageRawNote: parsedAge.rawNote,
     });
+
+    const constraints: TeachingPracticeChildImportConstraints = {
+      parentEmail: email,
+      grade,
+      city,
+      preferredTimesGroupA: groupAHours,
+      preferredTimesGroupB: groupBHours,
+      previousCourseParticipation: priorInstructorsCourse,
+      priorRidingExperience,
+      canAttendAllLessons: attendanceCommitment,
+      unavailableDetails: attendanceExceptionDetails,
+      specialRequests: specialNotes,
+    };
 
     const fullName = normalizeFullName(`${firstName} ${lastName}`.trim());
 
@@ -362,6 +441,7 @@ async function parseTeachingPracticeChildrenExcelInternal(
       parentName,
       parentPhone,
       notes,
+      constraints,
       action,
       matchedChildId,
       matchConfidence,

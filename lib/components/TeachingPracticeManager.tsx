@@ -2855,10 +2855,112 @@ export function TeachingPracticeManager({
                           <span>הורה: {c.parentName || "—"}</span>
                           <span>טלפון: {c.parentPhone || "—"}</span>
                         </div>
+                        {(c.constraints.preferredTimesGroupA ||
+                          c.constraints.preferredTimesGroupB ||
+                          c.constraints.specialRequests) && (
+                          <details
+                            open
+                            className="mt-2 rounded-lg border border-warning bg-warning-muted p-2"
+                          >
+                            <summary className="cursor-pointer text-sm font-semibold text-warning">
+                              אילוצי זמנים ובקשות
+                            </summary>
+                            <dl className="mt-2 flex flex-col gap-1 text-sm text-card-foreground">
+                              {c.constraints.preferredTimesGroupA && (
+                                <div>
+                                  <dt className="inline font-medium">שעות מועדפות קבוצה א: </dt>
+                                  <dd className="inline">{c.constraints.preferredTimesGroupA}</dd>
+                                </div>
+                              )}
+                              {c.constraints.preferredTimesGroupB && (
+                                <div>
+                                  <dt className="inline font-medium">שעות מועדפות קבוצה ב: </dt>
+                                  <dd className="inline">{c.constraints.preferredTimesGroupB}</dd>
+                                </div>
+                              )}
+                              {c.constraints.specialRequests && (
+                                <div>
+                                  <dt className="inline font-medium">
+                                    הערות / בקשות מיוחדות:{" "}
+                                  </dt>
+                                  <dd className="inline">{c.constraints.specialRequests}</dd>
+                                </div>
+                              )}
+                            </dl>
+                          </details>
+                        )}
+                        {(c.constraints.canAttendAllLessons ||
+                          c.constraints.unavailableDetails ||
+                          c.constraints.priorRidingExperience ||
+                          c.constraints.previousCourseParticipation ||
+                          c.constraints.grade ||
+                          c.constraints.city ||
+                          c.constraints.parentEmail) && (
+                          <details open className="mt-2 rounded-lg border border-border p-2">
+                            <summary className="cursor-pointer text-sm font-medium text-card-foreground">
+                              מידע נוסף על הילד
+                            </summary>
+                            <dl className="mt-2 flex flex-col gap-1 text-sm text-muted-foreground">
+                              {c.constraints.canAttendAllLessons && (
+                                <div>
+                                  <dt className="inline font-medium">
+                                    האם יכול/ה להגיע לכל ששת השיעורים:{" "}
+                                  </dt>
+                                  <dd className="inline">{c.constraints.canAttendAllLessons}</dd>
+                                </div>
+                              )}
+                              {c.constraints.unavailableDetails && (
+                                <div>
+                                  <dt className="inline font-medium">
+                                    פירוט מתי לא יוכל/תוכל להגיע:{" "}
+                                  </dt>
+                                  <dd className="inline">{c.constraints.unavailableDetails}</dd>
+                                </div>
+                              )}
+                              {c.constraints.priorRidingExperience && (
+                                <div>
+                                  <dt className="inline font-medium">ניסיון קודם ברכיבה: </dt>
+                                  <dd className="inline">{c.constraints.priorRidingExperience}</dd>
+                                </div>
+                              )}
+                              {c.constraints.previousCourseParticipation && (
+                                <div>
+                                  <dt className="inline font-medium">השתתפות קודמת בקורס: </dt>
+                                  <dd className="inline">
+                                    {c.constraints.previousCourseParticipation}
+                                  </dd>
+                                </div>
+                              )}
+                              {c.constraints.grade && (
+                                <div>
+                                  <dt className="inline font-medium">כיתה: </dt>
+                                  <dd className="inline">{c.constraints.grade}</dd>
+                                </div>
+                              )}
+                              {c.constraints.city && (
+                                <div>
+                                  <dt className="inline font-medium">יישוב: </dt>
+                                  <dd className="inline">{c.constraints.city}</dd>
+                                </div>
+                              )}
+                              {c.constraints.parentEmail && (
+                                <div>
+                                  <dt className="inline font-medium">אימייל הורה: </dt>
+                                  <dd className="inline">{c.constraints.parentEmail}</dd>
+                                </div>
+                              )}
+                            </dl>
+                          </details>
+                        )}
                         {c.notes && (
-                          <p className="mt-2 whitespace-pre-line rounded-lg bg-muted p-2 text-xs text-muted-foreground">
-                            {c.notes}
-                          </p>
+                          <details className="mt-2 rounded-lg bg-muted p-2">
+                            <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
+                              הערות שישמרו בכרטיס הילד
+                            </summary>
+                            <p className="mt-1 whitespace-pre-line text-xs text-muted-foreground">
+                              {c.notes}
+                            </p>
+                          </details>
                         )}
                         {c.matchConfidence === "high" && (
                           <p className="mt-2 text-xs text-success">

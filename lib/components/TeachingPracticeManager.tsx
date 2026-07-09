@@ -514,6 +514,8 @@ export function TeachingPracticeManager({
   actorId,
   canManageAssignments,
   canManageHorses,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- Stage B: threaded through, read starting in Stage C's feedback modal.
+  canEditTeachingPracticeFeedback = false,
   students,
   instructors,
 }: {
@@ -522,6 +524,9 @@ export function TeachingPracticeManager({
   actorId: string | null;
   canManageAssignments: boolean;
   canManageHorses: boolean;
+  // Stage B: threaded through and type-ready for the Stage C feedback modal;
+  // not read by any UI yet.
+  canEditTeachingPracticeFeedback?: boolean;
   students: StudentOption[];
   instructors: InstructorOption[];
 }) {
@@ -545,7 +550,9 @@ export function TeachingPracticeManager({
   const effectiveCanEdit = canEdit && isEditMode;
   const effectiveCanEditHorseFields = canEditHorseFields && isEditMode;
 
-  const [tab, setTab] = useState<Tab>("tracks");
+  // Instructors land on the generated-lessons view by default (that's where
+  // feedback tasks live); admin keeps opening on the fixed-structure tab.
+  const [tab, setTab] = useState<Tab>(role === "instructor" ? "lessons" : "tracks");
 
   const [tracks, setTracks] = useState<TeachingPracticeTrackSummary[] | null>(null);
   const [lessons, setLessons] = useState<TeachingPracticeLessonSummary[] | null>(null);

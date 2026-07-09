@@ -118,6 +118,7 @@ interface StoredSession {
   canEditHorseFeeding: boolean;
   canManageTeachingPracticeAssignments: boolean;
   canManageTeachingPracticeHorses: boolean;
+  canEditTeachingPracticeFeedback: boolean;
 }
 
 interface StudentOption {
@@ -693,6 +694,7 @@ export function InstructorClient({
             instructorId={session.id}
             canManageAssignments={session.canManageTeachingPracticeAssignments}
             canManageHorses={session.canManageTeachingPracticeHorses}
+            canEditTeachingPracticeFeedback={session.canEditTeachingPracticeFeedback}
             students={students}
             instructors={instructors}
           />

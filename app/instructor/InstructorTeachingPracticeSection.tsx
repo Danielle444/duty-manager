@@ -18,12 +18,14 @@ export function InstructorTeachingPracticeSection({
   instructorId,
   canManageAssignments,
   canManageHorses,
+  canEditTeachingPracticeFeedback,
   students,
   instructors,
 }: {
   instructorId: string;
   canManageAssignments: boolean;
   canManageHorses: boolean;
+  canEditTeachingPracticeFeedback: boolean;
   students: StudentOption[];
   instructors: InstructorOption[];
 }) {
@@ -33,6 +35,7 @@ export function InstructorTeachingPracticeSection({
       actorId={instructorId}
       canManageAssignments={canManageAssignments}
       canManageHorses={canManageHorses}
+      canEditTeachingPracticeFeedback={canEditTeachingPracticeFeedback}
       students={students}
       instructors={instructors}
     />

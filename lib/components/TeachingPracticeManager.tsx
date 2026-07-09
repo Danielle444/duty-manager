@@ -219,6 +219,28 @@ function getTraineeAtRotation(
   return track.trainees.find((t) => t.rotationOrder === rotationOrder) ?? null;
 }
 
+// Same-parent grouping for the child click-highlight feature - trim +
+// collapse duplicate whitespace for the name, strip spaces/dashes/dots/
+// parens for the phone, so trivially-different formatting of the same
+// parent (extra spaces, "050-1234567" vs "0501234567") still groups
+// together. A key is only ever produced when BOTH fields are present and
+// non-blank after normalization - a child missing either field never gets
+// grouped with anyone, rather than risking a false "same parent" match on
+// two blank values.
+function normalizeParentName(name: string): string {
+  return name.trim().replace(/\s+/g, " ");
+}
+function normalizeParentPhone(phone: string): string {
+  return phone.replace(/[\s\-().]/g, "");
+}
+function buildParentKey(parentName: string | null | undefined, parentPhone: string | null | undefined): string | null {
+  if (!parentName || !parentPhone) return null;
+  const normName = normalizeParentName(parentName);
+  const normPhone = normalizeParentPhone(parentPhone);
+  if (!normName || !normPhone) return null;
+  return `${normName}|${normPhone}`;
+}
+
 // 1.0-5.0 in 0.5 steps, stored as ratingHalfPoints 2-10 - same convention as
 // RidingLessonNote.ratingHalfPoints/RATING_OPTIONS in the riding feedback UI.
 const FEEDBACK_RATING_OPTIONS = [2, 3, 4, 5, 6, 7, 8, 9, 10];
@@ -905,6 +927,18 @@ export function TeachingPracticeManager({
   // fields from both, but they only ever join on childId.
   const childById = useMemo(() => new Map((children ?? []).map((c) => [c.id, c])), [children]);
 
+  // Same-parent click-highlight - parentName/parentPhone already live on the
+  // loaded child-registry row (children state, above), so no new fetch is
+  // needed for this feature.
+  const parentKeyByChildId = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const c of children ?? []) {
+      const key = buildParentKey(c.parentName, c.parentPhone);
+      if (key) map.set(c.id, key);
+    }
+    return map;
+  }, [children]);
+
   // groupTrackId is only ever set on a BEGINNER_PRIVATE track - this maps
   // each BEGINNER_GROUP track's id to every private track linking to it, so
   // the Beginners table can render one block per group track with its
@@ -945,6 +979,43 @@ export function TeachingPracticeManager({
     setSelectedHighlightedTraineeId(null);
     setSelectedHighlightedTraineeName(null);
   }
+
+  // View-mode-only click-to-highlight for a child's every appearance PLUS
+  // every other child sharing the same (normalized) parent name+phone - see
+  // buildParentKey/parentKeyByChildId above. Same toggle/switch/clear
+  // semantics as the trainee highlight above, kept as separate state so a
+  // trainee selection and a child selection can coexist independently.
+  const [selectedHighlightedChildId, setSelectedHighlightedChildId] = useState<string | null>(null);
+  const [selectedHighlightedChildName, setSelectedHighlightedChildName] = useState<string | null>(null);
+  const [selectedHighlightedParentKey, setSelectedHighlightedParentKey] = useState<string | null>(null);
+
+  function handleToggleChildHighlight(childId: string) {
+    const isSameAsCurrent = selectedHighlightedChildId === childId;
+    if (isSameAsCurrent) {
+      setSelectedHighlightedChildId(null);
+      setSelectedHighlightedChildName(null);
+      setSelectedHighlightedParentKey(null);
+      return;
+    }
+    setSelectedHighlightedChildId(childId);
+    setSelectedHighlightedChildName(childById.get(childId)?.fullName ?? childId);
+    setSelectedHighlightedParentKey(parentKeyByChildId.get(childId) ?? null);
+  }
+
+  function handleClearChildHighlight() {
+    setSelectedHighlightedChildId(null);
+    setSelectedHighlightedChildName(null);
+    setSelectedHighlightedParentKey(null);
+  }
+
+  // Every OTHER child (registry-wide, not just currently-assigned ones)
+  // sharing the selected parentKey - for the "אותו הורה: [names]" line.
+  const sameParentChildNames = useMemo(() => {
+    if (!selectedHighlightedParentKey) return [];
+    return (children ?? [])
+      .filter((c) => c.id !== selectedHighlightedChildId && buildParentKey(c.parentName, c.parentPhone) === selectedHighlightedParentKey)
+      .map((c) => c.fullName);
+  }, [children, selectedHighlightedParentKey, selectedHighlightedChildId]);
 
   // Stage 1 - read-only trainee-assignment suggestion preview. Admin-only
   // (role check on the button itself, below); scoped to whichever real group
@@ -2749,6 +2820,31 @@ export function TeachingPracticeManager({
                 </div>
               )}
 
+              {!effectiveCanEdit && (
+                <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                  <span>לחיצה על שם ילד/ה מסמנת הופעות נוספות ואותו הורה.</span>
+                  {selectedHighlightedChildId && (
+                    <>
+                      <span className="rounded-full bg-primary/20 px-2 py-0.5 font-medium text-primary">
+                        מסומן: {selectedHighlightedChildName}
+                      </span>
+                      {sameParentChildNames.length > 0 && (
+                        <span className="rounded-full bg-warning-muted px-2 py-0.5 font-medium text-warning">
+                          אותו הורה: {sameParentChildNames.join(", ")}
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={handleClearChildHighlight}
+                        className="text-primary underline decoration-dotted"
+                      >
+                        נקה סימון
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+
               {/* Column visibility (Stage B) - a display preference only,
                   available in both view and edit mode, and independent of
                   canEdit/effectiveCanEdit entirely. Applies to the LUNGE,
@@ -2965,6 +3061,10 @@ export function TeachingPracticeManager({
                                       editable={effectiveCanEdit && row.track.children.length <= 1}
                                       disabled={savingCellKey === `${row.track.id}-child`}
                                       onAssign={(childId) => handleInlineAssignTrackChild(row.track, childId)}
+                                      parentKey={parentKeyByChildId.get(row.track.children[0]?.childId ?? "") ?? null}
+                                      highlightedChildId={selectedHighlightedChildId}
+                                      highlightedParentKey={selectedHighlightedParentKey}
+                                      onToggleHighlight={handleToggleChildHighlight}
                                     />
                                   )}
                                   {columnVisibility.childLastName && (
@@ -3286,6 +3386,10 @@ export function TeachingPracticeManager({
                                                   }
                                                   onOpen={() => openTrackManager(privateRow.track)}
                                                   isActive={privateRow.track.isActive}
+                                                  parentKey={parentKeyByChildId.get(privateRow.track.children[0]?.childId ?? "") ?? null}
+                                                  highlightedChildId={selectedHighlightedChildId}
+                                                  highlightedParentKey={selectedHighlightedParentKey}
+                                                  onToggleHighlight={handleToggleChildHighlight}
                                                 />
                                               )}
                                               {columnVisibility.childLastName && (
@@ -3529,6 +3633,10 @@ export function TeachingPracticeManager({
                                         onAssign={(childId) => handleInlineAssignTrackChild(row.track, childId)}
                                         onOpen={() => openTrackManager(row.track)}
                                         isActive={row.track.isActive}
+                                        parentKey={parentKeyByChildId.get(row.track.children[0]?.childId ?? "") ?? null}
+                                        highlightedChildId={selectedHighlightedChildId}
+                                        highlightedParentKey={selectedHighlightedParentKey}
+                                        onToggleHighlight={handleToggleChildHighlight}
                                       />
                                     )}
                                     {columnVisibility.childLastName && (
@@ -5600,6 +5708,10 @@ function ChildAssignmentCell({
   onOpen,
   isActive = true,
   sticky,
+  parentKey,
+  highlightedChildId,
+  highlightedParentKey,
+  onToggleHighlight,
 }: {
   value: string;
   label: string;
@@ -5610,16 +5722,49 @@ function ChildAssignmentCell({
   onOpen?: () => void;
   isActive?: boolean;
   sticky?: boolean;
+  // This cell's own resolved same-parent key (from parentKeyByChildId), so
+  // it can tell whether IT belongs to the currently-selected parent group -
+  // null when this child has no usable parent name+phone pair.
+  parentKey?: string | null;
+  highlightedChildId?: string | null;
+  highlightedParentKey?: string | null;
+  onToggleHighlight?: (childId: string) => void;
 }) {
   if (!editable) {
+    // Only a real, assigned child (non-empty value) is clickable - "—" (no
+    // child assigned) has nothing to highlight. stopPropagation keeps this
+    // click from also firing the row's/ClickableCell's own onOpen.
+    const isSameChild = value !== "" && value === highlightedChildId;
+    const isSameParent = !isSameChild && value !== "" && !!parentKey && parentKey === highlightedParentKey;
+    const nameContent =
+      value && onToggleHighlight ? (
+        <span
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleHighlight(value);
+          }}
+          className={`cursor-pointer rounded px-1 -mx-1 py-0.5 transition-colors ${
+            isSameChild
+              ? "bg-primary/20 font-semibold text-primary"
+              : isSameParent
+                ? "bg-warning-muted text-warning"
+                : "hover:bg-muted"
+          }`}
+        >
+          {label}
+        </span>
+      ) : (
+        label
+      );
+
     if (onOpen) {
       return (
         <ClickableCell isActive={isActive} onOpen={onOpen} sticky={sticky}>
-          {label}
+          {nameContent}
         </ClickableCell>
       );
     }
-    return <td className={`px-2 py-2 ${sticky ? "sticky right-0 z-10 bg-card" : ""}`}>{label}</td>;
+    return <td className={`px-2 py-2 ${sticky ? "sticky right-0 z-10 bg-card" : ""}`}>{nameContent}</td>;
   }
   return (
     <td

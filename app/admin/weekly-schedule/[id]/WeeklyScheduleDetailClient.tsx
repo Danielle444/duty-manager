@@ -430,62 +430,75 @@ export function WeeklyScheduleDetailClient({
             const isNoDuty = status?.isNoDuty ?? false;
             return (
             <div key={dk} className="rounded-2xl border border-border bg-card p-5">
-              <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg bg-secondary px-3 py-2">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-base font-bold text-secondary-foreground">
-                    {formatHebrewWeekday(parseDateKey(dk))} · {formatHebrewDate(parseDateKey(dk))}
-                  </span>
-                  {isNoDuty && (
-                    <span className="rounded-full bg-warning-muted px-3 py-1 text-xs font-medium text-warning">
-                      אין תורנויות ביום זה
+              {/* Bounded internal scroll, own box per day - each day card
+                  gets its own independent scroll region rather than one
+                  page-level sticky header handing off between days, so
+                  there's no possibility of two days' headers colliding or
+                  glitching under "כל הימים" (each is fully isolated). The
+                  header bar's sticky top-0 below resolves against *this* box
+                  only, never the page, so it can't collide with the admin
+                  layout's own sticky header either - same containment
+                  reasoning as ScheduleGrid.tsx/TeachingPracticeManager.tsx.
+                  A day with only a few items never hits max-h, so it never
+                  looks boxed-in. */}
+              <div className="max-h-[60vh] overflow-y-auto">
+                <div className="sticky top-0 z-10 mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg bg-secondary px-3 py-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-base font-bold text-secondary-foreground">
+                      {formatHebrewWeekday(parseDateKey(dk))} · {formatHebrewDate(parseDateKey(dk))}
                     </span>
-                  )}
-                </div>
-                <button
-                  type="button"
-                  disabled={isPending || !noDutyStatus}
-                  onClick={() => handleToggleNoDuty(dk, isNoDuty)}
-                  className="rounded-full bg-card px-3 py-1 text-xs font-medium text-card-foreground underline decoration-dotted hover:bg-muted disabled:opacity-50"
-                >
-                  {isNoDuty ? "בטל סימון ללא תורנויות" : "סמן כיום ללא תורנויות"}
-                </button>
-              </div>
-
-              {isNoDuty && status && status.assignmentCount > 0 && (
-                <div className="mb-3 rounded-lg bg-danger-muted p-3 text-sm text-danger">
-                  קיימים {status.assignmentCount} שיבוצי תורנות ליום זה שלא נמחקו אוטומטית. ניתן
-                  לטפל בהם ידנית בעמוד שיבוץ.
-                </div>
-              )}
-
-              {groupFilter === "all" ? (
-                <ScheduleTimeGrid
-                  items={dayItems}
-                  renderCard={(item) =>
-                    renderScheduleCard(item, openEdit, openDelete, openManageRiding, true)
-                  }
-                />
-              ) : (
-                // A single-group filter can still include both the target
-                // group's rows and null-group "שתי הקבוצות" rows (see
-                // filteredItems above), so a continuous activity still needs
-                // the same coalescing ScheduleTimeGrid applies internally, or
-                // it renders as separate boxes here - and since coalescing
-                // buckets by groupName and concatenates each bucket in
-                // first-encountered order (not merged by time), the result
-                // needs an explicit re-sort by time afterward.
-                <div className="flex flex-col gap-3">
-                  {[...coalesceAdjacentSameActivity(dayItems)]
-                    .sort(
-                      (a, b) =>
-                        a.startTime.localeCompare(b.startTime) ||
-                        a.endTime.localeCompare(b.endTime)
-                    )
-                    .map((item) =>
-                      renderScheduleCard(item, openEdit, openDelete, openManageRiding)
+                    {isNoDuty && (
+                      <span className="rounded-full bg-warning-muted px-3 py-1 text-xs font-medium text-warning">
+                        אין תורנויות ביום זה
+                      </span>
                     )}
+                  </div>
+                  <button
+                    type="button"
+                    disabled={isPending || !noDutyStatus}
+                    onClick={() => handleToggleNoDuty(dk, isNoDuty)}
+                    className="rounded-full bg-card px-3 py-1 text-xs font-medium text-card-foreground underline decoration-dotted hover:bg-muted disabled:opacity-50"
+                  >
+                    {isNoDuty ? "בטל סימון ללא תורנויות" : "סמן כיום ללא תורנויות"}
+                  </button>
                 </div>
-              )}
+
+                {isNoDuty && status && status.assignmentCount > 0 && (
+                  <div className="mb-3 rounded-lg bg-danger-muted p-3 text-sm text-danger">
+                    קיימים {status.assignmentCount} שיבוצי תורנות ליום זה שלא נמחקו אוטומטית. ניתן
+                    לטפל בהם ידנית בעמוד שיבוץ.
+                  </div>
+                )}
+
+                {groupFilter === "all" ? (
+                  <ScheduleTimeGrid
+                    items={dayItems}
+                    renderCard={(item) =>
+                      renderScheduleCard(item, openEdit, openDelete, openManageRiding, true)
+                    }
+                  />
+                ) : (
+                  // A single-group filter can still include both the target
+                  // group's rows and null-group "שתי הקבוצות" rows (see
+                  // filteredItems above), so a continuous activity still needs
+                  // the same coalescing ScheduleTimeGrid applies internally, or
+                  // it renders as separate boxes here - and since coalescing
+                  // buckets by groupName and concatenates each bucket in
+                  // first-encountered order (not merged by time), the result
+                  // needs an explicit re-sort by time afterward.
+                  <div className="flex flex-col gap-3">
+                    {[...coalesceAdjacentSameActivity(dayItems)]
+                      .sort(
+                        (a, b) =>
+                          a.startTime.localeCompare(b.startTime) ||
+                          a.endTime.localeCompare(b.endTime)
+                      )
+                      .map((item) =>
+                        renderScheduleCard(item, openEdit, openDelete, openManageRiding)
+                      )}
+                  </div>
+                )}
+              </div>
             </div>
             );
           })}

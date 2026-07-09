@@ -1125,6 +1125,15 @@ export function TeachingPracticeManager({
       .finally(() => setFixedStructureCheckLoading(false));
   }
 
+  // Clears the result panel (and, implicitly, the stale-result banner, since
+  // isFixedStructureCheckStale requires fixedStructureCheckResult !== null) -
+  // no reload needed, and the check can be re-run freely afterward.
+  function handleClearFixedStructureCheck() {
+    setFixedStructureCheckResult(null);
+    setFixedStructureCheckGroupName(null);
+    setFixedStructureCheckError(null);
+  }
+
   // Column visibility (Stage B) - starts at "everything visible" on every
   // render (including the server-rendered first paint) and only switches to
   // the user's stored preference after mount, in its own effect - loading
@@ -2650,6 +2659,7 @@ export function TeachingPracticeManager({
                   isStale={isFixedStructureCheckStale}
                   tracks={tracks}
                   childrenList={children}
+                  onClear={handleClearFixedStructureCheck}
                 />
               )}
 
@@ -4977,11 +4987,13 @@ function TeachingPracticeFixedStructureCheckPanel({
   isStale,
   tracks,
   childrenList,
+  onClear,
 }: {
   result: TeachingPracticeFixedStructureCheckResult;
   isStale: boolean;
   tracks: TeachingPracticeTrackSummary[] | null;
   childrenList: TeachingPracticeChildRow[] | null;
+  onClear: () => void;
 }) {
   const trackLabelById = useMemo(() => {
     const map = new Map<string, string>();
@@ -5009,6 +5021,13 @@ function TeachingPracticeFixedStructureCheckPanel({
 
   return (
     <div className="flex flex-col gap-4 rounded-xl border border-border bg-card p-4">
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold text-card-foreground">תוצאות בדיקת שיבוץ - קבוצה {result.groupName}</h3>
+        <Button type="button" variant="ghost" className="!px-3 !py-1.5 !text-xs" onClick={onClear}>
+          סגור תוצאות
+        </Button>
+      </div>
+
       {isStale && (
         <p className="rounded-lg bg-muted px-3 py-2 text-xs text-muted-foreground">
           התוצאות הבאות הן מבדיקה קודמת עבור קבוצה {result.groupName} - הקבוצה הנבחרת השתנתה מאז. הריצו את הבדיקה

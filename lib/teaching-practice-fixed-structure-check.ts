@@ -102,6 +102,45 @@ function timeWindowsOverlap(aStart: number, aEnd: number, bStart: number, bEnd: 
   return aStart < bEnd && bStart < aEnd;
 }
 
+// Business rule (broadened): a trainee appearing in BOTH a BEGINNER_PRIVATE
+// slot and a BEGINNER_GROUP slot within the same group is always expected/
+// allowed, even when the two tracks are not directly linked via
+// groupTrackId - the beginner private/group flow is understood to run
+// alongside itself by design. Used ONLY for trainee-overlap suppression
+// (see the overlap loop below) - practiceType combination is the only thing
+// that matters here, unlike the stricter, groupTrackId-checked
+// isExpectedLinkedBeginnerPair below (still used for the child-duplicate
+// check, where the exemption must stay scoped to the actual linked pair,
+// not any private/group pair in the group).
+function isBeginnerPrivateGroupPair(
+  a: { practiceType: TeachingPracticeTypeValue },
+  b: { practiceType: TeachingPracticeTypeValue }
+): boolean {
+  return (
+    (a.practiceType === "BEGINNER_PRIVATE" && b.practiceType === "BEGINNER_GROUP") ||
+    (a.practiceType === "BEGINNER_GROUP" && b.practiceType === "BEGINNER_PRIVATE")
+  );
+}
+
+// Business rule: a BEGINNER_PRIVATE track and its OWN linked BEGINNER_GROUP
+// track are expected to share children (the group's own children rows are
+// derived from its linked private tracks) - this is normal, not a
+// duplicate, and must never be flagged. Any other pairing (two unrelated
+// tracks, two LUNGE tracks, a private/group pair that are NOT linked to
+// each other, etc.) is still a genuine potential duplicate. Used ONLY for
+// the child-duplicate-across-group check below - deliberately stricter
+// than isBeginnerPrivateGroupPair above (which is used for trainee-overlap
+// suppression and does not require an actual groupTrackId link).
+function isExpectedLinkedBeginnerPair(
+  a: { trackId: string; practiceType: TeachingPracticeTypeValue; groupTrackId: string | null },
+  b: { trackId: string; practiceType: TeachingPracticeTypeValue; groupTrackId: string | null }
+): boolean {
+  if (!isBeginnerPrivateGroupPair(a, b)) return false;
+  const privateSide = a.practiceType === "BEGINNER_PRIVATE" ? a : b;
+  const groupSide = a.practiceType === "BEGINNER_GROUP" ? a : b;
+  return privateSide.groupTrackId === groupSide.trackId;
+}
+
 function emptySummary(): TeachingPracticeFixedStructureCheckResult["summary"] {
   return { errorCount: 0, warningCount: 0, infoCount: 0, tracksChecked: 0, traineesChecked: 0, childrenChecked: 0 };
 }
@@ -137,8 +176,12 @@ export function checkTeachingPracticeFixedStructure(
     }
   }
 
+  const childNameById = new Map<string, string>();
   for (const track of tracks) {
     for (const t of track.trainees) traineeNameById.set(t.traineeId, t.fullName);
+    for (const c of track.children) {
+      if (c.childId) childNameById.set(c.childId, c.fullName ?? c.childId);
+    }
   }
 
   // -------------------------------------------------------------------
@@ -294,9 +337,14 @@ export function checkTeachingPracticeFixedStructure(
   //    rotationOrder 0. Informational appearances: BEGINNER_PRIVATE
   //    rotationOrder 1, every BEGINNER_GROUP slot - matches the stated
   //    business rule that these never create noisy required-seat issues.
+  //    ANY BEGINNER_PRIVATE <-> BEGINNER_GROUP pair for the same trainee is
+  //    EXPECTED (see isBeginnerPrivateGroupPair) - skipped entirely, never
+  //    reported at any severity, even when the two tracks aren't directly
+  //    linked via groupTrackId (broadened business rule).
   // -------------------------------------------------------------------
   interface Appearance {
     trackId: string;
+    practiceType: TeachingPracticeTypeValue;
     startTime: string;
     endTime: string;
     required: boolean;
@@ -315,7 +363,13 @@ export function checkTeachingPracticeFixedStructure(
       const required =
         track.practiceType === "LUNGE" || (track.practiceType === "BEGINNER_PRIVATE" && t.rotationOrder === 0);
       const list = appearancesByTrainee.get(t.traineeId) ?? [];
-      list.push({ trackId: track.trackId, startTime: track.defaultStartTime, endTime: track.defaultEndTime, required });
+      list.push({
+        trackId: track.trackId,
+        practiceType: track.practiceType,
+        startTime: track.defaultStartTime,
+        endTime: track.defaultEndTime,
+        required,
+      });
       appearancesByTrainee.set(t.traineeId, list);
     }
   }
@@ -340,6 +394,10 @@ export function checkTeachingPracticeFixedStructure(
         const bEnd = parseTimeToMinutes(b.endTime);
         if (aStart == null || aEnd == null || bStart == null || bEnd == null) continue; // already covered above
         if (!timeWindowsOverlap(aStart, aEnd, bStart, bEnd)) continue;
+        // Expected: any BEGINNER_PRIVATE <-> BEGINNER_GROUP overlap for the
+        // same trainee is normal, not a conflict - even when the two tracks
+        // aren't directly linked via groupTrackId (broadened business rule).
+        if (isBeginnerPrivateGroupPair(a, b)) continue;
 
         const bothRequired = a.required && b.required;
         addIssue({
@@ -419,6 +477,48 @@ export function checkTeachingPracticeFixedStructure(
         severity: "info",
         message: "למסלול זה אין ילד/ה משויך/ת",
         trackId: track.trackId,
+      });
+    }
+  }
+
+  // Duplicate child ACROSS the group (not just within one track, above) -
+  // same childId appearing on more than one active track in this group.
+  // Expected exception: a BEGINNER_PRIVATE track and its own linked
+  // BEGINNER_GROUP track are supposed to share children (the group's own
+  // children rows are derived from its linked private tracks) - that
+  // specific pairing is never flagged, same exemption as the trainee
+  // overlap check above (isExpectedLinkedBeginnerPair). Any other repeat
+  // (two unrelated tracks, two private tracks, etc.) is a genuine problem.
+  const childAppearances = new Map<
+    string,
+    { trackId: string; practiceType: TeachingPracticeTypeValue; groupTrackId: string | null }[]
+  >();
+  for (const track of tracks) {
+    for (const c of track.children) {
+      if (c.childId === null) continue;
+      const list = childAppearances.get(c.childId) ?? [];
+      list.push({ trackId: track.trackId, practiceType: track.practiceType, groupTrackId: track.groupTrackId });
+      childAppearances.set(c.childId, list);
+    }
+  }
+  for (const [childId, appearances] of childAppearances) {
+    if (appearances.length < 2) continue;
+    let hasGenuineDuplicate = false;
+    for (let i = 0; i < appearances.length && !hasGenuineDuplicate; i++) {
+      for (let j = i + 1; j < appearances.length; j++) {
+        if (!isExpectedLinkedBeginnerPair(appearances[i], appearances[j])) {
+          hasGenuineDuplicate = true;
+          break;
+        }
+      }
+    }
+    if (hasGenuineDuplicate) {
+      addIssue({
+        kind: "duplicate_child_across_group",
+        severity: "error",
+        message: `הילד/ה ${childNameById.get(childId) ?? childId} משובץ/ת ביותר ממקום אחד במבנה הקבוע.`,
+        childId,
+        relatedTrackIds: appearances.map((a) => a.trackId),
       });
     }
   }

@@ -35,6 +35,7 @@ import {
   type TeachingPracticeRoleValue,
   type TeachingPracticeTypeValue,
 } from "@/lib/teaching-practice-rotation";
+import { hasMeaningfulTeachingPracticeFeedback } from "@/lib/teaching-practice-feedback";
 
 // Mirrors VALID_GROUP_NAMES in lib/actions/teaching-practice.ts (not
 // exported from there) - same small, deliberate, self-contained duplication
@@ -294,7 +295,15 @@ async function previewTeachingPracticeFixedStructureSyncInternal(
       where: { trackId: track.id },
       orderBy: [{ date: "asc" }, { startTime: "asc" }, { createdAt: "asc" }, { id: "asc" }],
       include: {
-        participants: { select: { id: true, traineeId: true, role: true, isManualOverride: true, feedback: { select: { id: true } } } },
+        participants: {
+          select: {
+            id: true,
+            traineeId: true,
+            role: true,
+            isManualOverride: true,
+            feedback: { select: { feedback: true, ratingHalfPoints: true } },
+          },
+        },
         childAssignments: { select: { id: true, childId: true, horseName: true, equipmentNotes: true, isAbsent: true } },
       },
     });
@@ -310,7 +319,7 @@ async function previewTeachingPracticeFixedStructureSyncInternal(
         result.lessonsSkippedPastDate += 1;
         continue;
       }
-      if (lesson.participants.some((p) => p.feedback)) {
+      if (lesson.participants.some((p) => hasMeaningfulTeachingPracticeFeedback(p.feedback))) {
         result.lessonsSkippedFeedback += 1;
         continue;
       }

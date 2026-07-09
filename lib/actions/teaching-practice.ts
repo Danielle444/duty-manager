@@ -18,6 +18,7 @@ import {
   attachTeachingPracticeScheduleWarnings,
   type TeachingPracticeScheduleWarning,
 } from "@/lib/teaching-practice-schedule-check";
+import { hasMeaningfulTeachingPracticeFeedback } from "@/lib/teaching-practice-feedback";
 
 // Deliberately not re-exported from here: this is a "use server" module, and
 // Next.js's server-actions transform scans every export to build a client
@@ -745,8 +746,11 @@ export async function syncTeachingPracticeTrackParticipants(
       continue;
     }
     // Same safety rule as the manual participant-edit path: never delete/recreate
-    // participants that already have feedback recorded against them.
-    if (lesson.participants.some((p) => p.feedback)) {
+    // participants that already have MEANINGFUL feedback recorded against
+    // them - an empty placeholder row (created by simply opening/closing
+    // the feedback modal - see lib/teaching-practice-feedback.ts) must never
+    // block this.
+    if (lesson.participants.some((p) => hasMeaningfulTeachingPracticeFeedback(p.feedback))) {
       lessonsSkippedFeedback += 1;
       continue;
     }
@@ -1891,13 +1895,15 @@ async function setTeachingPracticeLessonParticipantsInternal(
     }
   }
 
-  // Safe-by-default: refuse to drop a participant that already has teaching
-  // feedback recorded against them, rather than silently cascading that
-  // feedback away. The caller must remove the feedback first (a later-stage
-  // action) if they really intend to replace that trainee's role entirely.
+  // Safe-by-default: refuse to drop a participant that already has
+  // MEANINGFUL teaching feedback recorded against them, rather than
+  // silently cascading that feedback away. An empty placeholder row (see
+  // lib/teaching-practice-feedback.ts) must never block this - the caller
+  // must remove real feedback first (a later-stage action) if they really
+  // intend to replace that trainee's role entirely.
   const nextTraineeIds = new Set(participantRows.map((p) => p.traineeId));
   const droppedWithFeedback = lesson.participants.filter(
-    (p) => !nextTraineeIds.has(p.traineeId) && p.feedback
+    (p) => !nextTraineeIds.has(p.traineeId) && hasMeaningfulTeachingPracticeFeedback(p.feedback)
   );
   if (droppedWithFeedback.length > 0) {
     return {

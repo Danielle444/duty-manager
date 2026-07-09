@@ -45,6 +45,7 @@
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/auth/require-admin";
 import { TEACHING_PRACTICE_TEAM_SIZE, type TeachingPracticeTypeValue } from "@/lib/teaching-practice-rotation";
+import { hasMeaningfulTeachingPracticeFeedback } from "@/lib/teaching-practice-feedback";
 // Stage B1 - the one existing, already-safe trainee sync primitive, reused
 // as-is (see file header). Nothing about its rotation/manual-override/
 // feedback logic is duplicated or reimplemented here.
@@ -156,7 +157,7 @@ async function getTeachingPracticeSyncDiagnosticsInternal(): Promise<TeachingPra
           participants: {
             select: {
               isManualOverride: true,
-              feedback: { select: { id: true } },
+              feedback: { select: { feedback: true, ratingHalfPoints: true } },
             },
           },
           childAssignments: { select: { id: true } },
@@ -211,7 +212,7 @@ async function getTeachingPracticeSyncDiagnosticsInternal(): Promise<TeachingPra
       else if (participantCount < expectedTeamSize) lessonsWithFewerParticipantsThanExpected += 1;
 
       const isManualProtected = lesson.participants.some((p) => p.isManualOverride);
-      const isFeedbackProtected = lesson.participants.some((p) => p.feedback);
+      const isFeedbackProtected = lesson.participants.some((p) => hasMeaningfulTeachingPracticeFeedback(p.feedback));
       if (isManualProtected) lessonsProtectedByManualOverride += 1;
       if (isFeedbackProtected) lessonsProtectedByFeedback += 1;
       if (isManualProtected || isFeedbackProtected) protectedLessonsCount += 1;

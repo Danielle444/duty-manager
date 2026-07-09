@@ -51,9 +51,12 @@
 // Scope: group-scoped only (groupName required, "א"/"ב" only) - this action
 // never runs system-wide.
 //
-// Eligibility (per lesson): date >= today, and no feedback recorded on any
-// participant. A lesson failing either check is left completely untouched -
-// not one field, not participants, not children.
+// Eligibility (per lesson): date >= today, and no MEANINGFUL feedback
+// recorded on any participant - see lib/teaching-practice-feedback.ts: an
+// empty TeachingPracticeFeedback row (created merely by opening/closing the
+// feedback modal without entering anything) must never block this sync. A
+// lesson failing either check is left completely untouched - not one
+// field, not participants, not children.
 //
 // Never touched, anywhere in this file: TeachingPracticeFeedback (never
 // read-modified or deleted), lesson existence (no create/delete), practiceType
@@ -69,6 +72,7 @@ import {
   type TeachingPracticeRoleValue,
   type TeachingPracticeTypeValue,
 } from "@/lib/teaching-practice-rotation";
+import { hasMeaningfulTeachingPracticeFeedback } from "@/lib/teaching-practice-feedback";
 
 // Mirrors VALID_GROUP_NAMES in lib/actions/teaching-practice.ts (not
 // exported from there) - same small, deliberate, self-contained duplication
@@ -328,7 +332,14 @@ async function syncTeachingPracticeFixedStructureToGeneratedLessonsInternal(
       where: { trackId: track.id },
       orderBy: [{ date: "asc" }, { startTime: "asc" }, { createdAt: "asc" }, { id: "asc" }],
       include: {
-        participants: { select: { id: true, traineeId: true, role: true, feedback: { select: { id: true } } } },
+        participants: {
+          select: {
+            id: true,
+            traineeId: true,
+            role: true,
+            feedback: { select: { feedback: true, ratingHalfPoints: true } },
+          },
+        },
         childAssignments: { select: { id: true, childId: true, horseName: true, equipmentNotes: true, isAbsent: true } },
       },
     });
@@ -341,7 +352,7 @@ async function syncTeachingPracticeFixedStructureToGeneratedLessonsInternal(
         result.lessonsSkippedPastDate += 1;
         continue;
       }
-      if (lesson.participants.some((p) => p.feedback)) {
+      if (lesson.participants.some((p) => hasMeaningfulTeachingPracticeFeedback(p.feedback))) {
         result.lessonsSkippedFeedback += 1;
         continue;
       }

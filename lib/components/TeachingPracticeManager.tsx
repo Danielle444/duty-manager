@@ -914,6 +914,24 @@ export function TeachingPracticeManager({
     return groupValue === tableGroupFilter;
   }
 
+  // View-mode-only click-to-highlight for a trainee's every appearance in
+  // the fixed-structure table(s) - UI-only local state, no DB read/write
+  // involved. Clicking the same trainee again clears it (toggle); clicking
+  // a different trainee switches straight to it.
+  const [selectedHighlightedTraineeId, setSelectedHighlightedTraineeId] = useState<string | null>(null);
+  const [selectedHighlightedTraineeName, setSelectedHighlightedTraineeName] = useState<string | null>(null);
+
+  function handleToggleTraineeHighlight(traineeId: string, traineeName: string) {
+    const isSameAsCurrent = selectedHighlightedTraineeId === traineeId;
+    setSelectedHighlightedTraineeId(isSameAsCurrent ? null : traineeId);
+    setSelectedHighlightedTraineeName(isSameAsCurrent ? null : traineeName);
+  }
+
+  function handleClearTraineeHighlight() {
+    setSelectedHighlightedTraineeId(null);
+    setSelectedHighlightedTraineeName(null);
+  }
+
   // Stage 1 - read-only trainee-assignment suggestion preview. Admin-only
   // (role check on the button itself, below); scoped to whichever real group
   // (א/ב) is currently selected via tableGroupFilter above - "all" is
@@ -2635,6 +2653,30 @@ export function TeachingPracticeManager({
                 />
               )}
 
+              {/* View-mode-only click-to-highlight hint + current selection
+                  indicator - purely a UI affordance, no DB read/write. Only
+                  shown in view mode, since edit mode replaces the clickable
+                  name with a live SearchableSelect (nothing to click). */}
+              {!effectiveCanEdit && (
+                <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                  <span>לחיצה על שם חניך מסמנת את כל ההופעות שלו במבנה.</span>
+                  {selectedHighlightedTraineeId && (
+                    <>
+                      <span className="rounded-full bg-primary/20 px-2 py-0.5 font-medium text-primary">
+                        מסומן: {selectedHighlightedTraineeName}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={handleClearTraineeHighlight}
+                        className="text-primary underline decoration-dotted"
+                      >
+                        נקה סימון
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+
               {/* Column visibility (Stage B) - a display preference only,
                   available in both view and edit mode, and independent of
                   canEdit/effectiveCanEdit entirely. Applies to the LUNGE,
@@ -2827,6 +2869,8 @@ export function TeachingPracticeManager({
                                       sticky={lungeStickyKey === "leadTrainee"}
                                       disabled={savingCellKey === `${row.track.id}-0`}
                                       onAssign={(traineeId) => handleInlineAssignTrainee(row.track, 0, traineeId)}
+                                      highlightedTraineeId={selectedHighlightedTraineeId}
+                                      onToggleHighlight={handleToggleTraineeHighlight}
                                     />
                                   )}
                                   {columnVisibility.assistantTrainee && (
@@ -2837,6 +2881,8 @@ export function TeachingPracticeManager({
                                       editable={effectiveCanEdit}
                                       disabled={savingCellKey === `${row.track.id}-1`}
                                       onAssign={(traineeId) => handleInlineAssignTrainee(row.track, 1, traineeId)}
+                                      highlightedTraineeId={selectedHighlightedTraineeId}
+                                      onToggleHighlight={handleToggleTraineeHighlight}
                                     />
                                   )}
                                   {columnVisibility.childFirstName && (
@@ -3131,6 +3177,8 @@ export function TeachingPracticeManager({
                                                   }
                                                   onOpen={() => openTrackManager(privateRow.track)}
                                                   isActive={privateRow.track.isActive}
+                                                  highlightedTraineeId={selectedHighlightedTraineeId}
+                                                  onToggleHighlight={handleToggleTraineeHighlight}
                                                 />
                                               )}
                                               {columnVisibility.assistantTrainee && (
@@ -3148,6 +3196,8 @@ export function TeachingPracticeManager({
                                                   }
                                                   onOpen={() => openTrackManager(privateRow.track)}
                                                   isActive={privateRow.track.isActive}
+                                                  highlightedTraineeId={selectedHighlightedTraineeId}
+                                                  onToggleHighlight={handleToggleTraineeHighlight}
                                                 />
                                               )}
                                               {columnVisibility.childFirstName && (
@@ -3379,6 +3429,8 @@ export function TeachingPracticeManager({
                                         onAssign={(traineeId) => handleInlineAssignTrainee(row.track, 0, traineeId)}
                                         onOpen={() => openTrackManager(row.track)}
                                         isActive={row.track.isActive}
+                                        highlightedTraineeId={selectedHighlightedTraineeId}
+                                        onToggleHighlight={handleToggleTraineeHighlight}
                                       />
                                     )}
                                     {columnVisibility.assistantTrainee && (
@@ -3391,6 +3443,8 @@ export function TeachingPracticeManager({
                                         onAssign={(traineeId) => handleInlineAssignTrainee(row.track, 1, traineeId)}
                                         onOpen={() => openTrackManager(row.track)}
                                         isActive={row.track.isActive}
+                                        highlightedTraineeId={selectedHighlightedTraineeId}
+                                        onToggleHighlight={handleToggleTraineeHighlight}
                                       />
                                     )}
                                     {columnVisibility.childFirstName && (
@@ -5352,6 +5406,8 @@ function TraineeAssignmentCell({
   isActive = true,
   rowSpan,
   sticky,
+  highlightedTraineeId,
+  onToggleHighlight,
 }: {
   value: string;
   // Resolved display name for the currently-assigned trainee (or "—") -
@@ -5378,12 +5434,40 @@ function TraineeAssignmentCell({
   // positioning on the wrapping <td> doesn't affect where the select's own
   // dropdown (itself position:relative-anchored one level in) renders.
   sticky?: boolean;
+  // Click-to-highlight (view mode only) - the currently-selected trainee id
+  // (if any) and the toggle callback. Both optional so this component still
+  // works wherever a caller doesn't wire highlighting in.
+  highlightedTraineeId?: string | null;
+  onToggleHighlight?: (traineeId: string, traineeName: string) => void;
 }) {
   if (!editable) {
+    // Only a real, assigned trainee (non-empty value) is clickable - "—"
+    // (no one assigned) has nothing to highlight. stopPropagation keeps this
+    // click from also firing the row's/ClickableCell's own onOpen - tapping
+    // the name toggles highlight instead of opening the track drawer.
+    const nameContent =
+      value && onToggleHighlight ? (
+        <span
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleHighlight(value, label);
+          }}
+          className={`cursor-pointer rounded px-1 -mx-1 py-0.5 transition-colors ${
+            value === highlightedTraineeId
+              ? "bg-primary/20 font-semibold text-primary"
+              : "hover:bg-muted"
+          }`}
+        >
+          {label}
+        </span>
+      ) : (
+        label
+      );
+
     if (onOpen) {
       return (
         <ClickableCell rowSpan={rowSpan} isActive={isActive} onOpen={onOpen} sticky={sticky}>
-          {label}
+          {nameContent}
         </ClickableCell>
       );
     }
@@ -5392,7 +5476,7 @@ function TraineeAssignmentCell({
         rowSpan={rowSpan}
         className={`px-2 py-2 ${sticky ? "sticky right-0 z-10 bg-card" : ""}`}
       >
-        {label}
+        {nameContent}
       </td>
     );
   }

@@ -1,5 +1,6 @@
 "use server";
 
+import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@/app/generated/prisma/client";
 import { requireAdmin } from "@/lib/auth/require-admin";
@@ -29,8 +30,11 @@ import {
 const NOT_FOUND_TRACK = "מסלול ההתנסות לא נמצא";
 const NOT_FOUND_LESSON = "שיעור ההתנסות לא נמצא";
 const NOT_FOUND_CHILD = "הילד/ה לא נמצא/ת";
+const NOT_FOUND_PARTICIPANT = "החניך/ה בהתנסות לא נמצא/ה";
 const NO_ASSIGNMENT_PERMISSION = "אין הרשאה לניהול שיבוצי התנסויות מתחילים";
 const NO_HORSE_PERMISSION = "אין הרשאה לניהול סוסים וציוד להתנסויות מתחילים";
+const NO_FEEDBACK_PERMISSION = "אין הרשאה לערוך משוב התנסויות מתחילים";
+const INVALID_RATING = "דירוג לא תקין - יש לבחור ערך בין 1 ל-5";
 
 const VALID_PRACTICE_TYPES: TeachingPracticeTypeValue[] = ["LUNGE", "BEGINNER_PRIVATE", "BEGINNER_GROUP"];
 const VALID_ROLES: TeachingPracticeRoleValue[] = [
@@ -1101,12 +1105,25 @@ export interface TeachingPracticeLessonSummary {
   roleLabelOverrides: Partial<Record<TeachingPracticeRoleValue, string>> | null;
 }
 
+// Present only once an instructor/admin has actually saved feedback for this
+// participant (Stage A - backend/read only, no entry UI yet) - null means no
+// feedback recorded, same "missing row = not yet entered" convention as
+// RidingLessonNote. updatedByName/updatedAt mirror TeachingPracticeFeedback's
+// own columns; no other TeachingPracticeFeedback field is exposed here.
+export interface TeachingPracticeParticipantFeedbackData {
+  feedback: string | null;
+  ratingHalfPoints: number | null;
+  updatedByName: string | null;
+  updatedAt: string;
+}
+
 export interface TeachingPracticeParticipantRow {
   participantId: string;
   traineeId: string;
   traineeName: string;
   role: TeachingPracticeRoleValue;
   isManualOverride: boolean;
+  feedback: TeachingPracticeParticipantFeedbackData | null;
 }
 
 export interface TeachingPracticeChildAssignmentRow {
@@ -1229,7 +1246,10 @@ const LESSON_DETAIL_INCLUDE = {
   responsibleInstructor: { select: { fullName: true } },
   participants: {
     orderBy: { createdAt: "asc" as const },
-    include: { trainee: { select: { fullName: true } } },
+    include: {
+      trainee: { select: { fullName: true } },
+      feedback: { select: { feedback: true, ratingHalfPoints: true, updatedByName: true, updatedAt: true } },
+    },
   },
   childAssignments: {
     include: {
@@ -1255,6 +1275,14 @@ function toLessonDetail(lesson: LessonWithDetailIncludes): TeachingPracticeLesso
       traineeName: p.trainee.fullName,
       role: p.role,
       isManualOverride: p.isManualOverride,
+      feedback: p.feedback
+        ? {
+            feedback: p.feedback.feedback,
+            ratingHalfPoints: p.feedback.ratingHalfPoints,
+            updatedByName: p.feedback.updatedByName,
+            updatedAt: p.feedback.updatedAt.toISOString(),
+          }
+        : null,
     })),
     childAssignments: lesson.childAssignments.map((c) => ({
       id: c.id,
@@ -1328,6 +1356,75 @@ export async function listTeachingPracticeLessonsDetailForDateAsInstructor(
   const instructor = await prisma.instructor.findUnique({ where: { id: instructorId } });
   if (!instructor || !instructor.isActive) return [];
   return listTeachingPracticeLessonsDetailForDateInternal(date);
+}
+
+// ---------------------------------------------------------------------------
+// Participant feedback (Stage A - actions only, no entry UI yet)
+// ---------------------------------------------------------------------------
+
+export interface TeachingPracticeFeedbackInput {
+  ratingHalfPoints: number | null;
+  feedback: string | null;
+}
+
+// One row per TeachingPracticeParticipant (participantId unique on the
+// model) - always a full-overwrite upsert, no history, same convention as
+// RidingLessonNote/upsertRidingLessonNoteAsInstructor. Never deletes/creates
+// participants, lessons, child assignments, or horses - only ever touches
+// the TeachingPracticeFeedback row itself.
+async function upsertTeachingPracticeFeedbackInternal(
+  participantId: string,
+  input: TeachingPracticeFeedbackInput,
+  updatedByName: string
+): Promise<ActionResult> {
+  const participant = await prisma.teachingPracticeParticipant.findUnique({ where: { id: participantId } });
+  if (!participant) return { success: false, error: NOT_FOUND_PARTICIPANT };
+
+  const ratingHalfPoints = input.ratingHalfPoints ?? null;
+  if (
+    ratingHalfPoints !== null &&
+    (!Number.isInteger(ratingHalfPoints) || ratingHalfPoints < 2 || ratingHalfPoints > 10)
+  ) {
+    return { success: false, error: INVALID_RATING };
+  }
+
+  const feedback = input.feedback?.trim() || null;
+
+  await prisma.teachingPracticeFeedback.upsert({
+    where: { participantId },
+    update: { feedback, ratingHalfPoints, updatedByName },
+    create: { participantId, feedback, ratingHalfPoints, updatedByName },
+  });
+
+  return { success: true };
+}
+
+export async function upsertTeachingPracticeFeedbackAsAdmin(
+  participantId: string,
+  input: TeachingPracticeFeedbackInput
+): Promise<ActionResult> {
+  const admin = await requireAdmin();
+  const result = await upsertTeachingPracticeFeedbackInternal(participantId, input, admin.name ?? admin.email);
+  if (result.success) revalidatePath("/admin/teaching-practice");
+  return result;
+}
+
+// Re-fetches the instructor from the DB and checks canEditTeachingPracticeFeedback
+// server-side - never trusts a client-supplied permission flag, same pattern
+// as upsertRidingLessonNoteAsInstructor's canEditRidingNotes check.
+export async function upsertTeachingPracticeFeedbackAsInstructor(
+  instructorId: string,
+  participantId: string,
+  input: TeachingPracticeFeedbackInput
+): Promise<ActionResult> {
+  const instructor = await prisma.instructor.findUnique({ where: { id: instructorId } });
+  if (!instructor || !instructor.isActive || !instructor.canEditTeachingPracticeFeedback) {
+    return { success: false, error: NO_FEEDBACK_PERMISSION };
+  }
+
+  const result = await upsertTeachingPracticeFeedbackInternal(participantId, input, instructor.fullName);
+  if (result.success) revalidatePath("/instructor");
+  return result;
 }
 
 // ---------------------------------------------------------------------------

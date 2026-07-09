@@ -26,7 +26,6 @@ import {
   type TeachingPracticeTypeValue,
 } from "@/lib/teaching-practice-rotation";
 import {
-  clearTeachingPracticeTrackTraineeSlotAsAdmin,
   createTeachingPracticeChildAsAdmin,
   createTeachingPracticeChildAsInstructor,
   createTeachingPracticeGroupBlockAsAdmin,
@@ -59,6 +58,7 @@ import {
   setTeachingPracticeTrackActiveAsInstructor,
   setTeachingPracticeTrackChildrenAsAdmin,
   setTeachingPracticeTrackChildrenAsInstructor,
+  setTeachingPracticeTrackTraineeSlotAsAdmin,
   setTeachingPracticeTrackTraineesAsAdmin,
   setTeachingPracticeTrackTraineesAsInstructor,
   updateTeachingPracticeChildAsAdmin,
@@ -86,6 +86,7 @@ import {
   type TeachingPracticeTrackChildInput,
   type TeachingPracticeTrackInput,
   type TeachingPracticeTrackSummary,
+  type TeachingPracticeTrackTraineeRow,
 } from "@/lib/actions/teaching-practice";
 import {
   commitTeachingPracticeChildrenImportAsAdmin,
@@ -205,6 +206,18 @@ const PRACTICE_TYPE_LABELS: Record<TeachingPracticeTypeValue, string> = {
   BEGINNER_GROUP: "שיעור קבוצתי מתחילים",
 };
 const PRACTICE_TYPES: TeachingPracticeTypeValue[] = ["LUNGE", "BEGINNER_PRIVATE", "BEGINNER_GROUP"];
+
+// Fixed-structure trainee slots must always be looked up by their exact
+// rotationOrder, never by position in a sorted-and-compacted array - a
+// sparse roster (a hole at an earlier rotationOrder, e.g. after clearing a
+// slot via setTeachingPracticeTrackTraineeSlotAsAdmin) would otherwise make
+// a later slot's trainee appear to have shifted into the earlier one.
+function getTraineeAtRotation(
+  track: Pick<TeachingPracticeTrackSummary, "trainees">,
+  rotationOrder: number
+): TeachingPracticeTrackTraineeRow | null {
+  return track.trainees.find((t) => t.rotationOrder === rotationOrder) ?? null;
+}
 
 // 1.0-5.0 in 0.5 steps, stored as ratingHalfPoints 2-10 - same convention as
 // RidingLessonNote.ratingHalfPoints/RATING_OPTIONS in the riding feedback UI.
@@ -1207,12 +1220,22 @@ export function TeachingPracticeManager({
   // so both read from one place.
   function buildTrackRowData(track: TeachingPracticeTrackSummary) {
     const teamSize = TEACHING_PRACTICE_TEAM_SIZE[track.practiceType];
-    const sortedTrainees = [...track.trainees].sort((a, b) => a.rotationOrder - b.rotationOrder);
-    const traineeIdsBySlot = Array.from({ length: teamSize }, (_, i) => sortedTrainees[i]?.traineeId ?? "");
+    // By exact rotationOrder (getTraineeAtRotation), never by position in a
+    // sorted-and-compacted array - see that helper's own comment for why a
+    // sparse roster would otherwise render as if a later slot's trainee had
+    // shifted into an earlier, empty one.
+    const traineeIdsBySlot = Array.from(
+      { length: teamSize },
+      (_, i) => getTraineeAtRotation(track, i)?.traineeId ?? ""
+    );
     // Slot-0's name specifically ("חניך מתרגל") is what the Beginners
     // block table derives its group-level roster from - a private track's
     // own slot-0 trainee is the one tied to that specific child.
-    const traineeNamesBySlot = Array.from({ length: teamSize }, (_, i) => sortedTrainees[i]?.fullName ?? "—");
+    const traineeNamesBySlot = Array.from(
+      { length: teamSize },
+      (_, i) => getTraineeAtRotation(track, i)?.fullName ?? "—"
+    );
+    const sortedTrainees = [...track.trainees].sort((a, b) => a.rotationOrder - b.rotationOrder);
     const rosterSummary = sortedTrainees.length > 0 ? sortedTrainees.map((t) => t.fullName).join(", ") : "—";
     const childRows = track.children.map((tc) => ({
       registryChild: tc.childId ? (childById.get(tc.childId) ?? null) : null,
@@ -1459,10 +1482,17 @@ export function TeachingPracticeManager({
   function openTrackManager(track: TeachingPracticeTrackSummary) {
     setOpenTrackId(track.id);
     setEditTrackForm(trackToFormState(track));
-    const sortedTraineeIds = [...track.trainees]
-      .sort((a, b) => a.rotationOrder - b.rotationOrder)
-      .map((t) => t.traineeId);
-    setTeamSelections(sortedTraineeIds);
+    // By exact rotationOrder, not compact array index - the same rendering
+    // bug as buildTrackRowData's traineeIdsBySlot (see its own comment): a
+    // sparse roster (e.g. only rotationOrder 1 filled, after clearing slot
+    // 0 via the inline "ללא חניך" option) must show up as an empty slot 0 +
+    // filled slot 1 here too, never shifted into slot 0.
+    const teamSizeForTrack = TEACHING_PRACTICE_TEAM_SIZE[track.practiceType];
+    const traineeIdsByRotation = Array.from(
+      { length: teamSizeForTrack },
+      (_, i) => track.trainees.find((t) => t.rotationOrder === i)?.traineeId ?? ""
+    );
+    setTeamSelections(traineeIdsByRotation);
     setTrackChildRows(
       track.children.map((c) => ({
         // A null childId (childless horse/equipment placeholder) is shown
@@ -1640,19 +1670,22 @@ export function TeachingPracticeManager({
   function handleInlineAssignTrainee(track: TeachingPracticeTrackSummary, slotIndex: number, traineeId: string) {
     const cellKey = `${track.id}-${slotIndex}`;
 
-    // Exact-slot clear (see the "ללא חניך" option in traineeSelectOptions) -
-    // deliberately NOT routed through the replace-all path below, which
-    // would compact/shift every later slot down. clearTeachingPracticeTrackTraineeSlotAsAdmin
-    // only ever deletes this exact (trackId, rotationOrder) row - every
-    // other slot on the track is left untouched.
-    if (traineeId === "") {
+    // Exact-slot set/clear (admin only - see the admin-only "ללא חניך"
+    // option in traineeSelectOptions). Deliberately NOT the replace-all path
+    // below for either direction: rebuilding "the whole roster" from a
+    // sorted-by-rotationOrder array indexed by POSITION (not by the actual
+    // rotationOrder value) silently shifts every later slot whenever an
+    // earlier one is a hole - the exact bug this fixes. setTeachingPracticeTrackTraineeSlotAsAdmin
+    // only ever deletes/creates this exact (trackId, rotationOrder) row -
+    // every other slot on the track is left untouched, never reindexed.
+    if (role === "admin") {
       setInlineAssignError(null);
       setSavingCellKey(cellKey);
       startInlineAssignTransition(async () => {
-        const result = await clearTeachingPracticeTrackTraineeSlotAsAdmin(track.id, slotIndex);
+        const result = await setTeachingPracticeTrackTraineeSlotAsAdmin(track.id, slotIndex, traineeId || null);
         setSavingCellKey(null);
         if (!result.success) {
-          setInlineAssignError(result.error ?? "אירעה שגיאה בניקוי השיבוץ");
+          setInlineAssignError(result.error ?? "אירעה שגיאה בשיבוץ החניך/ה");
           return;
         }
         await refreshTracks();
@@ -1660,6 +1693,9 @@ export function TeachingPracticeManager({
       return;
     }
 
+    // Instructor path - unchanged replace-all (no exact-slot instructor
+    // action exists; instructors never see the "ללא חניך" clear option, so
+    // traineeId here is always a real, non-empty id).
     const teamSize = TEACHING_PRACTICE_TEAM_SIZE[track.practiceType];
     const sortedIds = [...track.trainees].sort((a, b) => a.rotationOrder - b.rotationOrder).map((t) => t.traineeId);
     const nextIds = Array.from({ length: teamSize }, (_, i) => sortedIds[i] ?? "");
@@ -1669,10 +1705,7 @@ export function TeachingPracticeManager({
     setInlineAssignError(null);
     setSavingCellKey(cellKey);
     startInlineAssignTransition(async () => {
-      const result =
-        role === "admin"
-          ? await setTeachingPracticeTrackTraineesAsAdmin(track.id, finalIds)
-          : await setTeachingPracticeTrackTraineesAsInstructor(actorId!, track.id, finalIds);
+      const result = await setTeachingPracticeTrackTraineesAsInstructor(actorId!, track.id, finalIds);
       setSavingCellKey(null);
       if (!result.success) {
         setInlineAssignError(result.error ?? "אירעה שגיאה בשיבוץ החניך/ה");

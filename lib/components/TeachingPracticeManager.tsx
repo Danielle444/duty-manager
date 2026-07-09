@@ -2276,10 +2276,16 @@ export function TeachingPracticeManager({
                           אין עדיין סלוטים קבועים בקטגוריה זו.
                         </p>
                       ) : (
-                        // Horizontal scroll is contained to this table only
-                        // (never the page) - min-width keeps columns from
+                        // Bounded self-contained scroll box (same max-h-[70vh]
+                        // overflow-auto pattern as ScheduleGrid.tsx) - the
+                        // header row's sticky top-0 below sticks to the top of
+                        // *this* box only, never the page, so it can't collide
+                        // with the admin layout's own sticky header. A short
+                        // table (few tracks) never hits max-h, so it never
+                        // looks boxed-in - overflow only engages once content
+                        // actually exceeds 70vh. min-width keeps columns from
                         // being squeezed illegibly narrow on small screens.
-                        <div className="-mx-1 min-w-0 overflow-x-auto px-1 pb-1">
+                        <div className="-mx-1 min-w-0 max-h-[70vh] overflow-auto px-1 pb-1">
                           <table
                             className="w-full border-collapse text-xs"
                             style={{
@@ -2290,8 +2296,8 @@ export function TeachingPracticeManager({
                               <tr className="bg-muted text-muted-foreground">
                                 {columnVisibility.lungeTime && (
                                   <th
-                                    className={`px-2 py-2 text-right font-bold ${
-                                      lungeStickyKey === "lungeTime" ? "sticky right-0 z-10 bg-muted" : ""
+                                    className={`sticky top-0 bg-muted px-2 py-2 text-right font-bold ${
+                                      lungeStickyKey === "lungeTime" ? "right-0 z-20" : "z-10"
                                     }`}
                                   >
                                     שעה
@@ -2299,42 +2305,42 @@ export function TeachingPracticeManager({
                                 )}
                                 {columnVisibility.leadTrainee && (
                                   <th
-                                    className={`px-2 py-2 text-right font-bold ${
-                                      lungeStickyKey === "leadTrainee" ? "sticky right-0 z-10 bg-muted" : ""
+                                    className={`sticky top-0 bg-muted px-2 py-2 text-right font-bold ${
+                                      lungeStickyKey === "leadTrainee" ? "right-0 z-20" : "z-10"
                                     }`}
                                   >
                                     חניך מדריך
                                   </th>
                                 )}
                                 {columnVisibility.assistantTrainee && (
-                                  <th className="px-2 py-2 text-right font-bold">עוזר מדריך</th>
+                                  <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">עוזר מדריך</th>
                                 )}
                                 {columnVisibility.childFirstName && (
-                                  <th className="px-2 py-2 text-right font-bold">שם הילד</th>
+                                  <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">שם הילד</th>
                                 )}
                                 {columnVisibility.childLastName && (
-                                  <th className="px-2 py-2 text-right font-bold">שם משפחה</th>
+                                  <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">שם משפחה</th>
                                 )}
                                 {columnVisibility.age && (
-                                  <th className="px-2 py-2 text-right font-bold">גיל</th>
+                                  <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">גיל</th>
                                 )}
                                 {columnVisibility.gender && (
-                                  <th className="px-2 py-2 text-right font-bold">מין</th>
+                                  <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">מין</th>
                                 )}
                                 {columnVisibility.horse && (
-                                  <th className="px-2 py-2 text-right font-bold">סוס</th>
+                                  <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">סוס</th>
                                 )}
                                 {columnVisibility.equipment && (
-                                  <th className="px-2 py-2 text-right font-bold">ציוד</th>
+                                  <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">ציוד</th>
                                 )}
                                 {columnVisibility.parentName && (
-                                  <th className="px-2 py-2 text-right font-bold">שם ההורה</th>
+                                  <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">שם ההורה</th>
                                 )}
                                 {columnVisibility.parentPhone && (
-                                  <th className="px-2 py-2 text-right font-bold">טלפון</th>
+                                  <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">טלפון</th>
                                 )}
                                 {columnVisibility.notes && (
-                                  <th className="px-2 py-2 text-right font-bold">הערות</th>
+                                  <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">הערות</th>
                                 )}
                               </tr>
                             </thead>
@@ -2525,7 +2531,17 @@ export function TeachingPracticeManager({
                           אין עדיין שיעורים קבוצתיים בקטגוריה זו.
                         </p>
                       ) : (
-                        <div className="-mx-1 min-w-0 overflow-x-auto px-1 pb-1">
+                        // Bounded self-contained scroll box, same pattern as
+                        // the LUNGE table above. Only the second header row
+                        // (the actual column labels) is made sticky - the
+                        // first row is just the "קבוצתי"/"פרטני" spanning
+                        // label, and stacking two sticky rows would need a
+                        // hardcoded pixel top-offset for the second row (its
+                        // rendered height isn't known statically), which is
+                        // exactly the kind of fragile guess this change
+                        // avoids (same reasoning as ScheduleGrid.tsx Stage
+                        // 1). It scrolls out of view normally once past.
+                        <div className="-mx-1 min-w-0 max-h-[70vh] overflow-auto px-1 pb-1">
                           <table
                             className="w-full border-collapse text-xs"
                             style={{
@@ -2555,8 +2571,8 @@ export function TeachingPracticeManager({
                               <tr className="bg-muted text-muted-foreground">
                                 {columnVisibility.groupTime && (
                                   <th
-                                    className={`px-2 py-2 text-right font-bold ${
-                                      beginnerStickyKey === "groupTime" ? "sticky right-0 z-10 bg-muted" : ""
+                                    className={`sticky top-0 bg-muted px-2 py-2 text-right font-bold ${
+                                      beginnerStickyKey === "groupTime" ? "right-0 z-20" : "z-10"
                                     }`}
                                   >
                                     שעה לקבוצתי
@@ -2564,8 +2580,8 @@ export function TeachingPracticeManager({
                                 )}
                                 {columnVisibility.privateTime && (
                                   <th
-                                    className={`px-2 py-2 text-right font-bold ${
-                                      beginnerStickyKey === "privateTime" ? "sticky right-0 z-10 bg-muted" : ""
+                                    className={`sticky top-0 bg-muted px-2 py-2 text-right font-bold ${
+                                      beginnerStickyKey === "privateTime" ? "right-0 z-20" : "z-10"
                                     }`}
                                   >
                                     שעה לפרטני
@@ -2573,42 +2589,42 @@ export function TeachingPracticeManager({
                                 )}
                                 {columnVisibility.leadTrainee && (
                                   <th
-                                    className={`px-2 py-2 text-right font-bold ${
-                                      beginnerStickyKey === "leadTrainee" ? "sticky right-0 z-10 bg-muted" : ""
+                                    className={`sticky top-0 bg-muted px-2 py-2 text-right font-bold ${
+                                      beginnerStickyKey === "leadTrainee" ? "right-0 z-20" : "z-10"
                                     }`}
                                   >
                                     חניך מתרגל
                                   </th>
                                 )}
                                 {columnVisibility.assistantTrainee && (
-                                  <th className="px-2 py-2 text-right font-bold">עוזר מדריך</th>
+                                  <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">עוזר מדריך</th>
                                 )}
                                 {columnVisibility.childFirstName && (
-                                  <th className="px-2 py-2 text-right font-bold">שם הילד</th>
+                                  <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">שם הילד</th>
                                 )}
                                 {columnVisibility.childLastName && (
-                                  <th className="px-2 py-2 text-right font-bold">שם משפחה</th>
+                                  <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">שם משפחה</th>
                                 )}
                                 {columnVisibility.age && (
-                                  <th className="px-2 py-2 text-right font-bold">גיל</th>
+                                  <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">גיל</th>
                                 )}
                                 {columnVisibility.gender && (
-                                  <th className="px-2 py-2 text-right font-bold">מין</th>
+                                  <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">מין</th>
                                 )}
                                 {columnVisibility.horse && (
-                                  <th className="px-2 py-2 text-right font-bold">סוס</th>
+                                  <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">סוס</th>
                                 )}
                                 {columnVisibility.equipment && (
-                                  <th className="px-2 py-2 text-right font-bold">ציוד</th>
+                                  <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">ציוד</th>
                                 )}
                                 {columnVisibility.parentName && (
-                                  <th className="px-2 py-2 text-right font-bold">שם ההורה</th>
+                                  <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">שם ההורה</th>
                                 )}
                                 {columnVisibility.parentPhone && (
-                                  <th className="px-2 py-2 text-right font-bold">טלפון</th>
+                                  <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">טלפון</th>
                                 )}
                                 {columnVisibility.notes && (
-                                  <th className="px-2 py-2 text-right font-bold">הערות</th>
+                                  <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">הערות</th>
                                 )}
                               </tr>
                             </thead>
@@ -2824,7 +2840,9 @@ export function TeachingPracticeManager({
                           <h4 className="mb-1 text-xs font-bold text-muted-foreground">
                             שיעורים פרטיים ללא שיוך
                           </h4>
-                          <div className="-mx-1 min-w-0 overflow-x-auto px-1 pb-1">
+                          {/* Bounded self-contained scroll box, same pattern
+                              as the LUNGE/Beginners tables above. */}
+                          <div className="-mx-1 min-w-0 max-h-[70vh] overflow-auto px-1 pb-1">
                             <table
                               className="w-full border-collapse text-xs"
                               style={{
@@ -2835,8 +2853,8 @@ export function TeachingPracticeManager({
                                 <tr className="bg-muted text-muted-foreground">
                                   {columnVisibility.privateTime && (
                                     <th
-                                      className={`px-2 py-2 text-right font-bold ${
-                                        unlinkedStickyKey === "privateTime" ? "sticky right-0 z-10 bg-muted" : ""
+                                      className={`sticky top-0 bg-muted px-2 py-2 text-right font-bold ${
+                                        unlinkedStickyKey === "privateTime" ? "right-0 z-20" : "z-10"
                                       }`}
                                     >
                                       שעה לפרטני
@@ -2844,42 +2862,42 @@ export function TeachingPracticeManager({
                                   )}
                                   {columnVisibility.leadTrainee && (
                                     <th
-                                      className={`px-2 py-2 text-right font-bold ${
-                                        unlinkedStickyKey === "leadTrainee" ? "sticky right-0 z-10 bg-muted" : ""
+                                      className={`sticky top-0 bg-muted px-2 py-2 text-right font-bold ${
+                                        unlinkedStickyKey === "leadTrainee" ? "right-0 z-20" : "z-10"
                                       }`}
                                     >
                                       חניך מתרגל
                                     </th>
                                   )}
                                   {columnVisibility.assistantTrainee && (
-                                    <th className="px-2 py-2 text-right font-bold">עוזר מדריך</th>
+                                    <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">עוזר מדריך</th>
                                   )}
                                   {columnVisibility.childFirstName && (
-                                    <th className="px-2 py-2 text-right font-bold">שם הילד</th>
+                                    <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">שם הילד</th>
                                   )}
                                   {columnVisibility.childLastName && (
-                                    <th className="px-2 py-2 text-right font-bold">שם משפחה</th>
+                                    <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">שם משפחה</th>
                                   )}
                                   {columnVisibility.age && (
-                                    <th className="px-2 py-2 text-right font-bold">גיל</th>
+                                    <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">גיל</th>
                                   )}
                                   {columnVisibility.gender && (
-                                    <th className="px-2 py-2 text-right font-bold">מין</th>
+                                    <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">מין</th>
                                   )}
                                   {columnVisibility.horse && (
-                                    <th className="px-2 py-2 text-right font-bold">סוס</th>
+                                    <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">סוס</th>
                                   )}
                                   {columnVisibility.equipment && (
-                                    <th className="px-2 py-2 text-right font-bold">ציוד</th>
+                                    <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">ציוד</th>
                                   )}
                                   {columnVisibility.parentName && (
-                                    <th className="px-2 py-2 text-right font-bold">שם ההורה</th>
+                                    <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">שם ההורה</th>
                                   )}
                                   {columnVisibility.parentPhone && (
-                                    <th className="px-2 py-2 text-right font-bold">טלפון</th>
+                                    <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">טלפון</th>
                                   )}
                                   {columnVisibility.notes && (
-                                    <th className="px-2 py-2 text-right font-bold">הערות</th>
+                                    <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">הערות</th>
                                   )}
                                 </tr>
                               </thead>
@@ -4665,23 +4683,30 @@ function LessonGroupTable({
       <h4 className="mb-1.5 rounded-lg bg-muted px-3 py-1.5 text-xs font-bold text-muted-foreground">
         {groupName ? `קבוצה ${groupName}` : "ללא קבוצה"}
       </h4>
-      <div className="-mx-1 min-w-0 overflow-x-auto px-1 pb-1">
+      {/* Bounded self-contained scroll box (same max-h-[70vh] overflow-auto
+          pattern as ScheduleGrid.tsx and the fixed-structure tables above) -
+          own scroll box per group/date table, not shared across sections, so
+          each date's/group's table stays independently scrollable. The
+          expanded row editor renders as a normal in-flow <tr> further down
+          this same table, so it still scrolls into view within this box -
+          nothing about it changes. */}
+      <div className="-mx-1 min-w-0 max-h-[70vh] overflow-auto px-1 pb-1">
         <table className="w-full min-w-[980px] border-collapse text-xs">
           <thead>
             <tr className="bg-muted text-muted-foreground">
-              <th className="sticky right-0 z-10 bg-muted px-2 py-2 text-right font-bold">שעה</th>
-              <th className="px-2 py-2 text-right font-bold">חניך</th>
-              <th className="px-2 py-2 text-right font-bold">תפקיד</th>
-              <th className="px-2 py-2 text-right font-bold">שם הילד</th>
-              <th className="px-2 py-2 text-right font-bold">גיל</th>
-              <th className="px-2 py-2 text-right font-bold">מין</th>
-              <th className="px-2 py-2 text-right font-bold">סוס</th>
-              <th className="px-2 py-2 text-right font-bold">ציוד</th>
-              <th className="px-2 py-2 text-right font-bold">שם ההורה</th>
-              <th className="px-2 py-2 text-right font-bold">טלפון הורה</th>
-              <th className="px-2 py-2 text-right font-bold">הערות</th>
-              <th className="px-2 py-2 text-right font-bold">סטטוס</th>
-              <th className="px-2 py-2 text-right font-bold">פעולות</th>
+              <th className="sticky top-0 right-0 z-20 bg-muted px-2 py-2 text-right font-bold">שעה</th>
+              <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">חניך</th>
+              <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">תפקיד</th>
+              <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">שם הילד</th>
+              <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">גיל</th>
+              <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">מין</th>
+              <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">סוס</th>
+              <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">ציוד</th>
+              <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">שם ההורה</th>
+              <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">טלפון הורה</th>
+              <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">הערות</th>
+              <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">סטטוס</th>
+              <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">פעולות</th>
             </tr>
           </thead>
           <tbody>

@@ -804,6 +804,46 @@ export async function setTeachingPracticeTrackTraineesAsInstructor(
   return setTeachingPracticeTrackTraineesInternal(trackId, traineeIdsInRotationOrder);
 }
 
+// Exact-slot clear - deliberately NOT setTeachingPracticeTrackTraineesInternal
+// (the replace-all above), which reads the whole roster, filters out empty
+// entries, and re-creates every row at a fresh 0-based rotationOrder from
+// array index - clearing an earlier slot would shift every later slot down
+// (e.g. [A, B] with slot 0 cleared -> ["", B] -> filtered to [B] -> B
+// persisted at rotationOrder 0, not 1). This action only ever deletes the
+// exact (trackId, rotationOrder) row requested - every other slot on the
+// track is left completely untouched, never reindexed. No roster-complete
+// side effect either: unlike the replace-all path, this never calls
+// syncTeachingPracticeTrackParticipants (clearing a slot can only ever make
+// the roster less complete, never reach the exact team size that triggers
+// that sync) and never touches TeachingPracticeParticipant,
+// TeachingPracticeChildAssignment, or feedback - fixed structure only.
+async function clearTeachingPracticeTrackTraineeSlotInternal(
+  trackId: string,
+  rotationOrder: number
+): Promise<ActionResult> {
+  const track = await prisma.teachingPracticeTrack.findUnique({ where: { id: trackId } });
+  if (!track) return { success: false, error: NOT_FOUND_TRACK };
+
+  const expectedSize = TEACHING_PRACTICE_TEAM_SIZE[track.practiceType];
+  if (!Number.isInteger(rotationOrder) || rotationOrder < 0 || rotationOrder >= expectedSize) {
+    return { success: false, error: "מספר תפקיד לא תקין עבור סוג ההתנסות" };
+  }
+
+  // Idempotent: clearing an already-empty slot deletes zero rows and still
+  // returns success - the caller's intent (this slot should be empty) is
+  // already satisfied either way.
+  await prisma.teachingPracticeTrackTrainee.deleteMany({ where: { trackId, rotationOrder } });
+  return { success: true };
+}
+
+export async function clearTeachingPracticeTrackTraineeSlotAsAdmin(
+  trackId: string,
+  rotationOrder: number
+): Promise<ActionResult> {
+  await requireAdmin();
+  return clearTeachingPracticeTrackTraineeSlotInternal(trackId, rotationOrder);
+}
+
 // ---------------------------------------------------------------------------
 // Track children / default horse+equipment management (replace-all)
 // ---------------------------------------------------------------------------

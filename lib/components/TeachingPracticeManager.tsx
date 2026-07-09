@@ -26,6 +26,7 @@ import {
   type TeachingPracticeTypeValue,
 } from "@/lib/teaching-practice-rotation";
 import {
+  clearTeachingPracticeTrackTraineeSlotAsAdmin,
   createTeachingPracticeChildAsAdmin,
   createTeachingPracticeChildAsInstructor,
   createTeachingPracticeGroupBlockAsAdmin,
@@ -1555,17 +1556,24 @@ export function TeachingPracticeManager({
 
   // Same group-filtered-with-visible-outlier options as teamOptionsForSlot,
   // shaped for the inline SearchableSelect cells in the assignment tables.
+  // Admin-only leading "ללא חניך" (clear) option, value "" - handled
+  // specially by handleInlineAssignTrainee below, which routes it to the
+  // exact-slot clearTeachingPracticeTrackTraineeSlotAsAdmin instead of the
+  // compacting replace-all path. Not offered to instructors, since that
+  // action is admin-only (matches this stage's explicit scope).
   function traineeSelectOptions(
     track: TeachingPracticeTrackSummary,
     selectedId: string
   ): SearchableSelectOption[] {
     const groupName = track.groupName ?? "";
-    return teamOptionsForSlot(groupName, selectedId).map((s) => ({
+    const realOptions = teamOptionsForSlot(groupName, selectedId).map((s) => ({
       value: s.id,
       label: `${s.fullName}${s.groupName ? ` (קבוצה ${s.groupName})` : ""}${
         groupName && s.groupName !== groupName ? " - מחוץ לקבוצה שנבחרה" : ""
       }`,
     }));
+    if (role !== "admin") return realOptions;
+    return [{ value: "", label: "ללא חניך" }, ...realOptions];
   }
 
   // Options for the BEGINNER_PRIVATE-only "שייך/שיוך לשיעור קבוצתי" selects
@@ -1631,6 +1639,27 @@ export function TeachingPracticeManager({
   // relies on (including its existing "drop any still-empty slots" filter).
   function handleInlineAssignTrainee(track: TeachingPracticeTrackSummary, slotIndex: number, traineeId: string) {
     const cellKey = `${track.id}-${slotIndex}`;
+
+    // Exact-slot clear (see the "ללא חניך" option in traineeSelectOptions) -
+    // deliberately NOT routed through the replace-all path below, which
+    // would compact/shift every later slot down. clearTeachingPracticeTrackTraineeSlotAsAdmin
+    // only ever deletes this exact (trackId, rotationOrder) row - every
+    // other slot on the track is left untouched.
+    if (traineeId === "") {
+      setInlineAssignError(null);
+      setSavingCellKey(cellKey);
+      startInlineAssignTransition(async () => {
+        const result = await clearTeachingPracticeTrackTraineeSlotAsAdmin(track.id, slotIndex);
+        setSavingCellKey(null);
+        if (!result.success) {
+          setInlineAssignError(result.error ?? "אירעה שגיאה בניקוי השיבוץ");
+          return;
+        }
+        await refreshTracks();
+      });
+      return;
+    }
+
     const teamSize = TEACHING_PRACTICE_TEAM_SIZE[track.practiceType];
     const sortedIds = [...track.trainees].sort((a, b) => a.rotationOrder - b.rotationOrder).map((t) => t.traineeId);
     const nextIds = Array.from({ length: teamSize }, (_, i) => sortedIds[i] ?? "");

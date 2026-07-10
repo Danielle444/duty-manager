@@ -60,6 +60,102 @@ const ROLE_LABELS: Record<TeachingPracticeRoleValue, string> = {
 type TraineeTab = "mine" | "all";
 type AllModeTab = "generatedLessons" | "fixedStructure";
 
+// Stage S4 - column visibility for the trainee "כל ההתנסויות" tables only
+// (both "מבנה קבוע" and "שיעורים שנוצרו"). Deliberately local to this file
+// and keyed under its own localStorage key - never shares state or storage
+// with the admin/instructor column-visibility feature in
+// TeachingPracticeManager.tsx (TRACK_COLUMN_VISIBILITY_STORAGE_KEY there),
+// and never touches "ההתנסויות שלי" (LessonCard has no column concept at
+// all). One shared key set covers every "כל ההתנסויות" table - a table
+// that has no column for a given key (e.g. GeneratedLessonsTable has no
+// "location"/"type" column) simply never renders anything for that key,
+// so toggling it is a harmless no-op there while still working on the
+// table(s) that do have it. "שעה" (and, in the beginner table, "שעה
+// פרטני"/"שעה קבוצתי") is intentionally NOT one of these keys - there is no
+// checkbox that can hide it, anywhere; every table renders its own time
+// column unconditionally.
+type StudentColumnKey =
+  | "date"
+  | "group"
+  | "type"
+  | "location"
+  | "trainees"
+  | "child"
+  | "parentName"
+  | "parentPhone"
+  | "horse"
+  | "equipment";
+
+const STUDENT_COLUMN_KEYS: StudentColumnKey[] = [
+  "date",
+  "group",
+  "type",
+  "location",
+  "trainees",
+  "child",
+  "parentName",
+  "parentPhone",
+  "horse",
+  "equipment",
+];
+
+type StudentColumnVisibility = Record<StudentColumnKey, boolean>;
+
+// Sane default - everything visible - so a trainee who never opens the
+// panel sees exactly what Stage S3 already showed.
+const DEFAULT_STUDENT_COLUMN_VISIBILITY: StudentColumnVisibility = {
+  date: true,
+  group: true,
+  type: true,
+  location: true,
+  trainees: true,
+  child: true,
+  parentName: true,
+  parentPhone: true,
+  horse: true,
+  equipment: true,
+};
+
+const STUDENT_COLUMN_LABELS: Record<StudentColumnKey, string> = {
+  date: "תאריך",
+  group: "קבוצה",
+  type: "סוג התנסות",
+  location: "מיקום",
+  trainees: "חניכים / משתתפים",
+  child: "ילד/ה",
+  parentName: "הורה",
+  parentPhone: "טלפון",
+  horse: "סוס",
+  equipment: "ציוד / הערות",
+};
+
+// Own, student-specific key - never the admin/instructor screen's key, per
+// the explicit requirement that the two features never share storage.
+const STUDENT_COLUMN_VISIBILITY_STORAGE_KEY = "teachingPracticeStudentColumnVisibility";
+
+// Same defensive-load convention as the admin/instructor screen's own
+// loadTrackColumnVisibility: any missing/invalid/corrupt stored value for a
+// given key silently falls back to that key's own default rather than
+// throwing or hiding everything - a single bad key can never break the
+// whole panel or leave every column hidden.
+function loadStudentColumnVisibility(): StudentColumnVisibility {
+  if (typeof window === "undefined") return DEFAULT_STUDENT_COLUMN_VISIBILITY;
+  try {
+    const raw = window.localStorage.getItem(STUDENT_COLUMN_VISIBILITY_STORAGE_KEY);
+    if (!raw) return DEFAULT_STUDENT_COLUMN_VISIBILITY;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return DEFAULT_STUDENT_COLUMN_VISIBILITY;
+    const next = { ...DEFAULT_STUDENT_COLUMN_VISIBILITY };
+    for (const key of STUDENT_COLUMN_KEYS) {
+      const value = (parsed as Record<string, unknown>)[key];
+      if (typeof value === "boolean") next[key] = value;
+    }
+    return next;
+  } catch {
+    return DEFAULT_STUDENT_COLUMN_VISIBILITY;
+  }
+}
+
 // Same "אותו הורה" wording/styling as the admin/instructor surface - never
 // states siblinghood as fact, and never shows a phone number (names only,
 // same as the rest of this card). stopPropagation keeps a badge tap from
@@ -366,11 +462,13 @@ function GeneratedLessonsTable({
   lessons,
   sameParentOtherNamesByChildId,
   onOpenSameParentPopup,
+  columnVisibility,
 }: {
   title: string;
   lessons: TeachingPracticeTraineeLessonRow[];
   sameParentOtherNamesByChildId: Map<string, string[]>;
   onOpenSameParentPopup: (childId: string) => void;
+  columnVisibility: StudentColumnVisibility;
 }) {
   const rows = useMemo(() => buildGeneratedLessonTableRows(lessons), [lessons]);
   // Time-block coloring, keyed by each row's own lesson's actual startTime -
@@ -388,15 +486,20 @@ function GeneratedLessonsTable({
         <table className="w-full min-w-[860px] border-collapse text-xs">
           <thead>
             <tr className="bg-muted text-muted-foreground">
-              <th className="px-2 py-2 text-right font-bold">תאריך</th>
+              {columnVisibility.date && <th className="px-2 py-2 text-right font-bold">תאריך</th>}
+              {/* "שעה" - locked column, always rendered, never gated by columnVisibility. */}
               <th className="px-2 py-2 text-right font-bold">שעה</th>
-              <th className="px-2 py-2 text-right font-bold">קבוצה</th>
-              <th className="px-2 py-2 text-right font-bold">חניכים / משתתפים</th>
-              <th className="px-2 py-2 text-right font-bold">ילד/ה</th>
-              <th className="px-2 py-2 text-right font-bold">הורה</th>
-              <th className="px-2 py-2 text-right font-bold">טלפון</th>
-              <th className="px-2 py-2 text-right font-bold">סוס</th>
-              <th className="px-2 py-2 text-right font-bold">ציוד / הערות</th>
+              {columnVisibility.group && <th className="px-2 py-2 text-right font-bold">קבוצה</th>}
+              {columnVisibility.trainees && (
+                <th className="px-2 py-2 text-right font-bold">חניכים / משתתפים</th>
+              )}
+              {columnVisibility.child && <th className="px-2 py-2 text-right font-bold">ילד/ה</th>}
+              {columnVisibility.parentName && <th className="px-2 py-2 text-right font-bold">הורה</th>}
+              {columnVisibility.parentPhone && <th className="px-2 py-2 text-right font-bold">טלפון</th>}
+              {columnVisibility.horse && <th className="px-2 py-2 text-right font-bold">סוס</th>}
+              {columnVisibility.equipment && (
+                <th className="px-2 py-2 text-right font-bold">ציוד / הערות</th>
+              )}
             </tr>
           </thead>
           <tbody>
@@ -407,29 +510,45 @@ function GeneratedLessonsTable({
                   row.isSelfRow ? "border-r-4 border-r-primary" : ""
                 }`}
               >
-                <td className="whitespace-nowrap px-2 py-2">
-                  {formatHebrewWeekday(parseDateKey(row.date))} · {formatHebrewDate(parseDateKey(row.date))}
-                </td>
+                {columnVisibility.date && (
+                  <td className="whitespace-nowrap px-2 py-2">
+                    {formatHebrewWeekday(parseDateKey(row.date))} · {formatHebrewDate(parseDateKey(row.date))}
+                  </td>
+                )}
                 <td className="whitespace-nowrap px-2 py-2">
                   {row.startTime}-{row.endTime}
                 </td>
-                <td className="px-2 py-2">{row.groupName ? `קבוצה ${row.groupName}` : "—"}</td>
-                <td className="px-2 py-2">
-                  <TraineeNamesCell people={row.participants} />
-                </td>
-                <td className="px-2 py-2">
-                  <ChildNameCell
-                    child={row.child}
-                    sameParentOtherNamesByChildId={sameParentOtherNamesByChildId}
-                    onOpenSameParentPopup={onOpenSameParentPopup}
-                  />
-                </td>
-                <td className="px-2 py-2">{row.child?.parentName ?? "—"}</td>
-                <td className="px-2 py-2">
-                  <PhoneCell phone={row.child?.parentPhone ?? null} />
-                </td>
-                <td className="px-2 py-2">{row.child?.horseName ?? "—"}</td>
-                <td className="px-2 py-2">{row.child?.equipmentNotes ?? "—"}</td>
+                {columnVisibility.group && (
+                  <td className="px-2 py-2">{row.groupName ? `קבוצה ${row.groupName}` : "—"}</td>
+                )}
+                {columnVisibility.trainees && (
+                  <td className="px-2 py-2">
+                    <TraineeNamesCell people={row.participants} />
+                  </td>
+                )}
+                {columnVisibility.child && (
+                  <td className="px-2 py-2">
+                    <ChildNameCell
+                      child={row.child}
+                      sameParentOtherNamesByChildId={sameParentOtherNamesByChildId}
+                      onOpenSameParentPopup={onOpenSameParentPopup}
+                    />
+                  </td>
+                )}
+                {columnVisibility.parentName && (
+                  <td className="px-2 py-2">{row.child?.parentName ?? "—"}</td>
+                )}
+                {columnVisibility.parentPhone && (
+                  <td className="px-2 py-2">
+                    <PhoneCell phone={row.child?.parentPhone ?? null} />
+                  </td>
+                )}
+                {columnVisibility.horse && (
+                  <td className="px-2 py-2">{row.child?.horseName ?? "—"}</td>
+                )}
+                {columnVisibility.equipment && (
+                  <td className="px-2 py-2">{row.child?.equipmentNotes ?? "—"}</td>
+                )}
               </tr>
             ))}
           </tbody>
@@ -596,11 +715,13 @@ function BeginnerStructureTable({
   rows,
   sameParentOtherNamesByChildId,
   onOpenSameParentPopup,
+  columnVisibility,
 }: {
   title: string;
   rows: BeginnerMergedTableRow[];
   sameParentOtherNamesByChildId: Map<string, string[]>;
   onOpenSameParentPopup: (childId: string) => void;
+  columnVisibility: StudentColumnVisibility;
 }) {
   // Time-block coloring keyed by each row's own private time - falling back
   // to the group's own time only for a placeholder row (no private time to
@@ -619,15 +740,19 @@ function BeginnerStructureTable({
         <table className="w-full min-w-[860px] border-collapse text-xs">
           <thead>
             <tr className="bg-muted text-muted-foreground">
-              <th className="px-2 py-2 text-right font-bold">קבוצה</th>
+              {columnVisibility.group && <th className="px-2 py-2 text-right font-bold">קבוצה</th>}
+              {/* "שעה פרטני"/"שעה קבוצתי" - locked columns, always rendered,
+                  never gated by columnVisibility (both are time context). */}
               <th className="px-2 py-2 text-right font-bold">שעה פרטני</th>
               <th className="px-2 py-2 text-right font-bold">שעה קבוצתי</th>
-              <th className="px-2 py-2 text-right font-bold">חניך</th>
-              <th className="px-2 py-2 text-right font-bold">ילד/ה</th>
-              <th className="px-2 py-2 text-right font-bold">הורה</th>
-              <th className="px-2 py-2 text-right font-bold">טלפון</th>
-              <th className="px-2 py-2 text-right font-bold">סוס</th>
-              <th className="px-2 py-2 text-right font-bold">ציוד / הערות</th>
+              {columnVisibility.trainees && <th className="px-2 py-2 text-right font-bold">חניך</th>}
+              {columnVisibility.child && <th className="px-2 py-2 text-right font-bold">ילד/ה</th>}
+              {columnVisibility.parentName && <th className="px-2 py-2 text-right font-bold">הורה</th>}
+              {columnVisibility.parentPhone && <th className="px-2 py-2 text-right font-bold">טלפון</th>}
+              {columnVisibility.horse && <th className="px-2 py-2 text-right font-bold">סוס</th>}
+              {columnVisibility.equipment && (
+                <th className="px-2 py-2 text-right font-bold">ציוד / הערות</th>
+              )}
             </tr>
           </thead>
           <tbody>
@@ -638,31 +763,45 @@ function BeginnerStructureTable({
                   row.isSelfRow ? "border-r-4 border-r-primary" : ""
                 }`}
               >
-                <td className="px-2 py-2">
-                  <GroupBadge groupName={row.groupName} />
-                </td>
+                {columnVisibility.group && (
+                  <td className="px-2 py-2">
+                    <GroupBadge groupName={row.groupName} />
+                  </td>
+                )}
                 <td className="whitespace-nowrap px-2 py-2">
                   {row.privateStartTime ? `${row.privateStartTime}-${row.privateEndTime}` : "—"}
                 </td>
                 <td className="whitespace-nowrap px-2 py-2">
                   {row.groupStartTime}-{row.groupEndTime}
                 </td>
-                <td className="px-2 py-2">
-                  <TraineeNamesCell people={row.trainees} />
-                </td>
-                <td className="px-2 py-2">
-                  <ChildNameCell
-                    child={row.child}
-                    sameParentOtherNamesByChildId={sameParentOtherNamesByChildId}
-                    onOpenSameParentPopup={onOpenSameParentPopup}
-                  />
-                </td>
-                <td className="px-2 py-2">{row.child?.parentName ?? "—"}</td>
-                <td className="px-2 py-2">
-                  <PhoneCell phone={row.child?.parentPhone ?? null} />
-                </td>
-                <td className="px-2 py-2">{row.child?.horseName ?? "—"}</td>
-                <td className="px-2 py-2">{row.child?.equipmentNotes ?? "—"}</td>
+                {columnVisibility.trainees && (
+                  <td className="px-2 py-2">
+                    <TraineeNamesCell people={row.trainees} />
+                  </td>
+                )}
+                {columnVisibility.child && (
+                  <td className="px-2 py-2">
+                    <ChildNameCell
+                      child={row.child}
+                      sameParentOtherNamesByChildId={sameParentOtherNamesByChildId}
+                      onOpenSameParentPopup={onOpenSameParentPopup}
+                    />
+                  </td>
+                )}
+                {columnVisibility.parentName && (
+                  <td className="px-2 py-2">{row.child?.parentName ?? "—"}</td>
+                )}
+                {columnVisibility.parentPhone && (
+                  <td className="px-2 py-2">
+                    <PhoneCell phone={row.child?.parentPhone ?? null} />
+                  </td>
+                )}
+                {columnVisibility.horse && (
+                  <td className="px-2 py-2">{row.child?.horseName ?? "—"}</td>
+                )}
+                {columnVisibility.equipment && (
+                  <td className="px-2 py-2">{row.child?.equipmentNotes ?? "—"}</td>
+                )}
               </tr>
             ))}
           </tbody>
@@ -720,11 +859,13 @@ function FixedStructureTable({
   rows,
   sameParentOtherNamesByChildId,
   onOpenSameParentPopup,
+  columnVisibility,
 }: {
   title: string;
   rows: FixedStructureTableRow[];
   sameParentOtherNamesByChildId: Map<string, string[]>;
   onOpenSameParentPopup: (childId: string) => void;
+  columnVisibility: StudentColumnVisibility;
 }) {
   // Time-block coloring keyed by defaultStartTime (the fixed-structure
   // template time, not any generated lesson's actual date/time) - computed
@@ -740,16 +881,19 @@ function FixedStructureTable({
         <table className="w-full min-w-[860px] border-collapse text-xs">
           <thead>
             <tr className="bg-muted text-muted-foreground">
-              <th className="px-2 py-2 text-right font-bold">סוג</th>
+              {columnVisibility.type && <th className="px-2 py-2 text-right font-bold">סוג</th>}
+              {/* "שעה" - locked column, always rendered, never gated by columnVisibility. */}
               <th className="px-2 py-2 text-right font-bold">שעה</th>
-              <th className="px-2 py-2 text-right font-bold">קבוצה</th>
-              <th className="px-2 py-2 text-right font-bold">מיקום</th>
-              <th className="px-2 py-2 text-right font-bold">חניכים</th>
-              <th className="px-2 py-2 text-right font-bold">ילד/ה</th>
-              <th className="px-2 py-2 text-right font-bold">הורה</th>
-              <th className="px-2 py-2 text-right font-bold">טלפון</th>
-              <th className="px-2 py-2 text-right font-bold">סוס</th>
-              <th className="px-2 py-2 text-right font-bold">ציוד / הערות</th>
+              {columnVisibility.group && <th className="px-2 py-2 text-right font-bold">קבוצה</th>}
+              {columnVisibility.location && <th className="px-2 py-2 text-right font-bold">מיקום</th>}
+              {columnVisibility.trainees && <th className="px-2 py-2 text-right font-bold">חניכים</th>}
+              {columnVisibility.child && <th className="px-2 py-2 text-right font-bold">ילד/ה</th>}
+              {columnVisibility.parentName && <th className="px-2 py-2 text-right font-bold">הורה</th>}
+              {columnVisibility.parentPhone && <th className="px-2 py-2 text-right font-bold">טלפון</th>}
+              {columnVisibility.horse && <th className="px-2 py-2 text-right font-bold">סוס</th>}
+              {columnVisibility.equipment && (
+                <th className="px-2 py-2 text-right font-bold">ציוד / הערות</th>
+              )}
             </tr>
           </thead>
           <tbody>
@@ -760,30 +904,46 @@ function FixedStructureTable({
                   row.isSelfRow ? "border-r-4 border-r-primary" : ""
                 }`}
               >
-                <td className="px-2 py-2">{row.roleLabel}</td>
+                {columnVisibility.type && <td className="px-2 py-2">{row.roleLabel}</td>}
                 <td className="whitespace-nowrap px-2 py-2">
                   {row.startTime}-{row.endTime}
                 </td>
-                <td className="px-2 py-2">
-                  <GroupBadge groupName={row.groupName} />
-                </td>
-                <td className="px-2 py-2">{row.defaultLocation ?? "—"}</td>
-                <td className="px-2 py-2">
-                  <TraineeNamesCell people={row.trainees} />
-                </td>
-                <td className="px-2 py-2">
-                  <ChildNameCell
-                    child={row.child}
-                    sameParentOtherNamesByChildId={sameParentOtherNamesByChildId}
-                    onOpenSameParentPopup={onOpenSameParentPopup}
-                  />
-                </td>
-                <td className="px-2 py-2">{row.child?.parentName ?? "—"}</td>
-                <td className="px-2 py-2">
-                  <PhoneCell phone={row.child?.parentPhone ?? null} />
-                </td>
-                <td className="px-2 py-2">{row.child?.horseName ?? "—"}</td>
-                <td className="px-2 py-2">{row.child?.equipmentNotes ?? "—"}</td>
+                {columnVisibility.group && (
+                  <td className="px-2 py-2">
+                    <GroupBadge groupName={row.groupName} />
+                  </td>
+                )}
+                {columnVisibility.location && (
+                  <td className="px-2 py-2">{row.defaultLocation ?? "—"}</td>
+                )}
+                {columnVisibility.trainees && (
+                  <td className="px-2 py-2">
+                    <TraineeNamesCell people={row.trainees} />
+                  </td>
+                )}
+                {columnVisibility.child && (
+                  <td className="px-2 py-2">
+                    <ChildNameCell
+                      child={row.child}
+                      sameParentOtherNamesByChildId={sameParentOtherNamesByChildId}
+                      onOpenSameParentPopup={onOpenSameParentPopup}
+                    />
+                  </td>
+                )}
+                {columnVisibility.parentName && (
+                  <td className="px-2 py-2">{row.child?.parentName ?? "—"}</td>
+                )}
+                {columnVisibility.parentPhone && (
+                  <td className="px-2 py-2">
+                    <PhoneCell phone={row.child?.parentPhone ?? null} />
+                  </td>
+                )}
+                {columnVisibility.horse && (
+                  <td className="px-2 py-2">{row.child?.horseName ?? "—"}</td>
+                )}
+                {columnVisibility.equipment && (
+                  <td className="px-2 py-2">{row.child?.equipmentNotes ?? "—"}</td>
+                )}
               </tr>
             ))}
           </tbody>
@@ -832,6 +992,42 @@ export function StudentTeachingPracticeSection({ studentId }: { studentId: strin
   }, [tab, studentId]);
 
   const [allModeTab, setAllModeTab] = useState<AllModeTab>("generatedLessons");
+
+  // Stage S4 - column visibility for "כל ההתנסויות" only, shared by both
+  // internal modes' tables. Starts from the default (everything visible) on
+  // every render/SSR pass, then is overwritten from localStorage in an
+  // effect (never read synchronously in useState's initializer - that would
+  // run during SSR too, where window doesn't exist).
+  const [studentColumnVisibility, setStudentColumnVisibility] = useState<StudentColumnVisibility>(
+    DEFAULT_STUDENT_COLUMN_VISIBILITY
+  );
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setStudentColumnVisibility(loadStudentColumnVisibility());
+  }, []);
+
+  function persistStudentColumnVisibility(next: StudentColumnVisibility) {
+    setStudentColumnVisibility(next);
+    if (typeof window !== "undefined") {
+      try {
+        window.localStorage.setItem(STUDENT_COLUMN_VISIBILITY_STORAGE_KEY, JSON.stringify(next));
+      } catch {
+        // Storage can throw (private browsing, quota) - the in-memory
+        // state above still updates for this session, it just won't
+        // persist across reloads. Never lets a storage failure break the
+        // toggle itself.
+      }
+    }
+  }
+
+  function toggleStudentColumn(key: StudentColumnKey) {
+    persistStudentColumnVisibility({ ...studentColumnVisibility, [key]: !studentColumnVisibility[key] });
+  }
+
+  function resetStudentColumnVisibility() {
+    persistStudentColumnVisibility(DEFAULT_STUDENT_COLUMN_VISIBILITY);
+  }
 
   // "ההתנסויות שלי" date tabs - Stage S2. Based only on myLessons (never
   // allLessons) - one tab per distinct date that actually has a lesson for
@@ -1219,6 +1415,42 @@ export function StudentTeachingPracticeSection({ studentId }: { studentId: strin
             </button>
           </div>
 
+          {/* Stage S4 - column visibility, shared across both internal
+              modes' tables (a column irrelevant to the currently-shown mode,
+              e.g. "תאריך" while in "מבנה קבוע", simply has no effect there).
+              "שעה" (and, in the beginner table, "שעה פרטני"/"שעה קבוצתי") is
+              intentionally not offered as a checkbox at all - every table
+              always renders its own time column. */}
+          <details className="rounded-xl border border-border bg-card p-2 text-xs">
+            <summary className="cursor-pointer select-none font-semibold text-card-foreground">
+              עמודות לתצוגה
+            </summary>
+            <div className="mt-2 flex flex-col gap-2">
+              <p className="text-[11px] text-muted-foreground">
+                עמודת השעה מוצגת תמיד ולא ניתנת להסתרה.
+              </p>
+              <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+                {STUDENT_COLUMN_KEYS.map((key) => (
+                  <label key={key} className="flex items-center gap-1.5 text-card-foreground">
+                    <input
+                      type="checkbox"
+                      checked={studentColumnVisibility[key]}
+                      onChange={() => toggleStudentColumn(key)}
+                    />
+                    {STUDENT_COLUMN_LABELS[key]}
+                  </label>
+                ))}
+              </div>
+              <button
+                type="button"
+                onClick={resetStudentColumnVisibility}
+                className="self-start rounded-full bg-muted px-2 py-1 text-[11px] font-medium text-muted-foreground hover:bg-muted/70"
+              >
+                איפוס לברירת מחדל
+              </button>
+            </div>
+          </details>
+
           {allModeTab === "generatedLessons" ? (
             allLessons === null ? (
               <p className="text-base text-muted-foreground">טוען...</p>
@@ -1262,18 +1494,21 @@ export function StudentTeachingPracticeSection({ studentId }: { studentId: strin
                     lessons={filteredGeneratedLessons.filter((l) => l.practiceType === "LUNGE")}
                     sameParentOtherNamesByChildId={allSameParentOtherNamesByChildId}
                     onOpenSameParentPopup={handleOpenSameParentPopup}
+                    columnVisibility={studentColumnVisibility}
                   />
                   <GeneratedLessonsTable
                     title="שיעורים פרטניים"
                     lessons={filteredGeneratedLessons.filter((l) => l.practiceType === "BEGINNER_PRIVATE")}
                     sameParentOtherNamesByChildId={allSameParentOtherNamesByChildId}
                     onOpenSameParentPopup={handleOpenSameParentPopup}
+                    columnVisibility={studentColumnVisibility}
                   />
                   <GeneratedLessonsTable
                     title="שיעורים קבוצתיים"
                     lessons={filteredGeneratedLessons.filter((l) => l.practiceType === "BEGINNER_GROUP")}
                     sameParentOtherNamesByChildId={allSameParentOtherNamesByChildId}
                     onOpenSameParentPopup={handleOpenSameParentPopup}
+                    columnVisibility={studentColumnVisibility}
                   />
                 </div>
               </>
@@ -1329,6 +1564,7 @@ export function StudentTeachingPracticeSection({ studentId }: { studentId: strin
                   rows={buildFixedStructureRows(fixedStructureGroups.lungeTracks, "לונג׳")}
                   sameParentOtherNamesByChildId={allSameParentOtherNamesByChildId}
                   onOpenSameParentPopup={handleOpenSameParentPopup}
+                  columnVisibility={studentColumnVisibility}
                 />
 
                 <BeginnerStructureTable
@@ -1336,6 +1572,7 @@ export function StudentTeachingPracticeSection({ studentId }: { studentId: strin
                   rows={beginnerMergedRows}
                   sameParentOtherNamesByChildId={allSameParentOtherNamesByChildId}
                   onOpenSameParentPopup={handleOpenSameParentPopup}
+                  columnVisibility={studentColumnVisibility}
                 />
 
                 <FixedStructureTable
@@ -1343,6 +1580,7 @@ export function StudentTeachingPracticeSection({ studentId }: { studentId: strin
                   rows={buildFixedStructureRows(fixedStructureGroups.unlinkedPrivateTracks, "פרטני")}
                   sameParentOtherNamesByChildId={allSameParentOtherNamesByChildId}
                   onOpenSameParentPopup={handleOpenSameParentPopup}
+                  columnVisibility={studentColumnVisibility}
                 />
               </div>
             </>

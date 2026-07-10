@@ -1492,6 +1492,19 @@ export interface TeachingPracticeFeedbackInput {
 // RidingLessonNote/upsertRidingLessonNoteAsInstructor. Never deletes/creates
 // participants, lessons, child assignments, or horses - only ever touches
 // the TeachingPracticeFeedback row itself.
+//
+// Empty-save guard: the feedback modal (TeachingPracticeFeedbackModal in
+// TeachingPracticeManager.tsx) saves unconditionally on close/switch, even
+// if nothing was ever typed - see lib/teaching-practice-feedback.ts for why
+// that previously created an empty placeholder row. This function now skips
+// the write entirely when the incoming input is empty AND there's nothing
+// meaningful already on record to preserve:
+//   - no existing row, or an existing row that's ALSO already empty -> no-op,
+//     return success, never create/touch a row for a placeholder save.
+//   - an existing row that already holds MEANINGFUL feedback -> still
+//     writes through (current behavior preserved as-is; whether clearing
+//     real feedback back to empty should instead delete the row is a
+//     genuine product question flagged separately, not decided here).
 async function upsertTeachingPracticeFeedbackInternal(
   participantId: string,
   input: TeachingPracticeFeedbackInput,
@@ -1509,6 +1522,13 @@ async function upsertTeachingPracticeFeedbackInternal(
   }
 
   const feedback = input.feedback?.trim() || null;
+
+  if (!hasMeaningfulTeachingPracticeFeedback({ feedback, ratingHalfPoints })) {
+    const existing = await prisma.teachingPracticeFeedback.findUnique({ where: { participantId } });
+    if (!existing || !hasMeaningfulTeachingPracticeFeedback(existing)) {
+      return { success: true };
+    }
+  }
 
   await prisma.teachingPracticeFeedback.upsert({
     where: { participantId },

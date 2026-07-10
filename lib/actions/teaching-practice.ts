@@ -851,7 +851,15 @@ export async function syncTeachingPracticeTrackParticipants(
   if (!track) return EMPTY_SYNC_STATS(false, false);
 
   const expectedSize = TEACHING_PRACTICE_TEAM_SIZE[track.practiceType];
-  if (track.trainees.length !== expectedSize) return EMPTY_SYNC_STATS(true, false);
+  // BEGINNER_PRIVATE has no full-team requirement (see
+  // computeTeachingPracticeRotation's own header) - only seat 0 (lead) is
+  // required; seat 1 (assistant) is optional. LUNGE/BEGINNER_GROUP keep the
+  // original exact-team-size requirement, unchanged.
+  const hasRequiredRoster =
+    track.practiceType === "BEGINNER_PRIVATE"
+      ? track.trainees.some((t) => t.rotationOrder === 0)
+      : track.trainees.length === expectedSize;
+  if (!hasRequiredRoster) return EMPTY_SYNC_STATS(true, false);
 
   const traineeInput = track.trainees.map((t) => ({ traineeId: t.traineeId, rotationOrder: t.rotationOrder }));
 
@@ -1017,10 +1025,20 @@ export async function setTeachingPracticeTrackTraineeSlotAsAdmin(
 // BEGINNER_PRIVATE tracks' slot-0 trainee on every sync (see
 // processTrackForSync in lib/teaching-practice-full-sync-core.ts) - a direct
 // swap on the group track itself would just be silently overwritten by the
-// next sync, which would be confusing rather than unsafe. Swapping the
-// underlying BEGINNER_PRIVATE tracks' own slot-0 seats (already supported
-// below, since those are plain LUNGE-shaped 2-seat tracks) is the correct way
-// to change who ends up in the linked group.
+// next sync, which would be confusing rather than unsafe.
+//
+// Stage TP-Roles-2 - BEGINNER_PRIVATE is now also refused. Product rule
+// (see lib/teaching-practice-rotation.ts) is that a private track's two
+// seats no longer rotate at all: rotationOrder 0 is always LEAD_INSTRUCTOR
+// and rotationOrder 1 is always ASSISTANT_INSTRUCTOR, on every occurrence.
+// "Swapping" those two seats would therefore mean permanently swapping who
+// holds the fixed lead/assistant role, not moving a position within a
+// rotation - a real, deliberate reassignment that belongs in the normal
+// per-seat editor (setTeachingPracticeTrackTraineeSlotAsAdmin, assign each
+// trainee to the seat they should actually and durably hold), not in an
+// action named/framed as a rotation-position swap. LUNGE is unaffected: it
+// still rotates, so swapping seats there is still a real, one-step way to
+// change who's lead this occurrence without touching future rotation.
 //
 // Both seats must already be occupied - Stage 1 scope. Swapping with an
 // empty seat is just a single-slot move, already covered by
@@ -1049,6 +1067,13 @@ async function swapTeachingPracticeTrackTraineeSeatsInternal(
       success: false,
       error:
         "לא ניתן להחליף מושבים ישירות בשיעור קבוצתי - הצוות נגזר מהמסלולים הפרטניים המקושרים. יש לבצע את ההחלפה במסלול הפרטני המתאים.",
+    };
+  }
+  if (track.practiceType === "BEGINNER_PRIVATE") {
+    return {
+      success: false,
+      error:
+        "בשיעור פרטני אין רוטציה בין התפקידים. המדריך/ה נשאר/ת מדריך/ה, ואם משובץ/ת עוזר/ת מדריך - הוא/היא נשאר/ת עוזר/ת. יש לשבץ חניך/ה ספציפי/ת לכל מושב דרך שיבוץ החניכים הרגיל.",
     };
   }
 
@@ -1981,8 +2006,20 @@ async function generateTeachingPracticeLessonFromTrackInternal(
   // Rotation math itself only makes sense for a complete team, so it's only
   // invoked once the team is exactly expectedSize; setTeachingPracticeTrackTraineesInternal
   // auto-syncs participants into this lesson once that later happens.
+  //
+  // BEGINNER_PRIVATE exception: no full-team requirement here - seat 0
+  // (lead) is the only requirement for computeTeachingPracticeRotation to
+  // produce a valid result; seat 1 (assistant) is optional and never
+  // invented (see that function's own header). A track with only seat 1
+  // filled (no lead) still produces no participants here, same as an
+  // entirely empty roster - a missing lead is invalid, not a valid partial
+  // state, and is already flagged as an error by the fixed-structure check.
   let roleAssignments: { traineeId: string; role: TeachingPracticeRoleValue }[] = [];
-  if (track.trainees.length === expectedSize) {
+  const hasRequiredRosterForGeneration =
+    track.practiceType === "BEGINNER_PRIVATE"
+      ? track.trainees.some((t) => t.rotationOrder === 0)
+      : track.trainees.length === expectedSize;
+  if (hasRequiredRosterForGeneration) {
     try {
       roleAssignments = computeTeachingPracticeRotation(
         track.practiceType,

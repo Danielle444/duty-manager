@@ -50,22 +50,48 @@ export interface TeachingPracticeRotationResult {
 // occurrenceIndex is 0-based ("how many lessons this track has generated
 // already"): 0 = the first lesson, 1 = the second, etc.
 //
-// Both team sizes use one formula: the trainee at rotationOrder i gets
-// roleList[((i - occurrenceIndex) % size + size) % size], where roleList is
-// [LEAD, ASSISTANT] for a 2-person team or [LEAD, SECOND, EVALUATOR] for a
-// 3-person team. Verified against the product spec's own worked examples -
-// see the self-check in the Stage 2 report.
+// LUNGE and BEGINNER_GROUP share one rotating formula: the trainee at
+// rotationOrder i gets roleList[((i - occurrenceIndex) % size + size) %
+// size], where roleList is [LEAD, ASSISTANT] for a 2-person team or [LEAD,
+// SECOND, EVALUATOR] for a 3-person team. Verified against the product
+// spec's own worked examples - see the self-check in the Stage 2 report.
+// Requires an exact, complete team (throws otherwise) - callers are
+// expected to validate team size themselves first (this is a safety net,
+// not the primary validation path).
 //
-// Throws if the trainee count doesn't match what practiceType requires -
-// callers are expected to validate team size themselves first (this is a
-// safety net, not the primary validation path).
+// BEGINNER_PRIVATE is a completely separate branch below, not a variation
+// of the formula above: product rule is no rotation at all between the two
+// private-lesson seats across dates, AND no full-team requirement -
+// rotationOrder 0 (lead) is required, rotationOrder 1 (assistant) is
+// optional and never invented. A version of this that just forced
+// occurrenceIndex to 0 and reused the formula above would still need an
+// exact-team-size check (the array-position sort below only lines up with
+// rotationOrder for a complete, dense 0..size-1 roster) - reading each
+// trainee's own rotationOrder field directly (as this branch does) avoids
+// that entirely and lets a lone trainee be handled correctly, whichever
+// seat they're actually in.
 export function computeTeachingPracticeRotation(
   practiceType: TeachingPracticeTypeValue,
   trainees: TeachingPracticeRotationTrainee[],
   occurrenceIndex: number
 ): TeachingPracticeRotationResult[] {
-  const roles = practiceType === "BEGINNER_GROUP" ? THREE_ROLE_ROTATION : TWO_ROLE_ROTATION;
   const expectedSize = TEACHING_PRACTICE_TEAM_SIZE[practiceType];
+
+  if (practiceType === "BEGINNER_PRIVATE") {
+    if (trainees.length > expectedSize) {
+      throw new Error("התנסות זו תומכת בעד 2 חניכים בצוות");
+    }
+    if (!trainees.some((t) => t.rotationOrder === 0)) {
+      throw new Error("מסלול פרטני חסר מדריך/ה ראשי/ת (רוטציה 0) - לא ניתן לשבץ תפקידים");
+    }
+    const sorted = [...trainees].sort((a, b) => a.rotationOrder - b.rotationOrder);
+    return sorted.map((trainee) => ({
+      traineeId: trainee.traineeId,
+      role: TWO_ROLE_ROTATION[trainee.rotationOrder],
+    }));
+  }
+
+  const roles = practiceType === "BEGINNER_GROUP" ? THREE_ROLE_ROTATION : TWO_ROLE_ROTATION;
 
   if (trainees.length !== expectedSize) {
     throw new Error(
@@ -87,27 +113,50 @@ export function computeTeachingPracticeRotation(
 // sync's business rule is "fully overwrite eligible lessons from whatever
 // the fixed structure currently has," even when the structure isn't (yet)
 // a complete team, so it can never call computeTeachingPracticeRotation
-// above (which requires an exact team size and would either throw or,
-// worse, need array-index-based sorting that silently shifts a later slot
-// into an earlier empty one's position - exactly the compaction bug fixed
-// elsewhere in this codebase for trainee-slot edits).
+// above for LUNGE/BEGINNER_GROUP (which requires an exact team size and
+// would either throw or, worse, need array-index-based sorting that
+// silently shifts a later slot into an earlier empty one's position -
+// exactly the compaction bug fixed elsewhere in this codebase for
+// trainee-slot edits).
 //
-// Same role formula as above, but keyed directly off each trainee's own
-// rotationOrder value instead of its position in a sorted/filtered array -
-// so a lone trainee at rotationOrder 1 (rotationOrder 0 empty) keeps
-// rotating through rotationOrder 1's own role sequence, never rotationOrder
-// 0's. Never invents a trainee for a missing rotationOrder: the result
-// simply has fewer entries than expectedSize when the roster is incomplete.
-// For a complete, dense roster (rotationOrder 0..expectedSize-1 all
-// present), this produces byte-for-byte the same result as
-// computeTeachingPracticeRotation, since rotationOrder and sorted-array
-// index coincide in that case - this is a strict generalization, not a
-// different formula. Never throws.
+// Same rotating formula as above for LUNGE/BEGINNER_GROUP, but keyed
+// directly off each trainee's own rotationOrder value instead of its
+// position in a sorted/filtered array - so a lone trainee at rotationOrder
+// 1 (rotationOrder 0 empty) keeps rotating through rotationOrder 1's own
+// role sequence, never rotationOrder 0's. Never invents a trainee for a
+// missing rotationOrder: the result simply has fewer entries than
+// expectedSize when the roster is incomplete. For a complete, dense roster
+// (rotationOrder 0..expectedSize-1 all present), this produces
+// byte-for-byte the same result as computeTeachingPracticeRotation, since
+// rotationOrder and sorted-array index coincide in that case - this is a
+// strict generalization, not a different formula. Never throws.
+//
+// BEGINNER_PRIVATE: no rotation (see computeTeachingPracticeRotation's own
+// comment above) and, unlike that function, never throws either - matching
+// this function's own "never throws" contract. rotationOrder 0 (lead) is
+// still required for ANY participant to be valid here: a lone
+// rotationOrder-1 (assistant) entry with no lead is not a valid private
+// roster, so it produces zero participants (the sync then removes any
+// stale participants from the generated lesson) rather than an
+// assistant-only lesson - lib/teaching-practice-fixed-structure-check.ts
+// already flags exactly this state ("missing_required_slot", error
+// severity) on the fixed structure itself, so the generated lesson ending
+// up participant-less here is consistent with that, not a silent surprise.
+// A lone rotationOrder-0 trainee, by contrast, is fully valid and produces
+// a single LEAD_INSTRUCTOR entry - the assistant is never invented.
 export function computePartialTeachingPracticeRotation(
   practiceType: TeachingPracticeTypeValue,
   trainees: TeachingPracticeRotationTrainee[],
   occurrenceIndex: number
 ): TeachingPracticeRotationResult[] {
+  if (practiceType === "BEGINNER_PRIVATE") {
+    if (!trainees.some((t) => t.rotationOrder === 0)) return [];
+    return trainees.map((trainee) => ({
+      traineeId: trainee.traineeId,
+      role: TWO_ROLE_ROTATION[trainee.rotationOrder],
+    }));
+  }
+
   const roles = practiceType === "BEGINNER_GROUP" ? THREE_ROLE_ROTATION : TWO_ROLE_ROTATION;
   const expectedSize = TEACHING_PRACTICE_TEAM_SIZE[practiceType];
 

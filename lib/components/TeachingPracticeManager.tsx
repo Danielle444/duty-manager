@@ -1690,9 +1690,18 @@ export function TeachingPracticeManager({
 
   // Stage TP-Roles-1 - fixed-structure seat swap eligibility, read from the
   // persisted track (not the unsaved teamSelections draft) since the swap
-  // action commits immediately, independent of "שמירת צוות". LUNGE and
-  // BEGINNER_PRIVATE are always exactly a 2-seat team (TEAM_SIZE), so a swap
-  // unambiguously means seat 0 <-> seat 1 - no seat picker needed.
+  // action commits immediately, independent of "שמירת צוות". LUNGE is always
+  // exactly a 2-seat team (TEAM_SIZE), so a swap unambiguously means seat 0
+  // <-> seat 1 - no seat picker needed.
+  //
+  // Stage TP-Roles-2 - LUNGE only. BEGINNER_PRIVATE no longer rotates its
+  // two seats by occurrence at all (rotationOrder 0 is always
+  // LEAD_INSTRUCTOR, rotationOrder 1 is always ASSISTANT_INSTRUCTOR on every
+  // date - see lib/teaching-practice-rotation.ts), so "swap" there would
+  // really mean permanently reassigning who holds the fixed lead/assistant
+  // role - that belongs in the normal per-seat trainee editor above, not
+  // this rotation-position-swap action (see swapTeachingPracticeTrackTraineeSeatsAsAdmin's
+  // own comment for the same reasoning, enforced server-side too).
   const swapSeatsPersistedSlot0 = openTrack?.trainees.find((t) => t.rotationOrder === 0)?.traineeId ?? "";
   const swapSeatsPersistedSlot1 = openTrack?.trainees.find((t) => t.rotationOrder === 1)?.traineeId ?? "";
   // Blocked while teamSelections has an unsaved edit relative to the
@@ -1702,7 +1711,7 @@ export function TeachingPracticeManager({
     teamSelections[0] !== swapSeatsPersistedSlot0 || teamSelections[1] !== swapSeatsPersistedSlot1;
   const canSwapTrackTraineeSeats =
     !!openTrack &&
-    openTrack.practiceType !== "BEGINNER_GROUP" &&
+    openTrack.practiceType === "LUNGE" &&
     swapSeatsPersistedSlot0 !== "" &&
     swapSeatsPersistedSlot1 !== "" &&
     !hasUnsavedTeamDraft;
@@ -1896,8 +1905,11 @@ export function TeachingPracticeManager({
   // lib/teaching-practice-rotation.ts - so this is a seat swap, not a direct
   // role edit). Admin-only, same as swapTeachingPracticeTrackTraineeSeatsAsAdmin
   // itself (no instructor counterpart, matching setTeachingPracticeTrackTraineeSlotAsAdmin
-  // above). Never offered for BEGINNER_GROUP (see canSwapTrackTraineeSeats
-  // and the action's own comment for why).
+  // above). Stage TP-Roles-2 - LUNGE only now (see canSwapTrackTraineeSeats
+  // and the action's own comment): BEGINNER_GROUP's roster is derived from
+  // linked private tracks, and BEGINNER_PRIVATE's two seats no longer rotate
+  // at all, so "swapping" either would be misleading rather than a real
+  // rotation-position change.
   function handleSwapTrackTraineeSeats() {
     if (!openTrackId || !canSwapTrackTraineeSeats) return;
     if (
@@ -4250,13 +4262,20 @@ export function TeachingPracticeManager({
                   {effectiveCanEdit && role === "admin" && (
                     <div className="mt-3 border-t border-border pt-3">
                       <p className="text-sm font-medium text-card-foreground">החלפת מיקום ברוטציה</p>
-                      {openTrack.practiceType === "BEGINNER_GROUP" ? (
+                      {openTrack.practiceType === "BEGINNER_GROUP" && (
                         <p className="mt-1 text-xs text-muted-foreground">
                           לא ניתן להחליף מושבים ישירות בשיעור קבוצתי - הצוות כאן נגזר אוטומטית מהמסלולים
                           הפרטניים המקושרים (חניך/ה מס&apos; 1 בכל מסלול פרטני). כדי להחליף מי משתתף/ת
                           בשיעור הקבוצתי, יש לבצע את ההחלפה במסלול הפרטני המתאים ולסנכרן.
                         </p>
-                      ) : (
+                      )}
+                      {openTrack.practiceType === "BEGINNER_PRIVATE" && (
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          בשיעור פרטני אין רוטציה בין התפקידים. המדריך/ה נשאר/ת מדריך/ה, ואם משובץ/ת
+                          עוזר/ת מדריך - הוא/היא נשאר/ת עוזר/ת.
+                        </p>
+                      )}
+                      {openTrack.practiceType === "LUNGE" && (
                         <>
                           <p className="mt-1 text-xs text-muted-foreground">
                             מחליף בין שני החניכים במבנה הקבוע (לא בשיעור ספציפי בתאריך מסוים) - זו החלפת
@@ -6831,7 +6850,9 @@ function LessonTableRow({
     <Fragment>
       {displayRows.map((row, i) => (
         <tr
-          key={row.participant?.participantId ?? row.child?.id ?? `${lesson.id}-row-${i}`}
+          key={[lesson.id, row.participant?.participantId ?? "no-participant", row.child?.id ?? "no-child", i].join(
+            "-"
+          )}
           className={`border-t border-border hover:bg-muted/60 ${!isEditing ? rowColorClass : ""}`}
         >
           {i === 0 && (

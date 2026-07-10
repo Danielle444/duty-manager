@@ -19,6 +19,7 @@ import {
   type TeachingPracticeScheduleWarning,
 } from "@/lib/teaching-practice-schedule-check";
 import { hasMeaningfulTeachingPracticeFeedback } from "@/lib/teaching-practice-feedback";
+import { buildParentKey } from "@/lib/teaching-practice-same-parent";
 // Stage E2 - track-scoped auto-sync after a fixed-structure child/horse/
 // equipment save. Imported from lib/teaching-practice-full-sync-core.ts (a
 // plain, non-"use server" module - see its own header) rather than from
@@ -1243,6 +1244,116 @@ export async function listTeachingPracticeChildrenForInstructor(
   const instructor = await prisma.instructor.findUnique({ where: { id: instructorId } });
   if (!instructor || !instructor.isActive) return [];
   return listTeachingPracticeChildrenInternal();
+}
+
+// ---------------------------------------------------------------------------
+// Same-parent row-details popup (admin/instructor) - dedicated, narrow
+// lookup for the "אותו הורה" badge's popup. Deliberately NOT a widened
+// TeachingPracticeLessonSummary (that list is loaded once for every lesson
+// system-wide; adding participant/child detail to every row there would
+// bloat the always-loaded payload just for a feature only some clicks ever
+// use) - this is its own small, on-demand query instead.
+// ---------------------------------------------------------------------------
+
+export interface TeachingPracticeSameParentLessonRow {
+  lessonId: string;
+  childId: string;
+  childFullName: string;
+  parentName: string | null;
+  parentPhone: string | null;
+  date: string;
+  startTime: string;
+  practiceType: TeachingPracticeTypeValue;
+  // Admin/instructor may see unpublished lessons too (they manage the
+  // assignment) - this flag lets the popup mark those rows accordingly,
+  // never hidden, unlike the trainee-facing surface which never receives an
+  // unpublished row at all.
+  isPublished: boolean;
+  participantNames: string[];
+  horseName: string | null;
+  equipmentNotes: string | null;
+}
+
+// Takes a childId (not parentName+parentPhone) - simpler and safer than
+// accepting free-text parent fields from the client: the server always
+// re-derives the normalized key from whatever's actually stored for that
+// child, so a client can never probe for an arbitrary name+phone
+// combination it doesn't already have from an existing badge. Returns []
+// (never throws) for a missing child, a child with no usable parent
+// name+phone pair, or a child whose parent key has no other ACTIVE match -
+// mirrors exactly when the "אותו הורה" badge itself would be hidden.
+async function getTeachingPracticeSameParentRowsInternal(
+  childId: string
+): Promise<TeachingPracticeSameParentLessonRow[]> {
+  const targetChild = await prisma.teachingPracticeChild.findUnique({ where: { id: childId } });
+  if (!targetChild) return [];
+
+  const targetKey = buildParentKey(targetChild.parentName, targetChild.parentPhone);
+  if (!targetKey) return [];
+
+  // Active children only count toward the match, same rule as the badge
+  // itself (lib/teaching-practice-same-parent.ts) - an inactive child's
+  // shared parent is never surfaced here either.
+  const activeChildren = await prisma.teachingPracticeChild.findMany({
+    where: { isActive: true },
+    select: { id: true, parentName: true, parentPhone: true },
+  });
+  const matchingChildIds = activeChildren
+    .filter((c) => buildParentKey(c.parentName, c.parentPhone) === targetKey)
+    .map((c) => c.id);
+  if (matchingChildIds.length < 2) return [];
+
+  const assignments = await prisma.teachingPracticeChildAssignment.findMany({
+    where: { childId: { in: matchingChildIds } },
+    include: {
+      child: { select: { fullName: true, parentName: true, parentPhone: true } },
+      lesson: {
+        select: {
+          date: true,
+          startTime: true,
+          practiceType: true,
+          isPublished: true,
+          participants: { select: { trainee: { select: { fullName: true } } } },
+        },
+      },
+    },
+    orderBy: [{ lesson: { date: "asc" } }, { lesson: { startTime: "asc" } }],
+  });
+
+  return assignments.map((a) => ({
+    lessonId: a.lessonId,
+    childId: a.childId,
+    childFullName: a.child.fullName,
+    parentName: a.child.parentName,
+    parentPhone: a.child.parentPhone,
+    date: dateKey(a.lesson.date),
+    startTime: a.lesson.startTime,
+    practiceType: a.lesson.practiceType,
+    isPublished: a.lesson.isPublished,
+    participantNames: a.lesson.participants.map((p) => p.trainee.fullName),
+    horseName: a.horseName,
+    equipmentNotes: a.equipmentNotes,
+  }));
+}
+
+export async function getTeachingPracticeSameParentRowsForAdmin(
+  childId: string
+): Promise<TeachingPracticeSameParentLessonRow[]> {
+  await requireAdmin();
+  return getTeachingPracticeSameParentRowsInternal(childId);
+}
+
+// Same permission level as listTeachingPracticeChildrenForInstructor (any
+// active instructor) - this action only derives from data every instructor
+// can already see (the child registry, plus lessons they can already open
+// via the generated-lessons date view), it doesn't expose anything new.
+export async function getTeachingPracticeSameParentRowsForInstructor(
+  instructorId: string,
+  childId: string
+): Promise<TeachingPracticeSameParentLessonRow[]> {
+  const instructor = await prisma.instructor.findUnique({ where: { id: instructorId } });
+  if (!instructor || !instructor.isActive) return [];
+  return getTeachingPracticeSameParentRowsInternal(childId);
 }
 
 function validateChildInput(

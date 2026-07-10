@@ -11,6 +11,7 @@ import type {
   TeachingPracticeTypeValue,
 } from "@/lib/teaching-practice-rotation";
 import { formatHebrewDate, formatHebrewWeekday, parseDateKey } from "@/lib/dates";
+import { Modal } from "@/lib/components/Modal";
 // Shared, DB-free, JSX-free detection rule only - reused so this trainee
 // surface never disagrees with the admin/instructor one about what counts
 // as "same parent." Nothing else is imported from
@@ -19,6 +20,7 @@ import { formatHebrewDate, formatHebrewWeekday, parseDateKey } from "@/lib/dates
 // badge itself is a tiny local component below, not imported, for the same
 // reason ROLE_LABELS/PRACTICE_TYPE_LABELS are duplicated locally instead.
 import {
+  buildParentKey,
   buildSameParentOtherNamesByChildId,
   type SameParentChildInput,
 } from "@/lib/teaching-practice-same-parent";
@@ -45,12 +47,17 @@ type TraineeTab = "mine" | "all";
 
 // Same "אותו הורה" wording/styling as the admin/instructor surface - never
 // states siblinghood as fact, and never shows a phone number (names only,
-// same as the rest of this card).
-function SameParentBadge({ otherNames }: { otherNames: string[] }) {
+// same as the rest of this card). stopPropagation keeps a badge tap from
+// also triggering any future click behavior on the enclosing card/row.
+function SameParentBadge({ otherNames, onClick }: { otherNames: string[]; onClick: () => void }) {
   if (otherNames.length === 0) return null;
   return (
     <span
-      className="mr-1 rounded-full bg-warning-muted px-1.5 py-0.5 text-[10px] font-medium text-warning"
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+      className="mr-1 cursor-pointer rounded-full bg-warning-muted px-1.5 py-0.5 text-[10px] font-medium text-warning hover:opacity-80"
       title={`אותו הורה/איש קשר כמו: ${otherNames.join(", ")}`}
     >
       אותו הורה
@@ -61,9 +68,11 @@ function SameParentBadge({ otherNames }: { otherNames: string[] }) {
 function LessonCard({
   lesson,
   sameParentOtherNamesByChildId,
+  onOpenSameParentPopup,
 }: {
   lesson: TeachingPracticeTraineeLessonRow;
   sameParentOtherNamesByChildId: Map<string, string[]>;
+  onOpenSameParentPopup: (childId: string) => void;
 }) {
   return (
     <div className="rounded-xl border-2 border-border p-4">
@@ -121,7 +130,10 @@ function LessonCard({
                   {c.age != null ? `גיל ${c.age}` : ""}
                   {c.age != null && c.gender ? " · " : ""}
                   {c.gender ?? ""}
-                  <SameParentBadge otherNames={sameParentOtherNamesByChildId.get(c.childId) ?? []} />
+                  <SameParentBadge
+                    otherNames={sameParentOtherNamesByChildId.get(c.childId) ?? []}
+                    onClick={() => onOpenSameParentPopup(c.childId)}
+                  />
                 </p>
                 {(c.horseName || c.equipmentNotes) && (
                   <p className="text-muted-foreground">
@@ -196,6 +208,76 @@ export function StudentTeachingPracticeSection({ studentId }: { studentId: strin
     return buildSameParentOtherNamesByChildId([...uniqueChildren.values()]);
   }, [lessons]);
 
+  // "אותו הורה" row-details popup - deliberately built from ALL PUBLISHED
+  // lessons (allLessons), never just the currently-active tab's list, per
+  // the product decision that once published, a trainee may see every
+  // matching published row, not only their own. allLessons is fetched here
+  // on first badge click if it hasn't been loaded yet (rather than eagerly
+  // on mount) - reuses the exact same
+  // listPublishedTeachingPracticeLessonsForTrainee action the "כל
+  // ההתנסויות" tab already calls; no new server action, no expanded data
+  // exposure. samePopupChildId !== null && allLessons === null is the
+  // loading state (no separate boolean needed).
+  const [samePopupChildId, setSamePopupChildId] = useState<string | null>(null);
+
+  function handleOpenSameParentPopup(childId: string) {
+    setSamePopupChildId(childId);
+    if (allLessons === null) {
+      startTransition(async () => {
+        const result = await listPublishedTeachingPracticeLessonsForTrainee(studentId);
+        setAllLessons(result);
+      });
+    }
+  }
+
+  function handleCloseSameParentPopup() {
+    setSamePopupChildId(null);
+  }
+
+  const samePopupRows = useMemo(() => {
+    if (!samePopupChildId || !allLessons) return null;
+    let targetKey: string | null = null;
+    for (const lesson of allLessons) {
+      const match = lesson.children.find((c) => c.childId === samePopupChildId);
+      if (match) {
+        targetKey = buildParentKey(match.parentName, match.parentPhone);
+        break;
+      }
+    }
+    if (!targetKey) return [];
+
+    const rows: {
+      key: string;
+      childFullName: string;
+      parentName: string | null;
+      parentPhone: string | null;
+      date: string;
+      startTime: string;
+      practiceType: TeachingPracticeTypeValue;
+      participantNames: string[];
+      horseName: string | null;
+      equipmentNotes: string | null;
+    }[] = [];
+    for (const lesson of allLessons) {
+      for (const c of lesson.children) {
+        if (buildParentKey(c.parentName, c.parentPhone) !== targetKey) continue;
+        rows.push({
+          key: `${lesson.id}-${c.childId}`,
+          childFullName: `${c.firstName}${c.lastName ? ` ${c.lastName}` : ""}`,
+          parentName: c.parentName,
+          parentPhone: c.parentPhone,
+          date: lesson.date,
+          startTime: lesson.startTime,
+          practiceType: lesson.practiceType,
+          participantNames: lesson.participants.map((p) => p.traineeName),
+          horseName: c.horseName,
+          equipmentNotes: c.equipmentNotes,
+        });
+      }
+    }
+    return rows.sort((a, b) => a.date.localeCompare(b.date) || a.startTime.localeCompare(b.startTime));
+  }, [samePopupChildId, allLessons]);
+
   return (
     <div className="flex flex-col gap-4">
       <h2 className="text-xl font-bold text-card-foreground">התנסויות מתחילים</h2>
@@ -234,10 +316,54 @@ export function StudentTeachingPracticeSection({ studentId }: { studentId: strin
               key={lesson.id}
               lesson={lesson}
               sameParentOtherNamesByChildId={sameParentOtherNamesByChildId}
+              onOpenSameParentPopup={handleOpenSameParentPopup}
             />
           ))}
         </div>
       )}
+
+      <Modal
+        open={samePopupChildId !== null}
+        onClose={handleCloseSameParentPopup}
+        title="אותו הורה / איש קשר"
+      >
+        <div className="flex flex-col gap-3">
+          <p className="text-xs text-muted-foreground">
+            כדאי לתאם מי יוצר קשר כדי לא לפנות לאותו הורה כמה פעמים.
+          </p>
+          {samePopupRows === null ? (
+            <p className="text-sm text-muted-foreground">טוען...</p>
+          ) : samePopupRows.length === 0 ? (
+            <p className="text-sm text-muted-foreground">לא נמצאו שיעורים משויכים.</p>
+          ) : (
+            <div className="flex max-h-[60vh] flex-col gap-2 overflow-y-auto">
+              {samePopupRows.map((row) => (
+                <div key={row.key} className="rounded-lg border border-border bg-card p-3 text-sm">
+                  <p className="font-semibold text-card-foreground">{row.childFullName}</p>
+                  <p className="mt-1 text-muted-foreground">
+                    {row.parentName ?? "—"}
+                    {row.parentPhone ? ` · ${row.parentPhone}` : ""}
+                  </p>
+                  <p className="mt-1 text-muted-foreground">
+                    {formatHebrewDate(parseDateKey(row.date))} · {row.startTime} ·{" "}
+                    {PRACTICE_TYPE_LABELS[row.practiceType]}
+                  </p>
+                  {row.participantNames.length > 0 && (
+                    <p className="mt-1 text-muted-foreground">חניכים: {row.participantNames.join(", ")}</p>
+                  )}
+                  {(row.horseName || row.equipmentNotes) && (
+                    <p className="mt-1 text-muted-foreground">
+                      {row.horseName ? `סוס: ${row.horseName}` : ""}
+                      {row.horseName && row.equipmentNotes ? " · " : ""}
+                      {row.equipmentNotes ? `ציוד: ${row.equipmentNotes}` : ""}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </Modal>
     </div>
   );
 }

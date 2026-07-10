@@ -41,6 +41,8 @@ import {
   deleteTeachingPracticeTrackAsInstructor,
   generateTeachingPracticeLessonFromTrackAsAdmin,
   generateTeachingPracticeLessonFromTrackAsInstructor,
+  getTeachingPracticeSameParentRowsForAdmin,
+  getTeachingPracticeSameParentRowsForInstructor,
   getTeachingPracticeScheduleCheckForAdmin,
   listTeachingPracticeChildrenForAdmin,
   listTeachingPracticeChildrenForInstructor,
@@ -89,6 +91,7 @@ import {
   type TeachingPracticeParticipantRow,
   type TeachingPracticeScheduleCheckResult,
   type TeachingPracticeTrackChildInput,
+  type TeachingPracticeSameParentLessonRow,
   type TeachingPracticeTrackInput,
   type TeachingPracticeTrackSummary,
   type TeachingPracticeTrackTraineeRow,
@@ -232,11 +235,26 @@ function getTraineeAtRotation(
 // admin/instructor-only component.
 const SAME_PARENT_BADGE_TITLE_PREFIX = "אותו הורה/איש קשר כמו: ";
 
-function SameParentBadge({ otherNames }: { otherNames: string[] }) {
+// onClick is optional so this can still be used purely as a static
+// indicator wherever there's no childId/popup wiring available - when
+// present, stopPropagation keeps a badge click from also toggling the
+// enclosing row's own click-to-highlight (ChildAssignmentCell) or opening
+// the drawer (ClickableCell's onOpen).
+function SameParentBadge({ otherNames, onClick }: { otherNames: string[]; onClick?: () => void }) {
   if (otherNames.length === 0) return null;
   return (
     <span
-      className="mr-1 rounded-full bg-warning-muted px-1.5 py-0.5 text-[10px] font-medium text-warning"
+      onClick={
+        onClick
+          ? (e) => {
+              e.stopPropagation();
+              onClick();
+            }
+          : undefined
+      }
+      className={`mr-1 rounded-full bg-warning-muted px-1.5 py-0.5 text-[10px] font-medium text-warning ${
+        onClick ? "cursor-pointer hover:opacity-80" : ""
+      }`}
       title={`${SAME_PARENT_BADGE_TITLE_PREFIX}${otherNames.join(", ")}`}
     >
       אותו הורה
@@ -999,6 +1017,47 @@ export function TeachingPracticeManager({
     () => buildSameParentOtherNamesByChildId(sameParentInputChildren),
     [sameParentInputChildren]
   );
+
+  // "אותו הורה" badge click -> row-details popup. Separate from the
+  // click-to-highlight state above (that's a table-wide visual toggle on
+  // the child name itself; this is a self-contained modal) - opening it
+  // always fetches fresh via getTeachingPracticeSameParentRowsAsAdmin/
+  // Instructor (admin/instructor may see unpublished lessons too, unlike
+  // the trainee-facing surface), never reuses client-cached lesson data,
+  // since a same-parent match can span dates never loaded into
+  // lessonDateDetail.
+  const [sameParentPopupChildId, setSameParentPopupChildId] = useState<string | null>(null);
+  const [sameParentPopupRows, setSameParentPopupRows] = useState<TeachingPracticeSameParentLessonRow[] | null>(null);
+  const [sameParentPopupLoading, setSameParentPopupLoading] = useState(false);
+  const [sameParentPopupError, setSameParentPopupError] = useState<string | null>(null);
+  const [, startSameParentPopupTransition] = useTransition();
+
+  function handleOpenSameParentPopup(childId: string) {
+    setSameParentPopupChildId(childId);
+    setSameParentPopupRows(null);
+    setSameParentPopupError(null);
+    setSameParentPopupLoading(true);
+    startSameParentPopupTransition(async () => {
+      try {
+        const rows =
+          role === "admin"
+            ? await getTeachingPracticeSameParentRowsForAdmin(childId)
+            : await getTeachingPracticeSameParentRowsForInstructor(actorId!, childId);
+        setSameParentPopupRows(rows);
+      } catch {
+        setSameParentPopupError("אירעה שגיאה בטעינת הנתונים");
+      } finally {
+        setSameParentPopupLoading(false);
+      }
+    });
+  }
+
+  function handleCloseSameParentPopup() {
+    setSameParentPopupChildId(null);
+    setSameParentPopupRows(null);
+    setSameParentPopupError(null);
+    setSameParentPopupLoading(false);
+  }
 
   // groupTrackId is only ever set on a BEGINNER_PRIVATE track - this maps
   // each BEGINNER_GROUP track's id to every private track linking to it, so
@@ -3192,6 +3251,7 @@ export function TeachingPracticeManager({
                                       onAssign={(childId) => handleInlineAssignTrackChild(row.track, childId)}
                                       parentKey={parentKeyByChildId.get(row.track.children[0]?.childId ?? "") ?? null}
                                       otherSameParentNames={sameParentOtherNamesByChildId.get(row.track.children[0]?.childId ?? "") ?? []}
+                                      onOpenSameParentPopup={handleOpenSameParentPopup}
                                       highlightedChildId={selectedHighlightedChildId}
                                       highlightedParentKey={selectedHighlightedParentKey}
                                       onToggleHighlight={handleToggleChildHighlight}
@@ -3558,6 +3618,7 @@ export function TeachingPracticeManager({
                                                   isActive={privateRow.track.isActive}
                                                   parentKey={parentKeyByChildId.get(privateRow.track.children[0]?.childId ?? "") ?? null}
                                                   otherSameParentNames={sameParentOtherNamesByChildId.get(privateRow.track.children[0]?.childId ?? "") ?? []}
+                                                  onOpenSameParentPopup={handleOpenSameParentPopup}
                                                   highlightedChildId={selectedHighlightedChildId}
                                                   highlightedParentKey={selectedHighlightedParentKey}
                                                   onToggleHighlight={handleToggleChildHighlight}
@@ -3811,6 +3872,7 @@ export function TeachingPracticeManager({
                                         isActive={row.track.isActive}
                                         parentKey={parentKeyByChildId.get(row.track.children[0]?.childId ?? "") ?? null}
                                       otherSameParentNames={sameParentOtherNamesByChildId.get(row.track.children[0]?.childId ?? "") ?? []}
+                                      onOpenSameParentPopup={handleOpenSameParentPopup}
                                         highlightedChildId={selectedHighlightedChildId}
                                         highlightedParentKey={selectedHighlightedParentKey}
                                         onToggleHighlight={handleToggleChildHighlight}
@@ -4472,6 +4534,7 @@ export function TeachingPracticeManager({
                                   onTogglePublished={handleToggleLessonPublished}
                                   onSave={handleUpdateLesson}
                                   onOpenFeedback={setFeedbackModalParticipantId}
+                                  onOpenSameParentPopup={handleOpenSameParentPopup}
                                 />
                               ))}
                             </div>
@@ -4496,6 +4559,7 @@ export function TeachingPracticeManager({
                                   onTogglePublished={handleToggleLessonPublished}
                                   onSave={handleUpdateLesson}
                                   onOpenFeedback={setFeedbackModalParticipantId}
+                                  onOpenSameParentPopup={handleOpenSameParentPopup}
                                 />
                               ))}
                             </div>
@@ -4520,6 +4584,7 @@ export function TeachingPracticeManager({
                                   onTogglePublished={handleToggleLessonPublished}
                                   onSave={handleUpdateLesson}
                                   onOpenFeedback={setFeedbackModalParticipantId}
+                                  onOpenSameParentPopup={handleOpenSameParentPopup}
                                 />
                               ))}
                             </div>
@@ -5322,6 +5387,74 @@ export function TeachingPracticeManager({
           )}
         </div>
       </Modal>
+
+      {/* "אותו הורה" row-details popup - always mounted (same convention as
+          the other modals above), opened by clicking the badge anywhere in
+          this component (fixed-structure tables or generated-lessons
+          tables). Always re-fetches on open via
+          getTeachingPracticeSameParentRowsForAdmin/Instructor rather than
+          reusing any client-cached lesson list - a same-parent match can
+          span dates never loaded into lessonDateDetail, and admin/
+          instructor are allowed to see unpublished lessons here too. */}
+      <Modal
+        open={sameParentPopupChildId !== null}
+        onClose={handleCloseSameParentPopup}
+        title="אותו הורה / איש קשר"
+      >
+        <div className="flex flex-col gap-3">
+          <p className="text-xs text-muted-foreground">
+            כדאי לתאם מי יוצר קשר כדי לא לפנות לאותו הורה כמה פעמים.
+          </p>
+          {sameParentPopupLoading && <p className="text-sm text-muted-foreground">טוען...</p>}
+          {sameParentPopupError && <p className="text-sm text-danger">{sameParentPopupError}</p>}
+          {sameParentPopupRows && !sameParentPopupLoading && (
+            <div className="flex max-h-[60vh] flex-col gap-2 overflow-y-auto">
+              {sameParentPopupRows.length === 0 ? (
+                <p className="text-sm text-muted-foreground">לא נמצאו שיעורים משויכים.</p>
+              ) : (
+                sameParentPopupRows.map((row, i) => (
+                  <div
+                    key={`${row.lessonId}-${row.childId}-${i}`}
+                    className="rounded-lg border border-border bg-card p-3 text-sm"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-1.5">
+                      <span className="font-semibold text-card-foreground">{row.childFullName}</span>
+                      {!row.isPublished && (
+                        <span className="rounded-full bg-secondary px-2 py-0.5 text-[11px] font-medium text-secondary-foreground">
+                          טיוטה
+                        </span>
+                      )}
+                    </div>
+                    <p className="mt-1 text-muted-foreground">
+                      {row.parentName ?? "—"}
+                      {row.parentPhone ? ` · ${row.parentPhone}` : ""}
+                    </p>
+                    <p className="mt-1 text-muted-foreground">
+                      {formatHebrewDate(parseDateKey(row.date))} · {row.startTime} ·{" "}
+                      {PRACTICE_TYPE_LABELS[row.practiceType]}
+                    </p>
+                    {row.participantNames.length > 0 && (
+                      <p className="mt-1 text-muted-foreground">חניכים: {row.participantNames.join(", ")}</p>
+                    )}
+                    {(row.horseName || row.equipmentNotes) && (
+                      <p className="mt-1 text-muted-foreground">
+                        {row.horseName ? `סוס: ${row.horseName}` : ""}
+                        {row.horseName && row.equipmentNotes ? " · " : ""}
+                        {row.equipmentNotes ? `ציוד: ${row.equipmentNotes}` : ""}
+                      </p>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+          <div className="flex justify-end border-t border-border pt-3">
+            <Button type="button" onClick={handleCloseSameParentPopup}>
+              סגירה
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }
@@ -5890,6 +6023,7 @@ function ChildAssignmentCell({
   highlightedParentKey,
   onToggleHighlight,
   otherSameParentNames,
+  onOpenSameParentPopup,
 }: {
   value: string;
   label: string;
@@ -5911,6 +6045,9 @@ function ChildAssignmentCell({
   // above) - names of every OTHER active child sharing this one's parent,
   // from sameParentOtherNamesByChildId. Absent/empty = no badge.
   otherSameParentNames?: string[];
+  // Opens the row-details popup for this exact child (value) when the
+  // badge is clicked - see handleOpenSameParentPopup.
+  onOpenSameParentPopup?: (childId: string) => void;
 }) {
   if (!editable) {
     // Only a real, assigned child (non-empty value) is clickable - "—" (no
@@ -5939,7 +6076,10 @@ function ChildAssignmentCell({
         label
       );
     const badge = value && otherSameParentNames?.length ? (
-      <SameParentBadge otherNames={otherSameParentNames} />
+      <SameParentBadge
+        otherNames={otherSameParentNames}
+        onClick={onOpenSameParentPopup ? () => onOpenSameParentPopup(value) : undefined}
+      />
     ) : null;
 
     if (onOpen) {
@@ -6220,6 +6360,7 @@ function LessonGroupTable({
   onTogglePublished,
   onSave,
   onOpenFeedback,
+  onOpenSameParentPopup,
 }: {
   groupName: string | null;
   lessons: TeachingPracticeLessonDetail[];
@@ -6237,6 +6378,7 @@ function LessonGroupTable({
     childAssignmentRows: TeachingPracticeChildAssignmentInput[]
   ) => Promise<ActionResult>;
   onOpenFeedback: (participantId: string) => void;
+  onOpenSameParentPopup: (childId: string) => void;
 }) {
   if (lessons.length === 0) return null;
   const roleSlots = ROLE_SLOTS_BY_PRACTICE_TYPE[lessons[0].practiceType];
@@ -6302,6 +6444,7 @@ function LessonGroupTable({
                 childRegistry={childRegistry}
                 rowColorClass={lessonColors[lessonIndex]}
                 sameParentOtherNamesByChildId={sameParentOtherNamesByChildId}
+                onOpenSameParentPopup={onOpenSameParentPopup}
                 onTogglePublished={() => onTogglePublished(lesson)}
                 onSave={(input, participantRows, childAssignmentRows) =>
                   onSave(lesson.id, input, participantRows, childAssignmentRows)
@@ -6379,6 +6522,7 @@ function LessonTableRow({
   childRegistry,
   rowColorClass,
   sameParentOtherNamesByChildId,
+  onOpenSameParentPopup,
   onTogglePublished,
   onSave,
   onOpenFeedback,
@@ -6403,6 +6547,7 @@ function LessonTableRow({
   // Always-visible "אותו הורה" badge lookup (see LessonGroupTable) -
   // childId -> other active children's names sharing its parent, registry-wide.
   sameParentOtherNamesByChildId: Map<string, string[]>;
+  onOpenSameParentPopup: (childId: string) => void;
   onTogglePublished: () => void;
   onSave: (
     input: TeachingPracticeLessonInput,
@@ -6536,7 +6681,10 @@ function LessonTableRow({
                 <td rowSpan={rowCount} className="px-2 py-2 align-top">
                   {soleChild ? `${soleChild.childFullName}${soleChild.isAbsent ? " (נעדר/ת)" : ""}` : "—"}
                   {soleChild && (
-                    <SameParentBadge otherNames={sameParentOtherNamesByChildId.get(soleChild.childId) ?? []} />
+                    <SameParentBadge
+                      otherNames={sameParentOtherNamesByChildId.get(soleChild.childId) ?? []}
+                      onClick={() => onOpenSameParentPopup(soleChild.childId)}
+                    />
                   )}
                 </td>
                 <td rowSpan={rowCount} className="px-2 py-2 align-top">
@@ -6564,7 +6712,10 @@ function LessonTableRow({
               <td className="px-2 py-2">
                 {row.child ? `${row.child.childFullName}${row.child.isAbsent ? " (נעדר/ת)" : ""}` : "—"}
                 {row.child && (
-                  <SameParentBadge otherNames={sameParentOtherNamesByChildId.get(row.child.childId) ?? []} />
+                  <SameParentBadge
+                    otherNames={sameParentOtherNamesByChildId.get(row.child.childId) ?? []}
+                    onClick={() => onOpenSameParentPopup(row.child!.childId)}
+                  />
                 )}
               </td>
               <td className="px-2 py-2">{row.child?.childAge ?? "—"}</td>

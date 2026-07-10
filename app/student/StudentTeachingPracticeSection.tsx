@@ -10,8 +10,9 @@ import type {
   TeachingPracticeRoleValue,
   TeachingPracticeTypeValue,
 } from "@/lib/teaching-practice-rotation";
-import { formatHebrewDate, formatHebrewWeekday, parseDateKey } from "@/lib/dates";
+import { formatHebrewDate, formatHebrewWeekday, parseDateKey, todayDateKey } from "@/lib/dates";
 import { Modal } from "@/lib/components/Modal";
+import { buildTelLink, buildWhatsAppLink } from "@/lib/phone-contact-links";
 // Shared, DB-free, JSX-free detection rule only - reused so this trainee
 // surface never disagrees with the admin/instructor one about what counts
 // as "same parent." Nothing else is imported from
@@ -89,10 +90,13 @@ function LessonCard({
         {PRACTICE_TYPE_LABELS[lesson.practiceType]}
       </p>
 
-      {(lesson.location || lesson.responsibleInstructorName) && (
+      {/* responsibleInstructorName is intentionally not rendered here (Stage
+          S2 product decision, display-only) - the field itself is still
+          returned by the server action untouched, so this can be
+          re-enabled later with no data change. */}
+      {lesson.location && (
         <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-sm text-muted-foreground">
-          {lesson.location && <span>מיקום: {lesson.location}</span>}
-          {lesson.responsibleInstructorName && <span>מדריך/ה אחראי/ת: {lesson.responsibleInstructorName}</span>}
+          <span>מיקום: {lesson.location}</span>
         </div>
       )}
 
@@ -121,36 +125,65 @@ function LessonCard({
         <div className="mt-3 border-t border-border pt-2">
           <p className="mb-1 text-sm font-semibold text-muted-foreground">ילדים</p>
           <ul className="flex flex-col gap-2">
-            {lesson.children.map((c) => (
-              <li key={c.childId} className="rounded-lg bg-muted p-2 text-sm text-card-foreground">
-                <p className="font-semibold">
-                  {c.firstName}
-                  {c.lastName ? ` ${c.lastName}` : ""}
-                  {c.age != null || c.gender ? " · " : ""}
-                  {c.age != null ? `גיל ${c.age}` : ""}
-                  {c.age != null && c.gender ? " · " : ""}
-                  {c.gender ?? ""}
-                  <SameParentBadge
-                    otherNames={sameParentOtherNamesByChildId.get(c.childId) ?? []}
-                    onClick={() => onOpenSameParentPopup(c.childId)}
-                  />
-                </p>
-                {(c.horseName || c.equipmentNotes) && (
-                  <p className="text-muted-foreground">
-                    {c.horseName ? `סוס: ${c.horseName}` : ""}
-                    {c.horseName && c.equipmentNotes ? " · " : ""}
-                    {c.equipmentNotes ? `ציוד: ${c.equipmentNotes}` : ""}
+            {lesson.children.map((c) => {
+              // Display-time derivation only - c.parentPhone (stored free
+              // text) is never modified. null simply means "don't render
+              // this action," never a broken tel:/wa.me link.
+              const telLink = c.parentPhone ? buildTelLink(c.parentPhone) : null;
+              const waLink = c.parentPhone ? buildWhatsAppLink(c.parentPhone) : null;
+              return (
+                <li key={c.childId} className="rounded-lg bg-muted p-2 text-sm text-card-foreground">
+                  <p className="font-semibold">
+                    {c.firstName}
+                    {c.lastName ? ` ${c.lastName}` : ""}
+                    {c.age != null || c.gender ? " · " : ""}
+                    {c.age != null ? `גיל ${c.age}` : ""}
+                    {c.age != null && c.gender ? " · " : ""}
+                    {c.gender ?? ""}
+                    <SameParentBadge
+                      otherNames={sameParentOtherNamesByChildId.get(c.childId) ?? []}
+                      onClick={() => onOpenSameParentPopup(c.childId)}
+                    />
                   </p>
-                )}
-                {(c.parentName || c.parentPhone) && (
-                  <p className="text-muted-foreground">
-                    {c.parentName ? `הורה: ${c.parentName}` : ""}
-                    {c.parentName && c.parentPhone ? " · " : ""}
-                    {c.parentPhone ? `טלפון: ${c.parentPhone}` : ""}
-                  </p>
-                )}
-              </li>
-            ))}
+                  {(c.horseName || c.equipmentNotes) && (
+                    <p className="text-muted-foreground">
+                      {c.horseName ? `סוס: ${c.horseName}` : ""}
+                      {c.horseName && c.equipmentNotes ? " · " : ""}
+                      {c.equipmentNotes ? `ציוד: ${c.equipmentNotes}` : ""}
+                    </p>
+                  )}
+                  {(c.parentName || c.parentPhone) && (
+                    <p className="text-muted-foreground">
+                      {c.parentName ? `הורה: ${c.parentName}` : ""}
+                      {c.parentName && c.parentPhone ? " · " : ""}
+                      {c.parentPhone ? `טלפון: ${c.parentPhone}` : ""}
+                    </p>
+                  )}
+                  {(telLink || waLink) && (
+                    <div className="mt-1 flex flex-wrap gap-1.5">
+                      {telLink && (
+                        <a
+                          href={telLink}
+                          className="rounded-full bg-secondary px-2 py-0.5 text-xs font-medium text-secondary-foreground hover:opacity-80"
+                        >
+                          התקשר
+                        </a>
+                      )}
+                      {waLink && (
+                        <a
+                          href={waLink}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="rounded-full bg-success-muted px-2 py-0.5 text-xs font-medium text-success hover:opacity-80"
+                        >
+                          WhatsApp
+                        </a>
+                      )}
+                    </div>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         </div>
       )}
@@ -184,6 +217,42 @@ export function StudentTeachingPracticeSection({ studentId }: { studentId: strin
   const emptyMessage =
     tab === "mine" ? "אין לך התנסויות מתחילים שפורסמו כרגע" : "אין התנסויות מתחילים שפורסמו כרגע";
 
+  // "ההתנסויות שלי" date tabs - Stage S2. Based only on myLessons (never
+  // allLessons) - one tab per distinct date that actually has a lesson for
+  // this trainee, plus "הכל". mineDateTab is null until the trainee
+  // actually clicks a tab - the default (nearest upcoming date, or "all")
+  // is derived purely at render time below (effectiveMineDateTab), never
+  // written back via an effect/setState, so it can never fight with a
+  // manual tab choice or trigger an extra render.
+  const [mineDateTab, setMineDateTab] = useState<string | "all" | null>(null);
+
+  const mineDateKeys = useMemo(() => {
+    if (!myLessons) return [];
+    return Array.from(new Set(myLessons.map((l) => l.date))).sort();
+  }, [myLessons]);
+
+  // Nearest date >= today among this trainee's own lesson dates, or "all"
+  // if there isn't one - every date tab is guaranteed non-empty (derived
+  // directly from myLessons' own dates), so this can never land on an
+  // empty tab.
+  const defaultMineDateTab = useMemo(() => {
+    const todayKey = todayDateKey();
+    return mineDateKeys.find((d) => d >= todayKey) ?? "all";
+  }, [mineDateKeys]);
+
+  const effectiveMineDateTab = mineDateTab ?? defaultMineDateTab;
+
+  const displayedMineLessons = useMemo(() => {
+    if (!myLessons) return [];
+    if (effectiveMineDateTab === "all") return myLessons;
+    return myLessons.filter((l) => l.date === effectiveMineDateTab);
+  }, [myLessons, effectiveMineDateTab]);
+
+  // "כל ההתנסויות" (tab === "all") is untouched by the date-tab feature
+  // above - it keeps showing its full continuous list exactly as before
+  // (Stage S3, not this stage, is where that view changes).
+  const displayedLessons = tab === "mine" ? displayedMineLessons : (lessons ?? []);
+
   // "אותו הורה" badge - deliberately scoped to only the children already
   // visible in the CURRENTLY LOADED lesson list (mine or all, whichever tab
   // is active), never the full child registry - trainees never fetch (and
@@ -191,6 +260,13 @@ export function StudentTeachingPracticeSection({ studentId }: { studentId: strin
   // appearing in more than one lesson is deduped by childId first, so its
   // own repeat appearances are never mistaken for a second same-parent
   // child in the tooltip.
+  //
+  // Deliberately built from `lessons` (the whole "mine"/"all" list), NOT
+  // `displayedLessons`/`displayedMineLessons` - the Stage S2 date-tabs only
+  // control which cards are shown at once, they must never narrow same-
+  // parent detection down to just the selected date. A match spanning two
+  // different dates still needs to be flagged correctly no matter which
+  // date tab happens to be open.
   const sameParentOtherNamesByChildId = useMemo(() => {
     const uniqueChildren = new Map<string, SameParentChildInput>();
     for (const lesson of lessons ?? []) {
@@ -303,6 +379,36 @@ export function StudentTeachingPracticeSection({ studentId }: { studentId: strin
         </button>
       </div>
 
+      {tab === "mine" && myLessons !== null && myLessons.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {mineDateKeys.map((date) => (
+            <button
+              key={date}
+              type="button"
+              onClick={() => setMineDateTab(date)}
+              className={`shrink-0 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+                effectiveMineDateTab === date
+                  ? "bg-primary text-primary-foreground"
+                  : "bg-muted text-muted-foreground hover:bg-muted/70"
+              }`}
+            >
+              {formatHebrewWeekday(parseDateKey(date))} · {formatHebrewDate(parseDateKey(date))}
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={() => setMineDateTab("all")}
+            className={`shrink-0 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+              effectiveMineDateTab === "all"
+                ? "bg-primary text-primary-foreground"
+                : "bg-muted text-muted-foreground hover:bg-muted/70"
+            }`}
+          >
+            הכל
+          </button>
+        </div>
+      )}
+
       {lessons === null ? (
         <p className="text-base text-muted-foreground">טוען...</p>
       ) : lessons.length === 0 ? (
@@ -311,7 +417,7 @@ export function StudentTeachingPracticeSection({ studentId }: { studentId: strin
         </p>
       ) : (
         <div className="flex flex-col gap-3">
-          {lessons.map((lesson) => (
+          {displayedLessons.map((lesson) => (
             <LessonCard
               key={lesson.id}
               lesson={lesson}

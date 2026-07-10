@@ -469,6 +469,53 @@ function stickyColumnKey(
   return priority.find((key) => visibility[key]) ?? null;
 }
 
+// Soft, mutually-distinguishable row backgrounds for the fixed-structure
+// view-mode tables (visual scan aid only) - mirrors the rotating-pastel-
+// per-block convention the Excel export already uses (BLOCK_FILL_COLORS in
+// lib/exports/build-teaching-practice-fixed-structure-workbook.ts), just
+// with real Tailwind classes instead of ARGB fills, so the on-screen table
+// and the exported sheet group time blocks the same visual way without
+// sharing any code (the export intentionally keeps its own palette - see
+// that file's header). Static literal class names only (no template-
+// string/computed class name) so Tailwind's build-time scanner always picks
+// them up. Every entry is a light *-100 shade - readable dark text over all
+// of them, and adjacent hues (amber/sky/emerald/rose/violet/cyan/orange/
+// teal) are deliberately spread around the color wheel rather than
+// clustered, so two neighboring blocks are never a close hue.
+const TRACK_TIME_BLOCK_PALETTE = [
+  "bg-amber-100",
+  "bg-sky-100",
+  "bg-emerald-100",
+  "bg-rose-100",
+  "bg-violet-100",
+  "bg-cyan-100",
+  "bg-orange-100",
+  "bg-teal-100",
+] as const;
+
+// Assigns one palette class per input key, in order - a "block" is a run of
+// consecutive equal keys (matching how these tables are already sorted by
+// time), and the palette rotates by one entry every time the key changes,
+// so two adjacent blocks are guaranteed never to share a color (wrapping
+// back to the start of the palette only after 8 blocks in a row). A null/
+// empty key (e.g. a track with no time set) still gets a color like any
+// other distinct key - this is a display-only aid, never a data check.
+function timeBlockColorClasses(keys: (string | null | undefined)[]): string[] {
+  const classes: string[] = [];
+  let blockIndex = -1;
+  let previousKey: string | null | undefined;
+  let hasPrevious = false;
+  for (const key of keys) {
+    if (!hasPrevious || key !== previousKey) {
+      blockIndex += 1;
+      previousKey = key;
+      hasPrevious = true;
+    }
+    classes.push(TRACK_TIME_BLOCK_PALETTE[blockIndex % TRACK_TIME_BLOCK_PALETTE.length]);
+  }
+  return classes;
+}
+
 interface StudentOption {
   id: string;
   fullName: string;
@@ -2970,6 +3017,10 @@ export function TeachingPracticeManager({
                 .filter((section) => sectionVisible(section.groupValue))
                 .map((section) => {
                   const rows = buildAssignmentRows("LUNGE", section.groupValue);
+                  // View-mode-only time-block coloring (see timeBlockColorClasses) -
+                  // rows are already sorted by defaultStartTime (buildAssignmentRows),
+                  // so a consecutive run of equal times shares one color.
+                  const rowColors = timeBlockColorClasses(rows.map((row) => row.track.defaultStartTime));
                   return (
                     <div key={`lunge-${section.groupValue ?? "none"}`}>
                       <h3 className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-lg bg-secondary px-3 py-2 text-sm font-bold text-secondary-foreground">
@@ -3064,7 +3115,7 @@ export function TeachingPracticeManager({
                               </tr>
                             </thead>
                             <tbody>
-                              {rows.map((row) => (
+                              {rows.map((row, rowIndex) => (
                                 // Reserved for a future per-row conflict/
                                 // warning highlight (Stage C, not implemented
                                 // yet) - no logic computed here, just a seam
@@ -3078,8 +3129,8 @@ export function TeachingPracticeManager({
                                   key={row.key}
                                   onClick={() => openTrackManager(row.track)}
                                   className={`cursor-pointer border-t border-border hover:bg-muted/60 ${
-                                    row.track.isActive ? "" : "opacity-60"
-                                  }`}
+                                    !isEditMode ? rowColors[rowIndex] : ""
+                                  } ${row.track.isActive ? "" : "opacity-60"}`}
                                 >
                                   {columnVisibility.lungeTime && (
                                     <td
@@ -3197,7 +3248,44 @@ export function TeachingPracticeManager({
                 .filter((section) => sectionVisible(section.groupValue))
                 .map((section) => {
                   const blocks = buildBeginnerBlocks(section.groupValue);
+                  // View-mode-only time-block coloring, keyed by each linked
+                  // private row's OWN defaultStartTime (not the group's) -
+                  // two private rows in the same group block with different
+                  // private times must look different, not identical. Built
+                  // as one flat list across every block in render order
+                  // (block by block, row by row within each), exactly
+                  // mirroring how the rows themselves are rendered below, so
+                  // a run of consecutive equal private times - whether
+                  // within one block or spanning a block boundary that
+                  // happens to share a time - shares one color, same
+                  // "consecutive equal key" convention as the LUNGE table.
+                  // A block with no linked private track yet (the "טרם
+                  // שויכו..." placeholder row) has no private time to key
+                  // on, so it falls back to the group's own time instead -
+                  // group-block cohesion for that one edge case is still
+                  // visible via the group-time cell's rowSpan and the
+                  // block's top border, never via a fabricated private time.
+                  const blockRowCounts = blocks.map((block) => Math.max(block.privateRows.length, 1));
+                  const privateRowColorKeys = blocks.flatMap((block, blockIdx) =>
+                    Array.from({ length: blockRowCounts[blockIdx] }, (_, i) => {
+                      const privateRow = block.privateRows[i] ?? null;
+                      return privateRow ? privateRow.track.defaultStartTime : block.groupTrack.defaultStartTime;
+                    })
+                  );
+                  const privateRowColors = timeBlockColorClasses(privateRowColorKeys);
+                  const blockColorStartOffsets: number[] = [];
+                  {
+                    let offset = 0;
+                    for (const count of blockRowCounts) {
+                      blockColorStartOffsets.push(offset);
+                      offset += count;
+                    }
+                  }
                   const unlinkedPrivate = buildUnlinkedPrivateTracks(section.groupValue);
+                  // View-mode-only time-block coloring, same convention as
+                  // the LUNGE table above (rows already sorted by
+                  // defaultStartTime via buildUnlinkedPrivateTracks).
+                  const unlinkedColors = timeBlockColorClasses(unlinkedPrivate.map((row) => row.track.defaultStartTime));
                   // Date assignment for beginners is by (practiceType,
                   // groupName), not per individual block - one action for
                   // every private track in this group, one for every group
@@ -3356,16 +3444,19 @@ export function TeachingPracticeManager({
                               </tr>
                             </thead>
                             <tbody>
-                              {blocks.map((block) => {
+                              {blocks.map((block, blockIndex) => {
                                 const rowCount = Math.max(block.privateRows.length, 1);
                                 return (
                                   <Fragment key={block.key}>
                                     {Array.from({ length: rowCount }, (_, i) => {
                                       const privateRow = block.privateRows[i] ?? null;
+                                      const flatRowColor = privateRowColors[blockColorStartOffsets[blockIndex] + i];
                                       return (
                                         <tr
                                           key={privateRow?.key ?? `${block.key}-empty`}
-                                          className={`border-border ${i === 0 ? "border-t-2" : "border-t"}`}
+                                          className={`border-border ${i === 0 ? "border-t-2" : "border-t"} ${
+                                            !isEditMode ? flatRowColor : ""
+                                          }`}
                                         >
                                           {i === 0 && columnVisibility.groupTime && (
                                             <ClickableCell
@@ -3637,7 +3728,7 @@ export function TeachingPracticeManager({
                                 </tr>
                               </thead>
                               <tbody>
-                                {unlinkedPrivate.map((row) => (
+                                {unlinkedPrivate.map((row, rowIndex) => (
                                   // Whole-row hover (unlike the Beginners block
                                   // table below, every cell in this row always
                                   // belongs to the same track, so highlighting
@@ -3646,7 +3737,12 @@ export function TeachingPracticeManager({
                                   // isActive dimming stays per-cell (each
                                   // ClickableCell already applies it) - adding
                                   // it here too would double-dim inactive rows.
-                                  <tr key={row.key} className="border-t border-border hover:bg-muted/40">
+                                  <tr
+                                    key={row.key}
+                                    className={`border-t border-border hover:bg-muted/40 ${
+                                      !isEditMode ? unlinkedColors[rowIndex] : ""
+                                    }`}
+                                  >
                                     {columnVisibility.privateTime && (
                                       <ClickableCell
                                         sticky={unlinkedStickyKey === "privateTime"}
@@ -6115,6 +6211,12 @@ function LessonGroupTable({
   if (lessons.length === 0) return null;
   const roleSlots = ROLE_SLOTS_BY_PRACTICE_TYPE[lessons[0].practiceType];
   const sorted = [...lessons].sort((a, b) => a.startTime.localeCompare(b.startTime));
+  // Visual-aid-only time-block coloring, keyed by each lesson's own actual
+  // startTime on this generated date (never the fixed-structure track's
+  // defaultStartTime) - same rotating palette/helper as the fixed-structure
+  // tables (see timeBlockColorClasses), so lessons at the same actual time
+  // share a color and adjacent different times are clearly distinguishable.
+  const lessonColors = timeBlockColorClasses(sorted.map((lesson) => lesson.startTime));
   return (
     <div>
       <h4 className="mb-1.5 rounded-lg bg-muted px-3 py-1.5 text-xs font-bold text-muted-foreground">
@@ -6147,7 +6249,7 @@ function LessonGroupTable({
             </tr>
           </thead>
           <tbody>
-            {sorted.map((lesson) => (
+            {sorted.map((lesson, lessonIndex) => (
               <LessonTableRow
                 key={lesson.id}
                 lesson={lesson}
@@ -6158,6 +6260,7 @@ function LessonGroupTable({
                 instructors={instructors}
                 trainees={trainees}
                 childRegistry={childRegistry}
+                rowColorClass={lessonColors[lessonIndex]}
                 onTogglePublished={() => onTogglePublished(lesson)}
                 onSave={(input, participantRows, childAssignmentRows) =>
                   onSave(lesson.id, input, participantRows, childAssignmentRows)
@@ -6233,6 +6336,7 @@ function LessonTableRow({
   instructors,
   trainees,
   childRegistry,
+  rowColorClass,
   onTogglePublished,
   onSave,
   onOpenFeedback,
@@ -6249,6 +6353,11 @@ function LessonTableRow({
   instructors: InstructorOption[];
   trainees: StudentOption[];
   childRegistry: TeachingPracticeChildRow[];
+  // Visual-aid-only time-block background (see LessonGroupTable) - applied
+  // to this lesson's own display rows only while its inline edit form isn't
+  // open (isEditing below), so the edit inputs are never shown against a
+  // colored background.
+  rowColorClass: string;
   onTogglePublished: () => void;
   onSave: (
     input: TeachingPracticeLessonInput,
@@ -6348,7 +6457,7 @@ function LessonTableRow({
       {displayRows.map((row, i) => (
         <tr
           key={row.participant?.participantId ?? row.child?.id ?? `${lesson.id}-row-${i}`}
-          className="border-t border-border hover:bg-muted/60"
+          className={`border-t border-border hover:bg-muted/60 ${!isEditing ? rowColorClass : ""}`}
         >
           {i === 0 && (
             <td

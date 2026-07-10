@@ -62,8 +62,8 @@ function TopicAverageBadge({ average }: { average: number | null }) {
 
 // Collapsible topic card - the single title lives in this clickable header
 // row alongside the average badge and a chevron, never duplicated below it.
-// Reused for every topic (רכיבות now, התנסויות מתחילים below, future
-// topics later) so title+badge+collapse behavior can never drift apart
+// Reused for every topic (הדרכת מתקדמים now, התנסויות מתחילים below,
+// future topics later) so title+badge+collapse behavior can never drift apart
 // between them. Plain-text chevron (no icon library) rotated via a CSS
 // transform - no new dependency.
 function TopicSection({
@@ -181,6 +181,145 @@ function TeachingPracticeFeedbackHistoryList({ rows }: { rows: TeachingPracticeF
   );
 }
 
+// Stage P3 - a client-side-only merge of the two already-loaded row arrays
+// above (no new server action, no new query) into one chronological
+// timeline. source drives both the badge label below and which of each row
+// shape's own fields get pulled into the shared display fields - riding and
+// Teaching Practice rows have different field names for the same concept
+// (e.g. RidingHistoryRow.note vs. TeachingPracticeFeedbackHistoryRow.feedback),
+// so this is where they're normalized into one shape, once.
+interface CombinedTimelineItem {
+  key: string;
+  source: "riding" | "teachingPractice";
+  date: string;
+  time: string;
+  title: string;
+  ratingHalfPoints: number | null;
+  text: string | null;
+  updatedByName: string | null;
+  updatedAt: string;
+  // Pre-built "label: value" strings (only for whichever fields this
+  // particular row actually has a value for) - built once here rather than
+  // re-derived in the list component, since the two source shapes' context
+  // fields differ entirely and don't need to be re-inspected at render time.
+  contextParts: string[];
+}
+
+function buildRidingTimelineItems(rows: RidingHistoryRow[]): CombinedTimelineItem[] {
+  return rows.map((row) => {
+    const contextParts: string[] = [row.horseDisplay];
+    if (row.arena) contextParts.push(`מגרש: ${row.arena}`);
+    if (row.lessonTopic) contextParts.push(`נושא השיעור: ${row.lessonTopic}`);
+    if (row.taughtStudents.length > 0) {
+      contextParts.push(`הדריך/ה: ${row.taughtStudents.map((s) => s.fullName).join(", ")}`);
+    }
+    return {
+      key: `riding-${row.ridingSlotId}`,
+      source: "riding",
+      date: row.dateKey,
+      time: row.startTime,
+      title: "הדרכת מתקדמים",
+      ratingHalfPoints: row.ratingHalfPoints,
+      text: row.note,
+      updatedByName: row.updatedByName,
+      updatedAt: row.updatedAt,
+      contextParts,
+    };
+  });
+}
+
+function buildTeachingPracticeTimelineItems(
+  rows: TeachingPracticeFeedbackHistoryRow[]
+): CombinedTimelineItem[] {
+  return rows.map((row) => {
+    const contextParts: string[] = [];
+    if (row.groupName) contextParts.push(`קבוצה ${row.groupName}`);
+    contextParts.push(`תפקיד: ${ROLE_LABELS[row.role]}`);
+    if (row.childFullName) contextParts.push(`ילד/ה: ${row.childFullName}`);
+    if (row.horseName) contextParts.push(`סוס: ${row.horseName}`);
+    if (row.equipmentNotes) contextParts.push(`ציוד: ${row.equipmentNotes}`);
+    if (row.location) contextParts.push(`מיקום: ${row.location}`);
+    return {
+      key: `teaching-practice-${row.feedbackId}`,
+      source: "teachingPractice",
+      date: row.date,
+      time: row.startTime,
+      title: PRACTICE_TYPE_LABELS[row.practiceType],
+      ratingHalfPoints: row.ratingHalfPoints,
+      text: row.feedback,
+      updatedByName: row.updatedByName,
+      updatedAt: row.updatedAt,
+      contextParts,
+    };
+  });
+}
+
+// Newest first: date desc, then time desc, then updatedAt desc as a final
+// tie-break - plain string comparison only (dateKey is "YYYY-MM-DD",
+// startTime is "HH:MM", updatedAt is an ISO string - all sort correctly
+// lexicographically), so this can never throw on a missing/malformed value
+// the way Date parsing could.
+function compareTimelineItemsNewestFirst(a: CombinedTimelineItem, b: CombinedTimelineItem): number {
+  return (
+    b.date.localeCompare(a.date) || b.time.localeCompare(a.time) || b.updatedAt.localeCompare(a.updatedAt)
+  );
+}
+
+const TIMELINE_SOURCE_LABELS: Record<CombinedTimelineItem["source"], string> = {
+  riding: "הדרכת מתקדמים",
+  teachingPractice: "התנסות מתחילים",
+};
+
+// Compact, read-only, no filters - same convention as
+// TeachingPracticeFeedbackHistoryList above. Items already arrive sorted.
+function CombinedTimelineList({ items }: { items: CombinedTimelineItem[] }) {
+  if (items.length === 0) {
+    return (
+      <p className="rounded-xl border border-border bg-card p-4 text-sm text-muted-foreground">
+        עדיין לא הוזנו משובים לחניך/ה זה/זו.
+      </p>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      {items.map((item) => (
+        <div key={item.key} className="rounded-xl border border-border bg-card p-4">
+          <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                {TIMELINE_SOURCE_LABELS[item.source]}
+              </span>
+              <span className="font-semibold text-card-foreground">
+                {formatHebrewDate(parseDateKey(item.date))} · {item.time}
+              </span>
+            </div>
+            <span
+              className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                item.ratingHalfPoints != null
+                  ? "bg-success-muted text-success"
+                  : "bg-muted text-muted-foreground"
+              }`}
+            >
+              {item.ratingHalfPoints != null ? `דירוג: ${item.ratingHalfPoints / 2}` : "אין דירוג"}
+            </span>
+          </div>
+          <p className="mb-1 text-base font-bold text-card-foreground">{item.title}</p>
+          {item.text && <p className="mb-1 text-sm text-card-foreground">{item.text}</p>}
+          {item.contextParts.length > 0 && (
+            <p className="mb-1 text-xs text-muted-foreground">{item.contextParts.join(" · ")}</p>
+          )}
+          <p className="text-xs text-muted-foreground">
+            {item.updatedByName && `עודכן על ידי: ${item.updatedByName}`}
+            {item.updatedByName && " · "}
+            עודכן בתאריך: {formatHebrewDateTime(new Date(item.updatedAt))}
+          </p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export interface TraineeProgressStudentListItem {
   id: string;
   fullName: string;
@@ -210,9 +349,15 @@ export function TraineeProgressClient({
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [selectedStudentId, setSelectedStudentId] = useState<string | null>(initialStudentId);
 
-  // Each topic section collapses/expands independently, default expanded.
+  // Each topic section collapses/expands independently. הדרכת מתקדמים/
+  // התנסויות מתחילים default expanded (unchanged from before); כל המשובים defaults
+  // collapsed since it's purely a re-display of the same two sources
+  // already expanded above it - keeping it collapsed by default avoids
+  // tripling the page's effective length for a trainee with a lot of
+  // history, while still being one click away.
   const [isRidingOpen, setIsRidingOpen] = useState(true);
   const [isTeachingPracticeOpen, setIsTeachingPracticeOpen] = useState(true);
+  const [isTimelineOpen, setIsTimelineOpen] = useState(false);
 
   // Keeps the URL's studentId in sync with the in-page selection (deep-
   // linkable/shareable/refresh-safe), without forcing a full page reload -
@@ -303,6 +448,27 @@ export function TraineeProgressClient({
         : null,
     [teachingPracticeRows]
   );
+
+  // Stage P3 - combined timeline, purely a client-side merge/sort of the two
+  // arrays already loaded above (no new fetch). null (still loading) only
+  // while EITHER source hasn't finished loading yet - waiting for both
+  // avoids briefly showing an incomplete timeline (e.g. riding rows only)
+  // that would look like "no Teaching Practice feedback exists" when it's
+  // really just still in flight.
+  const combinedTimelineItems = useMemo(() => {
+    if (ridingRows === null || teachingPracticeRows === null) return null;
+    return [...buildRidingTimelineItems(ridingRows), ...buildTeachingPracticeTimelineItems(teachingPracticeRows)].sort(
+      compareTimelineItemsNewestFirst
+    );
+  }, [ridingRows, teachingPracticeRows]);
+
+  const combinedAverageRating = useMemo(() => {
+    if (ridingRows === null || teachingPracticeRows === null) return null;
+    return averageRatingFromHalfPoints([
+      ...ridingRows.map((r) => r.ratingHalfPoints),
+      ...teachingPracticeRows.map((r) => r.ratingHalfPoints),
+    ]);
+  }, [ridingRows, teachingPracticeRows]);
 
   function handleSelectStudent(studentId: string) {
     setSelectedStudentId(studentId);
@@ -425,7 +591,7 @@ export function TraineeProgressClient({
           </div>
 
           <TopicSection
-            title="רכיבות"
+            title="הדרכת מתקדמים"
             average={ridingAverageRating}
             isOpen={isRidingOpen}
             onToggle={() => setIsRidingOpen((v) => !v)}
@@ -447,6 +613,19 @@ export function TraineeProgressClient({
               <p className="text-sm text-muted-foreground">טוען...</p>
             ) : (
               <TeachingPracticeFeedbackHistoryList rows={teachingPracticeRows} />
+            )}
+          </TopicSection>
+
+          <TopicSection
+            title="כל המשובים"
+            average={combinedAverageRating}
+            isOpen={isTimelineOpen}
+            onToggle={() => setIsTimelineOpen((v) => !v)}
+          >
+            {combinedTimelineItems === null ? (
+              <p className="text-sm text-muted-foreground">טוען...</p>
+            ) : (
+              <CombinedTimelineList items={combinedTimelineItems} />
             )}
           </TopicSection>
         </>

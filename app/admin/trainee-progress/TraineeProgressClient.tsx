@@ -28,6 +28,35 @@ function averageRatingFromHalfPoints(ratingsHalfPoints: (number | null)[]): numb
   return rated.reduce((sum, v) => sum + v, 0) / rated.length / 2;
 }
 
+// Reusable across future topics, same as formatTopicAverageLabel -
+// no-ratings is always the neutral/gray tier, regardless of threshold.
+// The two "good" tiers (4.5+ and 3.5-4.49) are deliberately two different
+// hues (this app's own success green vs. plain sky blue, since there's no
+// dedicated "info" semantic color token in globals.css) rather than two
+// shades of the same color, so they stay visually distinguishable from each
+// other, not just from the warning/danger tiers.
+function topicAverageBadgeClasses(average: number | null): string {
+  if (average == null) return "bg-muted text-muted-foreground";
+  if (average >= 4.5) return "bg-success-muted text-success";
+  if (average >= 3.5) return "bg-sky-100 text-sky-800";
+  if (average >= 2.5) return "bg-warning-muted text-warning";
+  return "bg-danger-muted text-danger";
+}
+
+// Small reusable badge - later topics (Teaching Practice, combined
+// timeline) can render this same component next to their own title with
+// their own computed average, keeping color/label rules in exactly one
+// place.
+function TopicAverageBadge({ average }: { average: number | null }) {
+  return (
+    <span
+      className={`rounded-full px-2.5 py-1 text-xs font-medium ${topicAverageBadgeClasses(average)}`}
+    >
+      {formatTopicAverageLabel(average)}
+    </span>
+  );
+}
+
 export interface TraineeProgressStudentListItem {
   id: string;
   fullName: string;
@@ -258,14 +287,16 @@ export function TraineeProgressClient({
               <p className="text-sm text-muted-foreground">טוען...</p>
             ) : (
               <>
-                {/* Same "topic · ממוצע X.X" pattern to reuse verbatim for
-                    future topics (Teaching Practice, combined timeline) -
-                    each future tab computes its own average the same way
-                    (averageRatingFromHalfPoints) and passes it through
-                    formatTopicAverageLabel. */}
-                <p className="text-xs text-muted-foreground">
-                  רכיבות · {formatTopicAverageLabel(ridingAverageRating)}
-                </p>
+                {/* Section header with the average badge sitting next to
+                    the title itself, rather than a separate muted line -
+                    same TopicAverageBadge/averageRatingFromHalfPoints pair
+                    to reuse verbatim for future topics (Teaching Practice,
+                    combined timeline), each computing its own average and
+                    rendering its own title + badge this same way. */}
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="text-sm font-bold text-card-foreground">רכיבות</h3>
+                  <TopicAverageBadge average={ridingAverageRating} />
+                </div>
                 <RidingHistoryList rows={ridingRows} />
               </>
             ))}

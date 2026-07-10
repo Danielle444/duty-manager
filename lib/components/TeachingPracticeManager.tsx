@@ -26,6 +26,11 @@ import {
   type TeachingPracticeTypeValue,
 } from "@/lib/teaching-practice-rotation";
 import {
+  buildParentKeyByChildId,
+  buildSameParentOtherNamesByChildId,
+  type SameParentChildInput,
+} from "@/lib/teaching-practice-same-parent";
+import {
   createTeachingPracticeChildAsAdmin,
   createTeachingPracticeChildAsInstructor,
   createTeachingPracticeGroupBlockAsAdmin,
@@ -219,26 +224,24 @@ function getTraineeAtRotation(
   return track.trainees.find((t) => t.rotationOrder === rotationOrder) ?? null;
 }
 
-// Same-parent grouping for the child click-highlight feature - trim +
-// collapse duplicate whitespace for the name, strip spaces/dashes/dots/
-// parens for the phone, so trivially-different formatting of the same
-// parent (extra spaces, "050-1234567" vs "0501234567") still groups
-// together. A key is only ever produced when BOTH fields are present and
-// non-blank after normalization - a child missing either field never gets
-// grouped with anyone, rather than risking a false "same parent" match on
-// two blank values.
-function normalizeParentName(name: string): string {
-  return name.trim().replace(/\s+/g, " ");
-}
-function normalizeParentPhone(phone: string): string {
-  return phone.replace(/[\s\-().]/g, "");
-}
-function buildParentKey(parentName: string | null | undefined, parentPhone: string | null | undefined): string | null {
-  if (!parentName || !parentPhone) return null;
-  const normName = normalizeParentName(parentName);
-  const normPhone = normalizeParentPhone(parentPhone);
-  if (!normName || !normPhone) return null;
-  return `${normName}|${normPhone}`;
+// Same-parent grouping for the child click-highlight feature AND the
+// always-visible "אותו הורה" badge - normalize/buildParentKey/grouping now
+// live in lib/teaching-practice-same-parent.ts (a plain, DB-free, JSX-free
+// module) so app/student/StudentTeachingPracticeSection.tsx can reuse the
+// exact same detection rule without importing anything else from this
+// admin/instructor-only component.
+const SAME_PARENT_BADGE_TITLE_PREFIX = "אותו הורה/איש קשר כמו: ";
+
+function SameParentBadge({ otherNames }: { otherNames: string[] }) {
+  if (otherNames.length === 0) return null;
+  return (
+    <span
+      className="mr-1 rounded-full bg-warning-muted px-1.5 py-0.5 text-[10px] font-medium text-warning"
+      title={`${SAME_PARENT_BADGE_TITLE_PREFIX}${otherNames.join(", ")}`}
+    >
+      אותו הורה
+    </span>
+  );
 }
 
 // 1.0-5.0 in 0.5 steps, stored as ratingHalfPoints 2-10 - same convention as
@@ -974,17 +977,28 @@ export function TeachingPracticeManager({
   // fields from both, but they only ever join on childId.
   const childById = useMemo(() => new Map((children ?? []).map((c) => [c.id, c])), [children]);
 
-  // Same-parent click-highlight - parentName/parentPhone already live on the
-  // loaded child-registry row (children state, above), so no new fetch is
-  // needed for this feature.
-  const parentKeyByChildId = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const c of children ?? []) {
-      const key = buildParentKey(c.parentName, c.parentPhone);
-      if (key) map.set(c.id, key);
-    }
-    return map;
-  }, [children]);
+  // Same-parent click-highlight AND the always-visible "אותו הורה" badge -
+  // both scoped to ACTIVE children only (an inactive child's shared parent
+  // is no longer surfaced by either), registry-wide (parentName/parentPhone
+  // already live on the loaded child-registry row, so no new fetch is
+  // needed for this feature). sameParentInputChildren feeds both
+  // buildParentKeyByChildId (click-highlight) and
+  // buildSameParentOtherNamesByChildId (badge) from lib/teaching-practice-same-parent.ts.
+  const sameParentInputChildren: SameParentChildInput[] = useMemo(
+    () =>
+      (children ?? [])
+        .filter((c) => c.isActive)
+        .map((c) => ({ id: c.id, displayName: c.fullName, parentName: c.parentName, parentPhone: c.parentPhone })),
+    [children]
+  );
+  const parentKeyByChildId = useMemo(
+    () => buildParentKeyByChildId(sameParentInputChildren),
+    [sameParentInputChildren]
+  );
+  const sameParentOtherNamesByChildId = useMemo(
+    () => buildSameParentOtherNamesByChildId(sameParentInputChildren),
+    [sameParentInputChildren]
+  );
 
   // groupTrackId is only ever set on a BEGINNER_PRIVATE track - this maps
   // each BEGINNER_GROUP track's id to every private track linking to it, so
@@ -1055,14 +1069,13 @@ export function TeachingPracticeManager({
     setSelectedHighlightedParentKey(null);
   }
 
-  // Every OTHER child (registry-wide, not just currently-assigned ones)
-  // sharing the selected parentKey - for the "אותו הורה: [names]" line.
-  const sameParentChildNames = useMemo(() => {
-    if (!selectedHighlightedParentKey) return [];
-    return (children ?? [])
-      .filter((c) => c.id !== selectedHighlightedChildId && buildParentKey(c.parentName, c.parentPhone) === selectedHighlightedParentKey)
-      .map((c) => c.fullName);
-  }, [children, selectedHighlightedParentKey, selectedHighlightedChildId]);
+  // Every OTHER active child (registry-wide, not just currently-assigned
+  // ones) sharing the selected child's parent key - for the "אותו הורה:
+  // [names]" line. Reuses the exact same map the always-visible badge uses,
+  // so the click-highlight summary and the badge can never disagree.
+  const sameParentChildNames = selectedHighlightedChildId
+    ? (sameParentOtherNamesByChildId.get(selectedHighlightedChildId) ?? [])
+    : [];
 
   // Stage 1 - read-only trainee-assignment suggestion preview. Admin-only
   // (role check on the button itself, below); scoped to whichever real group
@@ -3178,6 +3191,7 @@ export function TeachingPracticeManager({
                                       disabled={savingCellKey === `${row.track.id}-child`}
                                       onAssign={(childId) => handleInlineAssignTrackChild(row.track, childId)}
                                       parentKey={parentKeyByChildId.get(row.track.children[0]?.childId ?? "") ?? null}
+                                      otherSameParentNames={sameParentOtherNamesByChildId.get(row.track.children[0]?.childId ?? "") ?? []}
                                       highlightedChildId={selectedHighlightedChildId}
                                       highlightedParentKey={selectedHighlightedParentKey}
                                       onToggleHighlight={handleToggleChildHighlight}
@@ -3543,6 +3557,7 @@ export function TeachingPracticeManager({
                                                   onOpen={() => openTrackManager(privateRow.track)}
                                                   isActive={privateRow.track.isActive}
                                                   parentKey={parentKeyByChildId.get(privateRow.track.children[0]?.childId ?? "") ?? null}
+                                                  otherSameParentNames={sameParentOtherNamesByChildId.get(privateRow.track.children[0]?.childId ?? "") ?? []}
                                                   highlightedChildId={selectedHighlightedChildId}
                                                   highlightedParentKey={selectedHighlightedParentKey}
                                                   onToggleHighlight={handleToggleChildHighlight}
@@ -3795,6 +3810,7 @@ export function TeachingPracticeManager({
                                         onOpen={() => openTrackManager(row.track)}
                                         isActive={row.track.isActive}
                                         parentKey={parentKeyByChildId.get(row.track.children[0]?.childId ?? "") ?? null}
+                                      otherSameParentNames={sameParentOtherNamesByChildId.get(row.track.children[0]?.childId ?? "") ?? []}
                                         highlightedChildId={selectedHighlightedChildId}
                                         highlightedParentKey={selectedHighlightedParentKey}
                                         onToggleHighlight={handleToggleChildHighlight}
@@ -5873,6 +5889,7 @@ function ChildAssignmentCell({
   highlightedChildId,
   highlightedParentKey,
   onToggleHighlight,
+  otherSameParentNames,
 }: {
   value: string;
   label: string;
@@ -5890,6 +5907,10 @@ function ChildAssignmentCell({
   highlightedChildId?: string | null;
   highlightedParentKey?: string | null;
   onToggleHighlight?: (childId: string) => void;
+  // Always-visible "אותו הורה" badge (independent of the click-highlight
+  // above) - names of every OTHER active child sharing this one's parent,
+  // from sameParentOtherNamesByChildId. Absent/empty = no badge.
+  otherSameParentNames?: string[];
 }) {
   if (!editable) {
     // Only a real, assigned child (non-empty value) is clickable - "—" (no
@@ -5917,15 +5938,24 @@ function ChildAssignmentCell({
       ) : (
         label
       );
+    const badge = value && otherSameParentNames?.length ? (
+      <SameParentBadge otherNames={otherSameParentNames} />
+    ) : null;
 
     if (onOpen) {
       return (
         <ClickableCell isActive={isActive} onOpen={onOpen} sticky={sticky}>
           {nameContent}
+          {badge}
         </ClickableCell>
       );
     }
-    return <td className={`px-2 py-2 ${sticky ? "sticky right-0 z-10 bg-card" : ""}`}>{nameContent}</td>;
+    return (
+      <td className={`px-2 py-2 ${sticky ? "sticky right-0 z-10 bg-card" : ""}`}>
+        {nameContent}
+        {badge}
+      </td>
+    );
   }
   return (
     <td
@@ -6217,6 +6247,16 @@ function LessonGroupTable({
   // tables (see timeBlockColorClasses), so lessons at the same actual time
   // share a color and adjacent different times are clearly distinguishable.
   const lessonColors = timeBlockColorClasses(sorted.map((lesson) => lesson.startTime));
+  // Always-visible "אותו הורה" badge - same active-only, registry-wide
+  // detection as the fixed-structure tables (see sameParentOtherNamesByChildId
+  // in the top-level component), computed here from the same childRegistry
+  // prop already passed down for the edit form's child dropdown, so no new
+  // fetch/prop plumbing is needed just for this.
+  const sameParentOtherNamesByChildId = buildSameParentOtherNamesByChildId(
+    childRegistry
+      .filter((c) => c.isActive)
+      .map((c) => ({ id: c.id, displayName: c.fullName, parentName: c.parentName, parentPhone: c.parentPhone }))
+  );
   return (
     <div>
       <h4 className="mb-1.5 rounded-lg bg-muted px-3 py-1.5 text-xs font-bold text-muted-foreground">
@@ -6261,6 +6301,7 @@ function LessonGroupTable({
                 trainees={trainees}
                 childRegistry={childRegistry}
                 rowColorClass={lessonColors[lessonIndex]}
+                sameParentOtherNamesByChildId={sameParentOtherNamesByChildId}
                 onTogglePublished={() => onTogglePublished(lesson)}
                 onSave={(input, participantRows, childAssignmentRows) =>
                   onSave(lesson.id, input, participantRows, childAssignmentRows)
@@ -6337,6 +6378,7 @@ function LessonTableRow({
   trainees,
   childRegistry,
   rowColorClass,
+  sameParentOtherNamesByChildId,
   onTogglePublished,
   onSave,
   onOpenFeedback,
@@ -6358,6 +6400,9 @@ function LessonTableRow({
   // open (isEditing below), so the edit inputs are never shown against a
   // colored background.
   rowColorClass: string;
+  // Always-visible "אותו הורה" badge lookup (see LessonGroupTable) -
+  // childId -> other active children's names sharing its parent, registry-wide.
+  sameParentOtherNamesByChildId: Map<string, string[]>;
   onTogglePublished: () => void;
   onSave: (
     input: TeachingPracticeLessonInput,
@@ -6490,6 +6535,9 @@ function LessonTableRow({
               <>
                 <td rowSpan={rowCount} className="px-2 py-2 align-top">
                   {soleChild ? `${soleChild.childFullName}${soleChild.isAbsent ? " (נעדר/ת)" : ""}` : "—"}
+                  {soleChild && (
+                    <SameParentBadge otherNames={sameParentOtherNamesByChildId.get(soleChild.childId) ?? []} />
+                  )}
                 </td>
                 <td rowSpan={rowCount} className="px-2 py-2 align-top">
                   {soleChild?.childAge ?? "—"}
@@ -6515,6 +6563,9 @@ function LessonTableRow({
             <>
               <td className="px-2 py-2">
                 {row.child ? `${row.child.childFullName}${row.child.isAbsent ? " (נעדר/ת)" : ""}` : "—"}
+                {row.child && (
+                  <SameParentBadge otherNames={sameParentOtherNamesByChildId.get(row.child.childId) ?? []} />
+                )}
               </td>
               <td className="px-2 py-2">{row.child?.childAge ?? "—"}</td>
               <td className="px-2 py-2">{row.child?.childGender ?? "—"}</td>

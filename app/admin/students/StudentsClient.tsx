@@ -205,6 +205,12 @@ export function StudentsClient({
                     >
                       היסטוריית רכיבה
                     </Link>
+                    <Link
+                      href={`/admin/trainee-progress?studentId=${student.id}`}
+                      className="rounded-lg px-2 py-1 text-sm font-medium text-secondary-foreground underline hover:opacity-80"
+                    >
+                      מעקב ומשובים
+                    </Link>
                   </div>
                 </td>
               </tr>

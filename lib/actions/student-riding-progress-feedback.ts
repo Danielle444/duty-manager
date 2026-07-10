@@ -181,3 +181,17 @@ export async function updateStudentRidingProgressFeedbackAsAdmin(
 
   return { success: true };
 }
+
+// Hard delete - no soft-delete flag on this model, no cascade concerns
+// beyond this one row (StudentRidingProgressFeedback has no child records
+// of its own). Never touches Student or any other model.
+export async function deleteStudentRidingProgressFeedbackAsAdmin(id: string): Promise<ActionResult> {
+  await requireAdmin();
+
+  const existing = await prisma.studentRidingProgressFeedback.findUnique({ where: { id } });
+  if (!existing) return { success: false, error: "הרשומה לא נמצאה" };
+
+  await prisma.studentRidingProgressFeedback.delete({ where: { id } });
+
+  return { success: true };
+}

@@ -9,6 +9,7 @@ import {
 } from "@/lib/actions/teaching-practice-feedback-history";
 import {
   createStudentRidingProgressFeedbackAsAdmin,
+  deleteStudentRidingProgressFeedbackAsAdmin,
   listStudentRidingProgressFeedbackForAdmin,
   updateStudentRidingProgressFeedbackAsAdmin,
   type StudentRidingProgressFeedbackInput,
@@ -242,6 +243,9 @@ function RidingProgressEntryForm({
   error,
   onSubmit,
   onCancel,
+  onDelete,
+  isDeleting,
+  deleteError,
 }: {
   initialValues: RidingProgressFormValues;
   submitLabel: string;
@@ -249,6 +253,12 @@ function RidingProgressEntryForm({
   error: string | null;
   onSubmit: (values: RidingProgressFormValues) => void;
   onCancel: () => void;
+  // Only provided when editing an existing entry (never for "add new") -
+  // lets an admin who opened the edit form decide to delete instead of
+  // saving, without first having to cancel back to the display card.
+  onDelete?: () => void;
+  isDeleting?: boolean;
+  deleteError?: string | null;
 }) {
   const [values, setValues] = useState(initialValues);
 
@@ -308,6 +318,7 @@ function RidingProgressEntryForm({
         />
       </label>
       {error && <p className="text-xs text-danger">{error}</p>}
+      {deleteError && <p className="text-xs text-danger">{deleteError}</p>}
       <div className="flex gap-2">
         <button
           type="button"
@@ -324,6 +335,16 @@ function RidingProgressEntryForm({
         >
           ביטול
         </button>
+        {onDelete && (
+          <button
+            type="button"
+            disabled={isDeleting}
+            onClick={onDelete}
+            className="rounded-lg px-3 py-1.5 text-xs font-medium text-danger underline hover:opacity-80 disabled:opacity-50"
+          >
+            {isDeleting ? "מוחק..." : "מחיקה"}
+          </button>
+        )}
       </div>
     </div>
   );
@@ -351,6 +372,34 @@ function RidingProgressFeedbackList({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editError, setEditError] = useState<string | null>(null);
   const [isEditPending, startEditTransition] = useTransition();
+
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<{ id: string; message: string } | null>(null);
+  const [, startDeleteTransition] = useTransition();
+
+  // Reachable from either the display card's own "מחיקה" button or the
+  // edit form's "מחיקה" button (when deleting the entry currently being
+  // edited) - both funnel through here, so the "close edit state safely"
+  // requirement is handled in exactly one place.
+  function handleDelete(id: string) {
+    if (!window.confirm("למחוק את משוב הרכיבה הזה? לא ניתן לשחזר את הפעולה.")) return;
+    setDeleteError(null);
+    setDeletingId(id);
+    startDeleteTransition(async () => {
+      const result = await deleteStudentRidingProgressFeedbackAsAdmin(id);
+      if (!result.success) {
+        setDeleteError({ id, message: result.error ?? "אירעה שגיאה" });
+        setDeletingId(null);
+        return;
+      }
+      if (editingId === id) {
+        setEditingId(null);
+        setEditError(null);
+      }
+      setDeletingId(null);
+      onChanged();
+    });
+  }
 
   function handleAdd(values: RidingProgressFormValues) {
     if (!hasRidingProgressFormContent(values)) {
@@ -437,6 +486,9 @@ function RidingProgressFeedbackList({
                 setEditingId(null);
                 setEditError(null);
               }}
+              onDelete={() => handleDelete(row.id)}
+              isDeleting={deletingId === row.id}
+              deleteError={deleteError?.id === row.id ? deleteError.message : null}
             />
           ) : (
             <div key={row.id} className="rounded-xl border border-border bg-card p-4">
@@ -468,16 +520,29 @@ function RidingProgressFeedbackList({
                 {row.updatedByName && `עודכן על ידי: ${row.updatedByName} · `}
                 עודכן בתאריך: {formatHebrewDateTime(new Date(row.updatedAt))}
               </p>
-              <button
-                type="button"
-                onClick={() => {
-                  setEditingId(row.id);
-                  setEditError(null);
-                }}
-                className="mt-1 text-xs font-medium text-secondary-foreground underline hover:opacity-80"
-              >
-                עריכה
-              </button>
+              <div className="mt-1 flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingId(row.id);
+                    setEditError(null);
+                  }}
+                  className="text-xs font-medium text-secondary-foreground underline hover:opacity-80"
+                >
+                  עריכה
+                </button>
+                <button
+                  type="button"
+                  disabled={deletingId === row.id}
+                  onClick={() => handleDelete(row.id)}
+                  className="text-xs font-medium text-danger underline hover:opacity-80 disabled:opacity-50"
+                >
+                  {deletingId === row.id ? "מוחק..." : "מחיקה"}
+                </button>
+              </div>
+              {deleteError?.id === row.id && (
+                <p className="mt-1 text-xs text-danger">{deleteError.message}</p>
+              )}
             </div>
           )
         )

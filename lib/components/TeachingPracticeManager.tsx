@@ -1235,6 +1235,20 @@ export function TeachingPracticeManager({
   const [columnVisibility, setColumnVisibility] = useState<TrackColumnVisibility>(
     DEFAULT_TRACK_COLUMN_VISIBILITY
   );
+  // The separate "שם משפחה" (child last name) column is only useful in view
+  // mode, where the child-name cell shows just the first name
+  // (row.childFirstName) - in edit mode that same cell becomes a
+  // SearchableSelect showing the child's full name, making a second column
+  // for the last name alone redundant. Used (instead of raw
+  // columnVisibility) both for the column's own conditional rendering below
+  // and for the table-width/colSpan math that counts visible columns, so
+  // those stay in sync with what's actually rendered in edit mode - the
+  // column-visibility panel's own checkbox state (columnVisibility itself)
+  // is untouched, so the user's preference is remembered and simply resumes
+  // once back in view mode.
+  const effectiveColumnVisibility: TrackColumnVisibility = isEditMode
+    ? { ...columnVisibility, childLastName: false }
+    : columnVisibility;
   const [isColumnPanelOpen, setIsColumnPanelOpen] = useState(false);
 
   useEffect(() => {
@@ -2994,7 +3008,7 @@ export function TeachingPracticeManager({
                           <table
                             className="w-full border-collapse text-xs"
                             style={{
-                              minWidth: trackTableMinWidthPx(LUNGE_COLUMN_KEYS, columnVisibility),
+                              minWidth: trackTableMinWidthPx(LUNGE_COLUMN_KEYS, effectiveColumnVisibility),
                             }}
                           >
                             <thead>
@@ -3023,7 +3037,7 @@ export function TeachingPracticeManager({
                                 {columnVisibility.childFirstName && (
                                   <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">שם הילד</th>
                                 )}
-                                {columnVisibility.childLastName && (
+                                {effectiveColumnVisibility.childLastName && (
                                   <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">שם משפחה</th>
                                 )}
                                 {columnVisibility.age && (
@@ -3118,7 +3132,7 @@ export function TeachingPracticeManager({
                                       onToggleHighlight={handleToggleChildHighlight}
                                     />
                                   )}
-                                  {columnVisibility.childLastName && (
+                                  {effectiveColumnVisibility.childLastName && (
                                     <td className="px-2 py-2">{row.childLastName}</td>
                                   )}
                                   {columnVisibility.age && <td className="px-2 py-2">{row.childAge}</td>}
@@ -3258,7 +3272,7 @@ export function TeachingPracticeManager({
                           <table
                             className="w-full border-collapse text-xs"
                             style={{
-                              minWidth: trackTableMinWidthPx(BEGINNER_BLOCK_COLUMN_KEYS, columnVisibility),
+                              minWidth: trackTableMinWidthPx(BEGINNER_BLOCK_COLUMN_KEYS, effectiveColumnVisibility),
                             }}
                           >
                             <thead>
@@ -3274,7 +3288,7 @@ export function TeachingPracticeManager({
                                 <th
                                   colSpan={Math.max(
                                     1,
-                                    visibleColumnCount(BEGINNER_PRIVATE_SIDE_COLUMN_KEYS, columnVisibility)
+                                    visibleColumnCount(BEGINNER_PRIVATE_SIDE_COLUMN_KEYS, effectiveColumnVisibility)
                                   )}
                                   className="border-b border-border px-2 py-1.5 text-center font-bold"
                                 >
@@ -3315,7 +3329,7 @@ export function TeachingPracticeManager({
                                 {columnVisibility.childFirstName && (
                                   <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">שם הילד</th>
                                 )}
-                                {columnVisibility.childLastName && (
+                                {effectiveColumnVisibility.childLastName && (
                                   <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">שם משפחה</th>
                                 )}
                                 {columnVisibility.age && (
@@ -3443,7 +3457,7 @@ export function TeachingPracticeManager({
                                                   onToggleHighlight={handleToggleChildHighlight}
                                                 />
                                               )}
-                                              {columnVisibility.childLastName && (
+                                              {effectiveColumnVisibility.childLastName && (
                                                 <ClickableCell
                                                   isActive={privateRow.track.isActive}
                                                   onOpen={() => openTrackManager(privateRow.track)}
@@ -3538,7 +3552,7 @@ export function TeachingPracticeManager({
                                             <td
                                               colSpan={Math.max(
                                                 1,
-                                                visibleColumnCount(BEGINNER_PRIVATE_SIDE_COLUMN_KEYS, columnVisibility)
+                                                visibleColumnCount(BEGINNER_PRIVATE_SIDE_COLUMN_KEYS, effectiveColumnVisibility)
                                               )}
                                               className="px-2 py-2 text-center text-muted-foreground"
                                             >
@@ -3567,7 +3581,7 @@ export function TeachingPracticeManager({
                             <table
                               className="w-full border-collapse text-xs"
                               style={{
-                                minWidth: trackTableMinWidthPx(UNLINKED_COLUMN_KEYS, columnVisibility),
+                                minWidth: trackTableMinWidthPx(UNLINKED_COLUMN_KEYS, effectiveColumnVisibility),
                               }}
                             >
                               <thead>
@@ -3596,7 +3610,7 @@ export function TeachingPracticeManager({
                                   {columnVisibility.childFirstName && (
                                     <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">שם הילד</th>
                                   )}
-                                  {columnVisibility.childLastName && (
+                                  {effectiveColumnVisibility.childLastName && (
                                     <th className="sticky top-0 z-10 bg-muted px-2 py-2 text-right font-bold">שם משפחה</th>
                                   )}
                                   {columnVisibility.age && (
@@ -3690,7 +3704,7 @@ export function TeachingPracticeManager({
                                         onToggleHighlight={handleToggleChildHighlight}
                                       />
                                     )}
-                                    {columnVisibility.childLastName && (
+                                    {effectiveColumnVisibility.childLastName && (
                                       <ClickableCell isActive={row.track.isActive} onOpen={() => openTrackManager(row.track)}>
                                         {row.childLastName}
                                       </ClickableCell>

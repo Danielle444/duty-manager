@@ -595,6 +595,12 @@ export function WeeklyFeedbackTabs({
   const [isResultsLoading, setIsResultsLoading] = useState(false);
   const [resultsGroupFilter, setResultsGroupFilter] = useState("");
   const [resultsSubgroupFilter, setResultsSubgroupFilter] = useState("");
+  // Anonymous-by-default - local to this view only, never persisted
+  // (no localStorage, no DB), so every fresh page load/navigation starts
+  // anonymous regardless of what an admin chose last time. Reset to false
+  // whenever selectedFormId changes (see the effect below), so one form's
+  // reveal choice never carries into another form.
+  const [showNamesInResults, setShowNamesInResults] = useState(false);
 
   // Only fetched while the "תוצאות" tab is actually open - unlike the draft
   // loader above (shared by the draft/schedule tabs), this query pulls every
@@ -624,6 +630,7 @@ export function WeeklyFeedbackTabs({
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setResultsGroupFilter("");
     setResultsSubgroupFilter("");
+    setShowNamesInResults(false);
   }, [selectedFormId]);
 
   const groupOptions = useMemo(() => {
@@ -1258,6 +1265,25 @@ export function WeeklyFeedbackTabs({
                 </p>
               </div>
 
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border bg-card p-4">
+                <span
+                  className={`rounded-full px-2.5 py-1 text-xs font-medium ${
+                    showNamesInResults
+                      ? "bg-warning-muted text-warning"
+                      : "bg-success-muted text-success"
+                  }`}
+                >
+                  {showNamesInResults ? "תצוגה מזוהה" : "תצוגה אנונימית"}
+                </span>
+                <Button
+                  variant="secondary"
+                  className="!text-sm"
+                  onClick={() => setShowNamesInResults((v) => !v)}
+                >
+                  {showNamesInResults ? "הסתר שמות בתשובות" : "הצג שמות בתשובות"}
+                </Button>
+              </div>
+
               <div className="flex flex-wrap items-end gap-3 rounded-xl border border-border bg-card p-4">
                 <label className="flex flex-col gap-1 text-sm">
                   קבוצה
@@ -1456,7 +1482,8 @@ export function WeeklyFeedbackTabs({
                                   <li key={i} className="rounded-lg bg-muted p-2 text-sm">
                                     <p className="text-card-foreground">{a.text}</p>
                                     <p className="mt-0.5 text-xs text-muted-foreground">
-                                      {a.studentName} · {formatHebrewDateTime(new Date(a.submittedAt))}
+                                      {showNamesInResults ? `${a.studentName} · ` : ""}
+                                      {formatHebrewDateTime(new Date(a.submittedAt))}
                                     </p>
                                   </li>
                                 ))}
@@ -1503,7 +1530,13 @@ export function WeeklyFeedbackTabs({
                 ))}
               </div>
 
-              {filteredTraineeResponses.length > 0 && (
+              {filteredTraineeResponses.length > 0 && !showNamesInResults && (
+                <p className="rounded-xl border border-border bg-card p-4 text-sm text-muted-foreground">
+                  תשובות לפי חניך מוסתרות במצב אנונימי
+                </p>
+              )}
+
+              {filteredTraineeResponses.length > 0 && showNamesInResults && (
                 <details className="rounded-xl border border-border bg-card p-4">
                   <summary className="cursor-pointer text-sm font-bold text-card-foreground">
                     תשובות לפי חניך ({filteredTraineeResponses.length})

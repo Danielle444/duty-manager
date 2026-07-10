@@ -1,10 +1,32 @@
 "use client";
 
-import { useEffect, useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { getStudentRidingHistoryForAdmin, type RidingHistoryRow } from "@/lib/actions/riding-slots";
 import { RidingHistoryList } from "@/lib/components/RidingHistoryList";
 import { getHorseDisplayInfo } from "@/lib/horse-info";
+
+// Pure, reusable across future topics (Teaching Practice, combined timeline)
+// - takes an average already converted to the 1.0-5.0 scale (half-points
+// divided by 2) and produces the same "ממוצע X.X" / "אין דירוגים" label
+// convention everywhere this pattern gets repeated, so P2/P3 only need to
+// compute their own average and call this, never re-invent the wording.
+function formatTopicAverageLabel(average: number | null): string {
+  if (average == null) return "אין דירוגים";
+  return `ממוצע ${average.toFixed(1)}`;
+}
+
+// Average of ratingHalfPoints (2-10, i.e. 1.0-5.0 in 0.5 steps) across every
+// row that has one - rows without a rating are ignored entirely rather than
+// counted as 0, same "missing = not yet rated, not a zero" convention
+// RidingLessonNote itself already uses. null means "no rated rows at all"
+// (including "still loading"), which formatTopicAverageLabel renders as
+// "אין דירוגים" - callers should only invoke this once rows have loaded.
+function averageRatingFromHalfPoints(ratingsHalfPoints: (number | null)[]): number | null {
+  const rated = ratingsHalfPoints.filter((v): v is number => v != null);
+  if (rated.length === 0) return null;
+  return rated.reduce((sum, v) => sum + v, 0) / rated.length / 2;
+}
 
 export interface TraineeProgressStudentListItem {
   id: string;
@@ -37,6 +59,8 @@ export function TraineeProgressClient({
   const pathname = usePathname();
 
   const [search, setSearch] = useState("");
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const [selectedStudentId, setSelectedStudentId] = useState<string | null>(initialStudentId);
   const [tab, setTab] = useState<ProgressTab>("riding");
 
@@ -87,47 +111,107 @@ export function TraineeProgressClient({
     };
   }, [selectedStudentId]);
 
+  // Based on ALL loaded rows (not whatever RidingHistoryList's own internal
+  // date/topic filters currently show) - per product direction, the topic-
+  // level average reflects the trainee's whole riding history, not the
+  // admin's momentary filter selection. RidingHistoryList's internals are
+  // untouched; this reads the same rows array already passed to it.
+  const ridingAverageRating = useMemo(
+    () => (ridingRows ? averageRatingFromHalfPoints(ridingRows.map((r) => r.ratingHalfPoints)) : null),
+    [ridingRows]
+  );
+
+  function handleSelectStudent(studentId: string) {
+    setSelectedStudentId(studentId);
+    setIsSearchOpen(false);
+    setSearch("");
+  }
+
   return (
     <div className="flex flex-col gap-4">
       <div className="rounded-xl border border-border bg-card p-4">
-        <label className="flex flex-col gap-1 text-sm">
-          חיפוש חניך/ה לפי שם
-          <input
-            type="text"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="הקלד/י שם..."
-            className="w-full rounded-lg border border-border px-3 py-2 text-sm"
-          />
-        </label>
+        {selectedStudent && !isSearchOpen && (
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm text-card-foreground">
+              חניך/ה נבחר/ת: <span className="font-semibold">{selectedStudent.fullName}</span>
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                setIsSearchOpen(true);
+                searchInputRef.current?.focus();
+              }}
+              className="text-xs font-medium text-secondary-foreground underline hover:opacity-80"
+            >
+              החלפת חניך/ה
+            </button>
+          </div>
+        )}
 
-        <div className="mt-3 flex max-h-72 flex-col gap-1 overflow-y-auto">
-          {filteredStudents.length === 0 ? (
-            <p className="text-sm text-muted-foreground">לא נמצאו חניכים לפי החיפוש</p>
-          ) : (
-            filteredStudents.map((s) => (
-              <button
-                key={s.id}
-                type="button"
-                onClick={() => setSelectedStudentId(s.id)}
-                className={`flex flex-wrap items-center justify-between gap-2 rounded-lg px-3 py-2 text-right text-sm transition-colors ${
-                  selectedStudentId === s.id
-                    ? "bg-primary text-primary-foreground"
-                    : "bg-muted text-card-foreground hover:bg-muted/70"
-                }`}
-              >
-                <span>
-                  {s.fullName}
-                  {s.groupName ? ` · קבוצה ${s.groupName}` : ""}
-                  {s.subgroupNumber != null ? ` · תת-קבוצה ${s.subgroupNumber}` : ""}
-                </span>
-                {!s.isActive && (
-                  <span className="rounded-full bg-muted-foreground/20 px-2 py-0.5 text-xs">
-                    לא פעיל/ה
-                  </span>
-                )}
-              </button>
-            ))
+        {/* Compact combobox - the results list is a popup that only opens
+            while the input is focused/being typed into, rather than an
+            always-open list permanently taking up page space. Closing on
+            blur uses a short delay (rather than closing immediately) so a
+            mouse click on a result still registers - onMouseDown on each
+            result additionally prevents the input from blurring before that
+            click's onClick fires, so mouse selection never races the close. */}
+        <div className="relative">
+          <label className="flex flex-col gap-1 text-sm">
+            {selectedStudent ? "חיפוש/החלפת חניך/ה" : "חיפוש חניך/ה לפי שם"}
+            <input
+              ref={searchInputRef}
+              type="text"
+              value={search}
+              onChange={(e) => {
+                setSearch(e.target.value);
+                setIsSearchOpen(true);
+              }}
+              onFocus={() => setIsSearchOpen(true)}
+              onBlur={() => {
+                setTimeout(() => setIsSearchOpen(false), 150);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") {
+                  setIsSearchOpen(false);
+                  e.currentTarget.blur();
+                }
+              }}
+              placeholder="הקלד/י שם..."
+              className="w-full rounded-lg border border-border px-3 py-2 text-sm"
+            />
+          </label>
+
+          {isSearchOpen && (
+            <div className="absolute inset-x-0 top-full z-20 mt-1 max-h-72 overflow-y-auto rounded-xl border border-border bg-card p-1 shadow-lg">
+              {filteredStudents.length === 0 ? (
+                <p className="p-2 text-sm text-muted-foreground">לא נמצאו חניכים לפי החיפוש</p>
+              ) : (
+                filteredStudents.map((s) => (
+                  <button
+                    key={s.id}
+                    type="button"
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => handleSelectStudent(s.id)}
+                    className={`flex w-full flex-wrap items-center justify-between gap-2 rounded-lg px-3 py-2 text-right text-sm transition-colors ${
+                      selectedStudentId === s.id
+                        ? "bg-primary text-primary-foreground"
+                        : "text-card-foreground hover:bg-muted"
+                    }`}
+                  >
+                    <span>
+                      {s.fullName}
+                      {s.groupName ? ` · קבוצה ${s.groupName}` : ""}
+                      {s.subgroupNumber != null ? ` · תת-קבוצה ${s.subgroupNumber}` : ""}
+                    </span>
+                    {!s.isActive && (
+                      <span className="rounded-full bg-muted-foreground/20 px-2 py-0.5 text-xs">
+                        לא פעיל/ה
+                      </span>
+                    )}
+                  </button>
+                ))
+              )}
+            </div>
           )}
         </div>
       </div>
@@ -173,7 +257,17 @@ export function TraineeProgressClient({
             (ridingRows === null ? (
               <p className="text-sm text-muted-foreground">טוען...</p>
             ) : (
-              <RidingHistoryList rows={ridingRows} />
+              <>
+                {/* Same "topic · ממוצע X.X" pattern to reuse verbatim for
+                    future topics (Teaching Practice, combined timeline) -
+                    each future tab computes its own average the same way
+                    (averageRatingFromHalfPoints) and passes it through
+                    formatTopicAverageLabel. */}
+                <p className="text-xs text-muted-foreground">
+                  רכיבות · {formatTopicAverageLabel(ridingAverageRating)}
+                </p>
+                <RidingHistoryList rows={ridingRows} />
+              </>
             ))}
         </>
       )}

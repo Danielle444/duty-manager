@@ -3,8 +3,14 @@
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { getStudentRidingHistoryForAdmin, type RidingHistoryRow } from "@/lib/actions/riding-slots";
+import {
+  getStudentTeachingPracticeFeedbackForAdmin,
+  type TeachingPracticeFeedbackHistoryRow,
+} from "@/lib/actions/teaching-practice-feedback-history";
 import { RidingHistoryList } from "@/lib/components/RidingHistoryList";
 import { getHorseDisplayInfo } from "@/lib/horse-info";
+import { formatHebrewDate, formatHebrewDateTime, parseDateKey } from "@/lib/dates";
+import type { TeachingPracticeRoleValue, TeachingPracticeTypeValue } from "@/lib/teaching-practice-rotation";
 
 // Pure, reusable across future topics (Teaching Practice, combined timeline)
 // - takes an average already converted to the 1.0-5.0 scale (half-points
@@ -19,9 +25,10 @@ function formatTopicAverageLabel(average: number | null): string {
 // Average of ratingHalfPoints (2-10, i.e. 1.0-5.0 in 0.5 steps) across every
 // row that has one - rows without a rating are ignored entirely rather than
 // counted as 0, same "missing = not yet rated, not a zero" convention
-// RidingLessonNote itself already uses. null means "no rated rows at all"
-// (including "still loading"), which formatTopicAverageLabel renders as
-// "אין דירוגים" - callers should only invoke this once rows have loaded.
+// RidingLessonNote/TeachingPracticeFeedback both already use. null means "no
+// rated rows at all" (including "still loading"), which
+// formatTopicAverageLabel renders as "אין דירוגים" - callers should only
+// invoke this once rows have loaded.
 function averageRatingFromHalfPoints(ratingsHalfPoints: (number | null)[]): number | null {
   const rated = ratingsHalfPoints.filter((v): v is number => v != null);
   if (rated.length === 0) return null;
@@ -43,10 +50,6 @@ function topicAverageBadgeClasses(average: number | null): string {
   return "bg-danger-muted text-danger";
 }
 
-// Small reusable badge - later topics (Teaching Practice, combined
-// timeline) can render this same component next to their own title with
-// their own computed average, keeping color/label rules in exactly one
-// place.
 function TopicAverageBadge({ average }: { average: number | null }) {
   return (
     <span
@@ -54,6 +57,127 @@ function TopicAverageBadge({ average }: { average: number | null }) {
     >
       {formatTopicAverageLabel(average)}
     </span>
+  );
+}
+
+// Collapsible topic card - the single title lives in this clickable header
+// row alongside the average badge and a chevron, never duplicated below it.
+// Reused for every topic (רכיבות now, התנסויות מתחילים below, future
+// topics later) so title+badge+collapse behavior can never drift apart
+// between them. Plain-text chevron (no icon library) rotated via a CSS
+// transform - no new dependency.
+function TopicSection({
+  title,
+  average,
+  isOpen,
+  onToggle,
+  children,
+}: {
+  title: string;
+  average: number | null;
+  isOpen: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="rounded-xl border border-border bg-card">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="flex w-full flex-wrap items-center justify-between gap-2 p-4 text-right"
+      >
+        <div className="flex flex-wrap items-center gap-2">
+          <h3 className="text-sm font-bold text-card-foreground">{title}</h3>
+          <TopicAverageBadge average={average} />
+        </div>
+        <span
+          className={`text-muted-foreground transition-transform ${isOpen ? "" : "-rotate-90"}`}
+          aria-hidden="true"
+        >
+          ▾
+        </span>
+      </button>
+      {isOpen && <div className="flex flex-col gap-3 border-t border-border p-4">{children}</div>}
+    </div>
+  );
+}
+
+// Local Hebrew labels - deliberately duplicated rather than imported from
+// lib/components/TeachingPracticeManager.tsx or
+// app/student/StudentTeachingPracticeSection.tsx, same reason both of those
+// already duplicate these instead of sharing them: this admin-only,
+// read-only history view has no reason to depend on either the
+// admin/instructor CRUD component or the trainee-facing one.
+const PRACTICE_TYPE_LABELS: Record<TeachingPracticeTypeValue, string> = {
+  LUNGE: "לונג׳",
+  BEGINNER_PRIVATE: "שיעור פרטני",
+  BEGINNER_GROUP: "שיעור קבוצתי",
+};
+
+const ROLE_LABELS: Record<TeachingPracticeRoleValue, string> = {
+  LEAD_INSTRUCTOR: "מדריך ראשון",
+  SECOND_INSTRUCTOR: "מדריך שני",
+  ASSISTANT_INSTRUCTOR: "עוזר מדריך",
+  EVALUATOR: "ממשב",
+};
+
+// Compact, read-only, no filters (unlike RidingHistoryList) - Stage P2 only
+// asks for a simple list, and there's no established date/topic filter
+// convention to reuse here yet. Rows already arrive newest-first from the
+// action.
+function TeachingPracticeFeedbackHistoryList({ rows }: { rows: TeachingPracticeFeedbackHistoryRow[] }) {
+  if (rows.length === 0) {
+    return (
+      <p className="rounded-xl border border-border bg-card p-4 text-sm text-muted-foreground">
+        עדיין לא הוזן משוב התנסויות מתחילים לחניך/ה זה/זו.
+      </p>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      {rows.map((row) => (
+        <div key={row.feedbackId} className="rounded-xl border border-border bg-card p-4">
+          <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+            <span className="font-semibold text-card-foreground">
+              {formatHebrewDate(parseDateKey(row.date))} · {row.startTime}-{row.endTime}
+            </span>
+            <span
+              className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                row.ratingHalfPoints != null
+                  ? "bg-success-muted text-success"
+                  : "bg-muted text-muted-foreground"
+              }`}
+            >
+              {row.ratingHalfPoints != null ? `דירוג: ${row.ratingHalfPoints / 2}` : "אין דירוג"}
+            </span>
+          </div>
+          <p className="mb-1 text-base font-bold text-card-foreground">
+            {PRACTICE_TYPE_LABELS[row.practiceType]}
+            {row.groupName ? ` · קבוצה ${row.groupName}` : ""}
+          </p>
+          <p className="mb-1 text-xs text-muted-foreground">
+            תפקיד: {ROLE_LABELS[row.role]}
+            {row.location ? ` · מיקום: ${row.location}` : ""}
+          </p>
+          {row.feedback && <p className="mb-1 text-sm text-card-foreground">משוב: {row.feedback}</p>}
+          {(row.childFullName || row.horseName || row.equipmentNotes) && (
+            <p className="mb-1 text-xs text-muted-foreground">
+              {row.childFullName ? `ילד/ה: ${row.childFullName}` : ""}
+              {row.childFullName && row.horseName ? " · " : ""}
+              {row.horseName ? `סוס: ${row.horseName}` : ""}
+              {(row.childFullName || row.horseName) && row.equipmentNotes ? " · " : ""}
+              {row.equipmentNotes ? `ציוד: ${row.equipmentNotes}` : ""}
+            </p>
+          )}
+          <p className="text-xs text-muted-foreground">
+            {row.updatedByName && `עודכן על ידי: ${row.updatedByName}`}
+            {row.updatedByName && " · "}
+            עודכן בתאריך: {formatHebrewDateTime(new Date(row.updatedAt))}
+          </p>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -67,12 +191,6 @@ export interface TraineeProgressStudentListItem {
   privateHorseName: string | null;
   assignedHorseName: string | null;
 }
-
-// Stage P1 - a single tab ("רכיבות"), rendered as a labeled section rather
-// than a real tab bar since there's nothing else to switch between yet.
-// Later stages (P2/P3) add more tabs here without touching this file's
-// existing riding logic.
-type ProgressTab = "riding";
 
 export function TraineeProgressClient({
   students,
@@ -91,14 +209,17 @@ export function TraineeProgressClient({
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [selectedStudentId, setSelectedStudentId] = useState<string | null>(initialStudentId);
-  const [tab, setTab] = useState<ProgressTab>("riding");
+
+  // Each topic section collapses/expands independently, default expanded.
+  const [isRidingOpen, setIsRidingOpen] = useState(true);
+  const [isTeachingPracticeOpen, setIsTeachingPracticeOpen] = useState(true);
 
   // Keeps the URL's studentId in sync with the in-page selection (deep-
   // linkable/shareable/refresh-safe), without forcing a full page reload -
   // router.replace navigates client-side, and since TraineeProgressClient
   // stays mounted at the same position across that navigation, this
-  // component's own state (search text, selectedStudentId, tab, loaded
-  // rows) is preserved rather than reset; only the URL bar changes.
+  // component's own state (search text, selectedStudentId, loaded rows) is
+  // preserved rather than reset; only the URL bar changes.
   useEffect(() => {
     if (!selectedStudentId) return;
     router.replace(`${pathname}?studentId=${selectedStudentId}`, { scroll: false });
@@ -116,6 +237,9 @@ export function TraineeProgressClient({
   );
 
   const [ridingRows, setRidingRows] = useState<RidingHistoryRow[] | null>(null);
+  const [teachingPracticeRows, setTeachingPracticeRows] = useState<TeachingPracticeFeedbackHistoryRow[] | null>(
+    null
+  );
   const [, startTransition] = useTransition();
 
   // Read-only fetch, re-run whenever a different trainee is selected - same
@@ -140,6 +264,28 @@ export function TraineeProgressClient({
     };
   }, [selectedStudentId]);
 
+  // Same fetch/cancellation-guard shape as the riding effect above, against
+  // the new Stage P2 read-only action - never touches the riding fetch or
+  // any write/sync/publish action.
+  useEffect(() => {
+    if (!selectedStudentId) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setTeachingPracticeRows(null);
+      return;
+    }
+    let cancelled = false;
+    setTeachingPracticeRows(null);
+    startTransition(async () => {
+      const result = await getStudentTeachingPracticeFeedbackForAdmin(selectedStudentId);
+      if (!cancelled) {
+        setTeachingPracticeRows(result ?? []);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedStudentId]);
+
   // Based on ALL loaded rows (not whatever RidingHistoryList's own internal
   // date/topic filters currently show) - per product direction, the topic-
   // level average reflects the trainee's whole riding history, not the
@@ -148,6 +294,14 @@ export function TraineeProgressClient({
   const ridingAverageRating = useMemo(
     () => (ridingRows ? averageRatingFromHalfPoints(ridingRows.map((r) => r.ratingHalfPoints)) : null),
     [ridingRows]
+  );
+
+  const teachingPracticeAverageRating = useMemo(
+    () =>
+      teachingPracticeRows
+        ? averageRatingFromHalfPoints(teachingPracticeRows.map((r) => r.ratingHalfPoints))
+        : null,
+    [teachingPracticeRows]
   );
 
   function handleSelectStudent(studentId: string) {
@@ -270,36 +424,31 @@ export function TraineeProgressClient({
             </p>
           </div>
 
-          <div className="flex gap-2 rounded-xl border border-border bg-muted p-1">
-            <button
-              type="button"
-              onClick={() => setTab("riding")}
-              className={`flex-1 rounded-lg py-2 text-sm font-semibold ${
-                tab === "riding" ? "bg-card text-card-foreground shadow-sm" : "text-muted-foreground"
-              }`}
-            >
-              רכיבות
-            </button>
-          </div>
-
-          {tab === "riding" &&
-            (ridingRows === null ? (
+          <TopicSection
+            title="רכיבות"
+            average={ridingAverageRating}
+            isOpen={isRidingOpen}
+            onToggle={() => setIsRidingOpen((v) => !v)}
+          >
+            {ridingRows === null ? (
               <p className="text-sm text-muted-foreground">טוען...</p>
             ) : (
-              <>
-                {/* Section header with the average badge sitting next to
-                    the title itself, rather than a separate muted line -
-                    same TopicAverageBadge/averageRatingFromHalfPoints pair
-                    to reuse verbatim for future topics (Teaching Practice,
-                    combined timeline), each computing its own average and
-                    rendering its own title + badge this same way. */}
-                <div className="flex flex-wrap items-center gap-2">
-                  <h3 className="text-sm font-bold text-card-foreground">רכיבות</h3>
-                  <TopicAverageBadge average={ridingAverageRating} />
-                </div>
-                <RidingHistoryList rows={ridingRows} />
-              </>
-            ))}
+              <RidingHistoryList rows={ridingRows} />
+            )}
+          </TopicSection>
+
+          <TopicSection
+            title="התנסויות מתחילים"
+            average={teachingPracticeAverageRating}
+            isOpen={isTeachingPracticeOpen}
+            onToggle={() => setIsTeachingPracticeOpen((v) => !v)}
+          >
+            {teachingPracticeRows === null ? (
+              <p className="text-sm text-muted-foreground">טוען...</p>
+            ) : (
+              <TeachingPracticeFeedbackHistoryList rows={teachingPracticeRows} />
+            )}
+          </TopicSection>
         </>
       )}
     </div>

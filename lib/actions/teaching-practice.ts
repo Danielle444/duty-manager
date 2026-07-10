@@ -1002,6 +1002,101 @@ export async function setTeachingPracticeTrackTraineeSlotAsAdmin(
   return setTeachingPracticeTrackTraineeSlotInternal(trackId, rotationOrder, traineeId);
 }
 
+// Stage TP-Roles-1 - fixed-structure seat swap ("החלפת מיקום ברוטציה").
+// rotationOrder is the only thing this touches: TeachingPracticeTrackTrainee
+// has no role field at all - roles are derived later, per generated lesson,
+// from rotationOrder + occurrenceIndex (see lib/teaching-practice-rotation.ts)
+// - so this is a seat swap, not a role edit. Deliberately does not touch
+// TeachingPracticeParticipant, TeachingPracticeFeedback, or
+// roleLabelOverrides - those belong to the separate, already-existing
+// per-date lesson participant editor (setTeachingPracticeLessonParticipantsAsAdmin),
+// left completely unchanged by this stage.
+//
+// BEGINNER_GROUP is refused, not merely hidden: that track's own
+// TeachingPracticeTrackTrainee rows are re-derived from its linked
+// BEGINNER_PRIVATE tracks' slot-0 trainee on every sync (see
+// processTrackForSync in lib/teaching-practice-full-sync-core.ts) - a direct
+// swap on the group track itself would just be silently overwritten by the
+// next sync, which would be confusing rather than unsafe. Swapping the
+// underlying BEGINNER_PRIVATE tracks' own slot-0 seats (already supported
+// below, since those are plain LUNGE-shaped 2-seat tracks) is the correct way
+// to change who ends up in the linked group.
+//
+// Both seats must already be occupied - Stage 1 scope. Swapping with an
+// empty seat is just a single-slot move, already covered by
+// setTeachingPracticeTrackTraineeSlotAsAdmin; folding that into "swap"
+// wouldn't add anything and would blur the two operations.
+//
+// Implemented as delete-both-then-create-both (like
+// setTeachingPracticeTrackTraineeSlotInternal above), not two sequential
+// updates - updating seat A's traineeId to seat B's value first would
+// momentarily duplicate that traineeId under the @@unique([trackId,
+// traineeId]) constraint before the second update runs. Deleting both rows
+// first removes that collision before either new value is written.
+// rotationOrder values themselves are never reassigned/reindexed - only the
+// two exact rows for firstRotationOrder/secondRotationOrder are touched;
+// every other seat on the track is left completely untouched.
+async function swapTeachingPracticeTrackTraineeSeatsInternal(
+  trackId: string,
+  firstRotationOrder: number,
+  secondRotationOrder: number
+): Promise<TeachingPracticeTrackTraineeSaveResult> {
+  const track = await prisma.teachingPracticeTrack.findUnique({ where: { id: trackId } });
+  if (!track) return { success: false, error: NOT_FOUND_TRACK };
+
+  if (track.practiceType === "BEGINNER_GROUP") {
+    return {
+      success: false,
+      error:
+        "לא ניתן להחליף מושבים ישירות בשיעור קבוצתי - הצוות נגזר מהמסלולים הפרטניים המקושרים. יש לבצע את ההחלפה במסלול הפרטני המתאים.",
+    };
+  }
+
+  const expectedSize = TEACHING_PRACTICE_TEAM_SIZE[track.practiceType];
+  const isValidRotationOrder = (n: number) => Number.isInteger(n) && n >= 0 && n < expectedSize;
+  if (!isValidRotationOrder(firstRotationOrder) || !isValidRotationOrder(secondRotationOrder)) {
+    return { success: false, error: "מספר מושב לא תקין עבור סוג ההתנסות" };
+  }
+  if (firstRotationOrder === secondRotationOrder) {
+    return { success: false, error: "יש לבחור שני מושבים שונים להחלפה" };
+  }
+
+  const seats = await prisma.teachingPracticeTrackTrainee.findMany({
+    where: { trackId, rotationOrder: { in: [firstRotationOrder, secondRotationOrder] } },
+  });
+  const firstSeat = seats.find((s) => s.rotationOrder === firstRotationOrder);
+  const secondSeat = seats.find((s) => s.rotationOrder === secondRotationOrder);
+  if (!firstSeat || !secondSeat) {
+    return {
+      success: false,
+      error: "אפשר להחליף רק בין שני מושבים משובצים - יש לשבץ חניך/ה בשני המושבים לפני ההחלפה",
+    };
+  }
+
+  await prisma.$transaction([
+    prisma.teachingPracticeTrackTrainee.deleteMany({
+      where: { trackId, rotationOrder: { in: [firstRotationOrder, secondRotationOrder] } },
+    }),
+    prisma.teachingPracticeTrackTrainee.createMany({
+      data: [
+        { trackId, traineeId: secondSeat.traineeId, rotationOrder: firstRotationOrder },
+        { trackId, traineeId: firstSeat.traineeId, rotationOrder: secondRotationOrder },
+      ],
+    }),
+  ]);
+  const syncSummary = await runTrackScopedSyncForTraineeEdit(trackId, track.groupTrackId);
+  return { success: true, syncSummary };
+}
+
+export async function swapTeachingPracticeTrackTraineeSeatsAsAdmin(
+  trackId: string,
+  firstRotationOrder: number,
+  secondRotationOrder: number
+): Promise<TeachingPracticeTrackTraineeSaveResult> {
+  await requireAdmin();
+  return swapTeachingPracticeTrackTraineeSeatsInternal(trackId, firstRotationOrder, secondRotationOrder);
+}
+
 // ---------------------------------------------------------------------------
 // Track children / default horse+equipment management (replace-all)
 // ---------------------------------------------------------------------------

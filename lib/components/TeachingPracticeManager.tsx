@@ -71,6 +71,7 @@ import {
   setTeachingPracticeTrackTraineeSlotAsAdmin,
   setTeachingPracticeTrackTraineesAsAdmin,
   setTeachingPracticeTrackTraineesAsInstructor,
+  swapTeachingPracticeTrackTraineeSeatsAsAdmin,
   updateTeachingPracticeChildAsAdmin,
   updateTeachingPracticeChildAsInstructor,
   updateTeachingPracticeLessonAsAdmin,
@@ -1687,6 +1688,25 @@ export function TeachingPracticeManager({
   // refresh - e.g. right after handleSaveTrackFields awaits refreshTracks().
   const openTrack = tracks?.find((t) => t.id === openTrackId) ?? null;
 
+  // Stage TP-Roles-1 - fixed-structure seat swap eligibility, read from the
+  // persisted track (not the unsaved teamSelections draft) since the swap
+  // action commits immediately, independent of "שמירת צוות". LUNGE and
+  // BEGINNER_PRIVATE are always exactly a 2-seat team (TEAM_SIZE), so a swap
+  // unambiguously means seat 0 <-> seat 1 - no seat picker needed.
+  const swapSeatsPersistedSlot0 = openTrack?.trainees.find((t) => t.rotationOrder === 0)?.traineeId ?? "";
+  const swapSeatsPersistedSlot1 = openTrack?.trainees.find((t) => t.rotationOrder === 1)?.traineeId ?? "";
+  // Blocked while teamSelections has an unsaved edit relative to the
+  // persisted seats - otherwise a stale draft, saved afterward via
+  // handleSaveTeam, would silently undo the swap.
+  const hasUnsavedTeamDraft =
+    teamSelections[0] !== swapSeatsPersistedSlot0 || teamSelections[1] !== swapSeatsPersistedSlot1;
+  const canSwapTrackTraineeSeats =
+    !!openTrack &&
+    openTrack.practiceType !== "BEGINNER_GROUP" &&
+    swapSeatsPersistedSlot0 !== "" &&
+    swapSeatsPersistedSlot1 !== "" &&
+    !hasUnsavedTeamDraft;
+
   function openTrackManager(track: TeachingPracticeTrackSummary) {
     setOpenTrackId(track.id);
     setEditTrackForm(trackToFormState(track));
@@ -1866,6 +1886,46 @@ export function TeachingPracticeManager({
       // Trainee saves now auto-sync eligible future generated lessons
       // server-side too (see handleSaveTrackFields above for why both
       // refreshes are needed).
+      await Promise.all([refreshTracks(), refreshLessons()]);
+    });
+  }
+
+  // Stage TP-Roles-1 - "החלפת מיקום ברוטציה": atomically swaps the trainees
+  // in seat 0 and seat 1 of the fixed structure (rotationOrder is the source
+  // of truth the rotation formula reads - see
+  // lib/teaching-practice-rotation.ts - so this is a seat swap, not a direct
+  // role edit). Admin-only, same as swapTeachingPracticeTrackTraineeSeatsAsAdmin
+  // itself (no instructor counterpart, matching setTeachingPracticeTrackTraineeSlotAsAdmin
+  // above). Never offered for BEGINNER_GROUP (see canSwapTrackTraineeSeats
+  // and the action's own comment for why).
+  function handleSwapTrackTraineeSeats() {
+    if (!openTrackId || !canSwapTrackTraineeSeats) return;
+    if (
+      !window.confirm(
+        "להחליף בין החניכים במבנה הקבוע? השינוי יסונכרן לשיעורים עתידיים לפי כללי הסנכרון."
+      )
+    ) {
+      return;
+    }
+    setTrackActionError(null);
+    setTrackActionSuccess(null);
+    startTrackActionTransition(async () => {
+      const result = await swapTeachingPracticeTrackTraineeSeatsAsAdmin(openTrackId, 0, 1);
+      if (!result.success) {
+        setTrackActionError(result.error ?? "אירעה שגיאה");
+        return;
+      }
+      setTrackActionSuccess("מיקום החניכים ברוטציה הוחלף");
+      // Keeps the unsaved team-selection draft in sync with the swap
+      // (rather than waiting for a refetch) - handleSaveTeam reads
+      // teamSelections directly, so leaving it stale here would silently
+      // undo this swap the next time "שמירת צוות" is clicked.
+      setTeamSelections((prev) => {
+        if (prev.length < 2) return prev;
+        const next = [...prev];
+        [next[0], next[1]] = [next[1], next[0]];
+        return next;
+      });
       await Promise.all([refreshTracks(), refreshLessons()]);
     });
   }
@@ -4186,6 +4246,45 @@ export function TeachingPracticeManager({
                     >
                       שמירת צוות
                     </Button>
+                  )}
+                  {effectiveCanEdit && role === "admin" && (
+                    <div className="mt-3 border-t border-border pt-3">
+                      <p className="text-sm font-medium text-card-foreground">החלפת מיקום ברוטציה</p>
+                      {openTrack.practiceType === "BEGINNER_GROUP" ? (
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          לא ניתן להחליף מושבים ישירות בשיעור קבוצתי - הצוות כאן נגזר אוטומטית מהמסלולים
+                          הפרטניים המקושרים (חניך/ה מס&apos; 1 בכל מסלול פרטני). כדי להחליף מי משתתף/ת
+                          בשיעור הקבוצתי, יש לבצע את ההחלפה במסלול הפרטני המתאים ולסנכרן.
+                        </p>
+                      ) : (
+                        <>
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            מחליף בין שני החניכים במבנה הקבוע (לא בשיעור ספציפי בתאריך מסוים) - זו החלפת
+                            מיקום ברוטציה, לא החלפת תפקיד ישירה: התפקיד בפועל נגזר מסדר הרוטציה ומתעדכן
+                            אוטומטית לשיעורים עתידיים בהתאם לכללי הסנכרון הקיימים. שיעורים שכבר עברו לא
+                            ישתנו, ושיעורים שכבר נכתב עבורם משוב הדרכה משמעותי מוגנים מסנכרון.
+                          </p>
+                          <Button
+                            variant="secondary"
+                            className="mt-2 !px-3 !py-1.5 !text-sm"
+                            disabled={isTrackActionPending || !canSwapTrackTraineeSeats}
+                            onClick={handleSwapTrackTraineeSeats}
+                          >
+                            החלפת מיקום
+                          </Button>
+                          {(swapSeatsPersistedSlot0 === "" || swapSeatsPersistedSlot1 === "") && (
+                            <p className="mt-1 text-xs text-warning">
+                              יש לשבץ חניך/ה בשני המושבים לפני שניתן להחליף ביניהם.
+                            </p>
+                          )}
+                          {swapSeatsPersistedSlot0 !== "" && swapSeatsPersistedSlot1 !== "" && hasUnsavedTeamDraft && (
+                            <p className="mt-1 text-xs text-warning">
+                              יש לשמור את שינויי הצוות למעלה (&quot;שמירת צוות&quot;) לפני ביצוע ההחלפה.
+                            </p>
+                          )}
+                        </>
+                      )}
+                    </div>
                   )}
                 </div>
 

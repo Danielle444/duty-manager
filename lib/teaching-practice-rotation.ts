@@ -82,6 +82,41 @@ export function computeTeachingPracticeRotation(
   });
 }
 
+// Partial-roster-safe variant, used only by the fixed-structure ->
+// generated-lesson sync (lib/teaching-practice-full-sync-core.ts) - that
+// sync's business rule is "fully overwrite eligible lessons from whatever
+// the fixed structure currently has," even when the structure isn't (yet)
+// a complete team, so it can never call computeTeachingPracticeRotation
+// above (which requires an exact team size and would either throw or,
+// worse, need array-index-based sorting that silently shifts a later slot
+// into an earlier empty one's position - exactly the compaction bug fixed
+// elsewhere in this codebase for trainee-slot edits).
+//
+// Same role formula as above, but keyed directly off each trainee's own
+// rotationOrder value instead of its position in a sorted/filtered array -
+// so a lone trainee at rotationOrder 1 (rotationOrder 0 empty) keeps
+// rotating through rotationOrder 1's own role sequence, never rotationOrder
+// 0's. Never invents a trainee for a missing rotationOrder: the result
+// simply has fewer entries than expectedSize when the roster is incomplete.
+// For a complete, dense roster (rotationOrder 0..expectedSize-1 all
+// present), this produces byte-for-byte the same result as
+// computeTeachingPracticeRotation, since rotationOrder and sorted-array
+// index coincide in that case - this is a strict generalization, not a
+// different formula. Never throws.
+export function computePartialTeachingPracticeRotation(
+  practiceType: TeachingPracticeTypeValue,
+  trainees: TeachingPracticeRotationTrainee[],
+  occurrenceIndex: number
+): TeachingPracticeRotationResult[] {
+  const roles = practiceType === "BEGINNER_GROUP" ? THREE_ROLE_ROTATION : TWO_ROLE_ROTATION;
+  const expectedSize = TEACHING_PRACTICE_TEAM_SIZE[practiceType];
+
+  return trainees.map((trainee) => {
+    const roleIndex = (((trainee.rotationOrder - occurrenceIndex) % expectedSize) + expectedSize) % expectedSize;
+    return { traineeId: trainee.traineeId, role: roles[roleIndex] };
+  });
+}
+
 // Manager enters only a start time; duration is fixed per practiceType, not
 // user-editable - end time is always derived from these two, both here (for
 // the UI's live preview) and, authoritatively, server-side in

@@ -27,6 +27,19 @@
 // participants/children/time/location/instructor, as long as that lesson
 // has no feedback and isn't in the past.
 //
+// Fixed-structure model correction: the fixed structure is a MASTER
+// TEMPLATE and every eligible future lesson is an INSTANCE of it - so an
+// incomplete fixed structure (fewer trainees/children than the practiceType
+// expects) is never a reason to skip syncing a track's lessons. "Do not
+// guess" means never inventing a trainee/child for a slot nothing currently
+// fills and never shifting a later rotationOrder into an earlier empty
+// one's position - it does NOT mean preserving stale generated
+// participants/children/fields just because the structure is incomplete.
+// processTrackForSync below always fully overwrites every eligible lesson's
+// fields, and replaces participants/children with exactly whatever the
+// fixed structure currently has (which may be fewer than expected, or
+// zero) - see its own comments for exactly how.
+//
 // This mirrors the comparison logic in
 // lib/actions/teaching-practice-full-sync-preview.ts (the read-only dry
 // run), but that file's computation helper is intentionally module-private
@@ -39,8 +52,10 @@
 // call setTeachingPracticeTrackTraineesAsAdmin / setTeachingPracticeTrackChildrenAsAdmin
 // for BEGINNER_GROUP derivation (safety audit finding, see below) - the one
 // reusable primitive this sync needs - the rotation formula
-// (computeTeachingPracticeRotation) - already lives in its own module
-// (lib/teaching-practice-rotation.ts) and is imported directly.
+// (computePartialTeachingPracticeRotation, a partial-roster-safe variant of
+// computeTeachingPracticeRotation - see both functions' headers in
+// lib/teaching-practice-rotation.ts) - already lives in its own module and
+// is imported directly.
 //
 // Safety audit finding (fixed): setTeachingPracticeTrackTraineesAsAdmin's
 // internal implementation auto-triggers the OLD syncTeachingPracticeTrackParticipants
@@ -111,7 +126,7 @@
 import { prisma } from "@/lib/prisma";
 import { parseDateKey, todayDateKey } from "@/lib/dates";
 import {
-  computeTeachingPracticeRotation,
+  computePartialTeachingPracticeRotation,
   TEACHING_PRACTICE_TEAM_SIZE,
   type TeachingPracticeRoleValue,
   type TeachingPracticeTypeValue,
@@ -244,14 +259,23 @@ const LINKED_PRIVATE_SELECT = {
 // roster reaches the track's exact expected size (which BEGINNER_GROUP
 // derivation always does), and that old sync ignores past-date eligibility
 // and skips isManualOverride lessons - both wrong for this file's own rules.
-// traineeIds is expected to already be deduped/valid (derived from other
-// tracks' own persisted rosters); no additional validation is performed
-// here, since this is an internal derivation step, not user-supplied input.
-async function replaceTeachingPracticeTrackTraineesForSync(trackId: string, traineeIds: string[]): Promise<void> {
+//
+// Takes explicit {traineeId, rotationOrder} pairs rather than a plain
+// string[] indexed by array position - a BEGINNER_GROUP roster can now be
+// derived from a partial set of linked private tracks (see
+// processTrackForSync below), so the array may be sparse (e.g. linked
+// private #2 of 3 has no slot-0 trainee yet, contributing nothing) and must
+// never be compacted/reindexed by array position - each entry's
+// rotationOrder is exactly the linked private's own stable link-order
+// position, preserved as-is.
+async function replaceTeachingPracticeTrackTraineesForSync(
+  trackId: string,
+  trainees: { traineeId: string; rotationOrder: number }[]
+): Promise<void> {
   await prisma.$transaction([
     prisma.teachingPracticeTrackTrainee.deleteMany({ where: { trackId } }),
     prisma.teachingPracticeTrackTrainee.createMany({
-      data: traineeIds.map((traineeId, rotationOrder) => ({ trackId, traineeId, rotationOrder })),
+      data: trainees.map(({ traineeId, rotationOrder }) => ({ trackId, traineeId, rotationOrder })),
     }),
   ]);
 }
@@ -293,67 +317,94 @@ async function processTrackForSync(
   }
 
   // Effective trainees/children for this run - normally the track's own
-  // rows, but for BEGINNER_GROUP, first attempt to derive+persist them from
-  // the linked BEGINNER_PRIVATE rows (see file header). "Do not guess when
-  // incomplete" - any failure to derive cleanly falls back to whatever the
-  // group track's own rows already are, reported as skipped, never blocks
-  // the rest of this track's lesson sync.
+  // rows, but for BEGINNER_GROUP, always attempt to derive+persist them from
+  // however many linked BEGINNER_PRIVATE rows currently exist (see file
+  // header). "Do not guess" means never inventing a trainee/child for a
+  // slot nothing currently fills - it does NOT mean skipping the derivation
+  // (or the rest of this track's sync) just because fewer than the expected
+  // 3 are linked. A partial derivation still fully replaces this track's own
+  // TeachingPracticeTrackTrainee/TeachingPracticeTrackChild rows with
+  // whatever it could actually derive - the fixed structure is the source of
+  // truth even when it's incomplete, so a departed private/trainee/child
+  // must disappear from here (and, below, from eligible generated lessons)
+  // rather than linger.
   let effectiveTrainees = track.trainees;
   let effectiveChildren = track.children;
 
   if (track.practiceType === "BEGINNER_GROUP") {
     const expectedGroupSize = TEACHING_PRACTICE_TEAM_SIZE.BEGINNER_GROUP;
+    // Bounded to the first expectedGroupSize (stable link order) so a rare
+    // data anomaly (more than 3 privates ever linked to one group) can't
+    // produce a rotationOrder >= expectedGroupSize - every real linked
+    // private still gets read for the children union below regardless.
     const linked = (linkedByGroupTrackId.get(track.id) ?? []).slice().sort(compareLinkedPrivateTracks);
+    const linkedForRoster = linked.slice(0, expectedGroupSize);
 
     if (linked.length !== expectedGroupSize) {
       result.beginnerGroupRostersSkipped += 1;
-    } else {
-      const slot0Trainees = linked.map((p) => p.trainees.find((t) => t.rotationOrder === 0)?.traineeId ?? null);
-      if (slot0Trainees.some((id) => id === null)) {
-        result.beginnerGroupRostersSkipped += 1;
-      } else {
-        const derivedTraineeIds = slot0Trainees as string[]; // linked[i] -> group rotationOrder i
-        try {
-          await replaceTeachingPracticeTrackTraineesForSync(track.id, derivedTraineeIds);
-          result.beginnerGroupRostersDerived += 1;
-          effectiveTrainees = derivedTraineeIds.map((traineeId, rotationOrder) => ({ traineeId, rotationOrder }));
-        } catch (err) {
-          result.beginnerGroupRostersSkipped += 1;
-          result.errors.push({
-            trackId: track.id,
-            message: `דירוג צוות לשיעור הקבוצתי נכשל: ${err instanceof Error ? err.message : "אירעה שגיאה"}`,
-          });
-        }
+    }
 
-        // Children: union of every linked private track's real children,
-        // deduped by childId (first occurrence, in the same stable link
-        // order, wins if horse/equipment notes ever differ between them).
-        const derivedChildrenMap = new Map<string, { childId: string; horseName: string | null; equipmentNotes: string | null }>();
-        for (const p of linked) {
-          for (const c of p.children) {
-            if (c.childId && !derivedChildrenMap.has(c.childId)) {
-              derivedChildrenMap.set(c.childId, { childId: c.childId, horseName: c.horseName, equipmentNotes: c.equipmentNotes });
-            }
-          }
-        }
-        const derivedChildren = Array.from(derivedChildrenMap.values());
-        try {
-          await replaceTeachingPracticeTrackChildrenForSync(track.id, derivedChildren);
-          effectiveChildren = derivedChildren.map((c) => ({ childId: c.childId, horseName: c.horseName, equipmentNotes: c.equipmentNotes }));
-        } catch (err) {
-          result.errors.push({
-            trackId: track.id,
-            message: `דירוג ילדים לשיעור הקבוצתי נכשל: ${err instanceof Error ? err.message : "אירעה שגיאה"}`,
-          });
+    // Each linked private's slot-0 trainee maps to group rotationOrder =
+    // its own stable link-order position - a private with no slot-0
+    // trainee yet simply contributes no row (never a placeholder), so the
+    // resulting array can be sparse/shorter than expectedGroupSize without
+    // ever shifting a later private's trainee into an earlier position.
+    const derivedTrainees: { traineeId: string; rotationOrder: number }[] = [];
+    linkedForRoster.forEach((p, rotationOrder) => {
+      const slot0TraineeId = p.trainees.find((t) => t.rotationOrder === 0)?.traineeId;
+      if (slot0TraineeId) derivedTrainees.push({ traineeId: slot0TraineeId, rotationOrder });
+    });
+
+    try {
+      await replaceTeachingPracticeTrackTraineesForSync(track.id, derivedTrainees);
+      result.beginnerGroupRostersDerived += 1;
+      effectiveTrainees = derivedTrainees;
+    } catch (err) {
+      result.errors.push({
+        trackId: track.id,
+        message: `דירוג צוות לשיעור הקבוצתי נכשל: ${err instanceof Error ? err.message : "אירעה שגיאה"}`,
+      });
+      // Derivation write failed - fall back to whatever this group's own
+      // rows already are (set at the top of this function) rather than an
+      // empty roster, so a transient DB error can't wipe a lesson's
+      // participants down to nothing.
+    }
+
+    // Children: union of every currently linked private track's real
+    // children, deduped by childId (first occurrence, in the same stable
+    // link order, wins if horse/equipment notes ever differ between them) -
+    // unaffected by the expectedGroupSize bound above, since children have
+    // no rotationOrder/slot concept to misalign.
+    const derivedChildrenMap = new Map<string, { childId: string; horseName: string | null; equipmentNotes: string | null }>();
+    for (const p of linked) {
+      for (const c of p.children) {
+        if (c.childId && !derivedChildrenMap.has(c.childId)) {
+          derivedChildrenMap.set(c.childId, { childId: c.childId, horseName: c.horseName, equipmentNotes: c.equipmentNotes });
         }
       }
     }
+    const derivedChildren = Array.from(derivedChildrenMap.values());
+    try {
+      await replaceTeachingPracticeTrackChildrenForSync(track.id, derivedChildren);
+      effectiveChildren = derivedChildren.map((c) => ({ childId: c.childId, horseName: c.horseName, equipmentNotes: c.equipmentNotes }));
+    } catch (err) {
+      result.errors.push({
+        trackId: track.id,
+        message: `דירוג ילדים לשיעור הקבוצתי נכשל: ${err instanceof Error ? err.message : "אירעה שגיאה"}`,
+      });
+    }
   }
 
+  // Reported for visibility only (e.g. "מבנה קבוע לא שלם" in the sync
+  // results panel) - no longer gates anything below. A track whose
+  // currently-known trainees don't add up to the full expected team size
+  // (0, 1, or 2 of 2; 0, 1, or 2 of 3) still has every eligible lesson's
+  // fields/children/participants fully synced from whatever IS known -
+  // missing slots are simply absent from the generated lesson, never
+  // invented, never backfilled with stale data.
   const expectedTeamSize = TEACHING_PRACTICE_TEAM_SIZE[track.practiceType];
   if (effectiveTrainees.length !== expectedTeamSize) {
     result.tracksSkippedIncompleteFixedStructure += 1;
-    return;
   }
 
   const traineeInput = [...effectiveTrainees].sort((a, b) => a.rotationOrder - b.rotationOrder);
@@ -397,17 +448,13 @@ async function processTrackForSync(
     }
 
     try {
-      let roleAssignments: { traineeId: string; role: TeachingPracticeRoleValue }[];
-      try {
-        roleAssignments = computeTeachingPracticeRotation(track.practiceType, traineeInput, occurrenceIndex);
-      } catch (err) {
-        result.errors.push({
-          trackId: track.id,
-          lessonId: lesson.id,
-          message: err instanceof Error ? err.message : "שגיאה בחישוב חלוקת התפקידים",
-        });
-        continue;
-      }
+      // Partial-roster-safe: never throws, and never invents/shifts a
+      // trainee into a rotationOrder slot nothing currently fills - see
+      // computePartialTeachingPracticeRotation's own header in
+      // lib/teaching-practice-rotation.ts. For a complete/dense roster this
+      // produces exactly what computeTeachingPracticeRotation would.
+      const roleAssignments: { traineeId: string; role: TeachingPracticeRoleValue }[] =
+        computePartialTeachingPracticeRotation(track.practiceType, traineeInput, occurrenceIndex);
 
       // ---- Participants: compare current vs. target (traineeId+role pairs) ----
       const currentParticipantKey = new Set(lesson.participants.map((p) => `${p.traineeId}:${p.role}`));
@@ -607,41 +654,28 @@ export async function syncTeachingPracticeFixedStructureTracksToGeneratedLessons
   return syncTracksInternal(tracks, resultGroupName);
 }
 
-// Stage E4 fix - narrow, opt-in cleanup for exactly one scenario: a
-// BEGINNER_PRIVATE track was just moved off of (or unlinked from) this
-// BEGINNER_GROUP track, and the group now has fewer than the expected 3
-// linked BEGINNER_PRIVATE tracks. processTrackForSync's normal BEGINNER_GROUP
-// derivation above correctly declines to guess a replacement roster when the
-// linked count isn't exactly 3 ("do not guess when incomplete") - but that
-// also means the group's own TeachingPracticeTrackTrainee/TeachingPracticeTrackChild
-// rows, and any of its future generated lessons that already matched them,
-// are never revisited - so the departed private track's trainee/child keeps
-// silently appearing on the group's future lessons even though the fixed
-// structure no longer includes it. That's the actual bug this fixes.
+// Stage E4 fix, now superseded (kept, see below) - originally written for
+// exactly one scenario: a BEGINNER_PRIVATE track moved off of (or unlinked
+// from) this BEGINNER_GROUP track while the group's own derivation still
+// required exactly 3 linked privates to run at all, so an incomplete link
+// count left the group's fixed structure/lessons stuck with the departed
+// trainee/child. processTrackForSync above no longer has that limitation -
+// it now derives (and syncs) from however many linked privates currently
+// exist, 0..N, so calling the normal track-scoped sync with this group's id
+// already removes a departed private's trainee/child on its own.
 //
-// This function never invents a replacement for the vacated slot(s): it
-// only ever REMOVES whatever no longer belongs (derived from however many
-// linked private tracks currently exist, 0..2), both on the fixed structure
-// and on eligible generated lessons - it never creates a participant/child
-// row, never fills a slot, never assigns/recomputes roles (there is no valid
-// rotation formula for an incomplete team - computing one would itself be
-// guessing), never creates/deletes a lesson, never touches practiceType,
-// and applies the exact same per-lesson eligibility rules as the normal sync
-// above (future dated lessons only, skips any lesson with MEANINGFUL
-// feedback on any participant - see lib/teaching-practice-feedback.ts).
-//
-// Deliberately kept separate from processTrackForSync/syncTracksInternal
-// rather than folded into them - this only ever needs to run once, right
-// after a relink is detected, from updateTeachingPracticeTrackInternal in
-// lib/actions/teaching-practice.ts. The normal group-scoped and track-scoped
-// sync entry points above are completely unchanged: a BEGINNER_GROUP track
-// with fewer than 3 linked privates still gets skipped by them exactly as
-// before - this function is the only place a less-than-3 linked count is
-// ever acted on, and only to remove, never to derive/guess.
+// This function is therefore redundant in practice today (its own DB reads
+// will simply find nothing stale to remove, since the main sync already
+// fixed it) but is left in place rather than removed, since removing it
+// wasn't part of the requested fix - see the report for this stage. It
+// remains fully correct and harmless to call: it never invents a
+// replacement for a vacated slot, never creates/deletes a lesson, never
+// touches practiceType, and applies the exact same per-lesson eligibility
+// rules as the main sync (future dated lessons only, skips any lesson with
+// MEANINGFUL feedback on any participant).
 //
 // Returns null if trackId isn't an existing, active BEGINNER_GROUP track, or
-// if it currently has 3+ linked private tracks again (nothing to clean up -
-// the normal sync above already handles a complete roster correctly).
+// if it currently has 3+ linked private tracks again (nothing to clean up).
 export async function cleanupDepartedLinkedPrivateFromGroupInternal(
   groupTrackId: string
 ): Promise<{ traineesRemoved: number; childrenRemoved: number; lessonsUpdated: number } | null> {

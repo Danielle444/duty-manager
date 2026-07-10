@@ -1605,7 +1605,12 @@ export function TeachingPracticeManager({
         return;
       }
       setTrackActionSuccess("פרטי המסלול עודכנו");
-      await refreshTracks();
+      // Fixed-structure field edits now auto-sync eligible future generated
+      // lessons server-side (time/location/instructor/groupName/roster) -
+      // refreshLessons() too, not just refreshTracks(), so the generated
+      // lessons table reflects that immediately instead of only after some
+      // unrelated action refetches it.
+      await Promise.all([refreshTracks(), refreshLessons()]);
     });
   }
 
@@ -1726,7 +1731,10 @@ export function TeachingPracticeManager({
         return;
       }
       setTrackActionSuccess("צוות החניכים עודכן");
-      await refreshTracks();
+      // Trainee saves now auto-sync eligible future generated lessons
+      // server-side too (see handleSaveTrackFields above for why both
+      // refreshes are needed).
+      await Promise.all([refreshTracks(), refreshLessons()]);
     });
   }
 
@@ -1764,7 +1772,10 @@ export function TeachingPracticeManager({
           setInlineAssignError(result.error ?? "אירעה שגיאה בשיבוץ החניך/ה");
           return;
         }
-        await refreshTracks();
+        // Exact-slot saves now auto-sync eligible future generated lessons
+        // server-side too (see handleSaveTrackFields above for why both
+        // refreshes are needed).
+        await Promise.all([refreshTracks(), refreshLessons()]);
       });
       return;
     }
@@ -1787,7 +1798,10 @@ export function TeachingPracticeManager({
         setInlineAssignError(result.error ?? "אירעה שגיאה בשיבוץ החניך/ה");
         return;
       }
-      await refreshTracks();
+      // Replace-all saves now auto-sync eligible future generated lessons
+      // server-side too (see handleSaveTrackFields above for why both
+      // refreshes are needed).
+      await Promise.all([refreshTracks(), refreshLessons()]);
     });
   }
 
@@ -1820,7 +1834,10 @@ export function TeachingPracticeManager({
         setInlineAssignError(result.error ?? "אירעה שגיאה בשיבוץ הילד/ה");
         return;
       }
-      await refreshTracks();
+      // Child assignment saves now auto-sync eligible future generated
+      // lessons server-side too (see handleSaveTrackFields above for why
+      // both refreshes are needed).
+      await Promise.all([refreshTracks(), refreshLessons()]);
     });
   }
 
@@ -1861,7 +1878,10 @@ export function TeachingPracticeManager({
         setInlineAssignError(result.error ?? "אירעה שגיאה בשמירת פרטי הסוס/ציוד");
         return;
       }
-      await refreshTracks();
+      // Horse/equipment saves now auto-sync eligible future generated
+      // lessons server-side too (see handleSaveTrackFields above for why
+      // both refreshes are needed).
+      await Promise.all([refreshTracks(), refreshLessons()]);
     });
   }
 

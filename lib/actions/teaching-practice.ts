@@ -625,10 +625,52 @@ export async function deleteTeachingPracticeTrackAsInstructor(
 // Track trainee team management (replace-all)
 // ---------------------------------------------------------------------------
 
+// Stage E3 - widens ActionResult with an optional, best-effort summary of
+// the auto-sync that runs after a successful trainee save (exact-slot or
+// full-team replace-all - both return this same shape, see
+// setTeachingPracticeTrackTraineeSlotInternal / setTeachingPracticeTrackTraineesInternal
+// below). Mirrors TeachingPracticeTrackChildrenSaveResult from Stage E2 -
+// purely additive, no existing caller that only reads .success/.error
+// breaks.
+export interface TeachingPracticeTrackTraineeSaveResult extends ActionResult {
+  syncSummary?: {
+    lessonsSynced: number;
+    lessonsSkippedFeedback: number;
+    lessonsSkippedPastDate: number;
+  };
+}
+
+// Stage E3 - shared by both trainee-edit paths below. Syncs the edited
+// track's future generated lessons and, if this track is a BEGINNER_PRIVATE
+// linked to a BEGINNER_GROUP, that group track's future lessons too (its
+// roster/children are derived from linked private rows like this one) - see
+// lib/teaching-practice-full-sync-core.ts for exactly what this does and
+// does not touch (future-only, skips meaningful feedback, no lesson
+// create/delete, no practiceType changes). A sync failure here never fails
+// the save itself - the fixed-structure edit already succeeded and is the
+// source of truth; syncSummary simply stays undefined ("unknown") if the
+// follow-up sync couldn't be completed.
+async function runTrackScopedSyncForTraineeEdit(
+  trackId: string,
+  groupTrackId: string | null
+): Promise<TeachingPracticeTrackTraineeSaveResult["syncSummary"]> {
+  const syncTrackIds = groupTrackId ? [trackId, groupTrackId] : [trackId];
+  try {
+    const syncResult = await syncTeachingPracticeFixedStructureTracksToGeneratedLessonsInternal(syncTrackIds);
+    return {
+      lessonsSynced: syncResult.lessonsSynced,
+      lessonsSkippedFeedback: syncResult.lessonsSkippedFeedback,
+      lessonsSkippedPastDate: syncResult.lessonsSkippedPastDate,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 async function setTeachingPracticeTrackTraineesInternal(
   trackId: string,
   traineeIdsInRotationOrder: string[]
-): Promise<ActionResult> {
+): Promise<TeachingPracticeTrackTraineeSaveResult> {
   const track = await prisma.teachingPracticeTrack.findUnique({ where: { id: trackId } });
   if (!track) return { success: false, error: NOT_FOUND_TRACK };
 
@@ -677,11 +719,9 @@ async function setTeachingPracticeTrackTraineesInternal(
     }),
   ]);
 
-  if (traineeIdsInRotationOrder.length === expectedSize) {
-    await syncTeachingPracticeTrackParticipants(trackId);
-  }
+  const syncSummary = await runTrackScopedSyncForTraineeEdit(trackId, track.groupTrackId);
 
-  return { success: true };
+  return { success: true, syncSummary };
 }
 
 // Stage B1 - stats shape added so a caller (e.g. the new admin resync
@@ -800,7 +840,7 @@ export async function syncTeachingPracticeTrackParticipants(
 export async function setTeachingPracticeTrackTraineesAsAdmin(
   trackId: string,
   traineeIdsInRotationOrder: string[]
-): Promise<ActionResult> {
+): Promise<TeachingPracticeTrackTraineeSaveResult> {
   await requireAdmin();
   return setTeachingPracticeTrackTraineesInternal(trackId, traineeIdsInRotationOrder);
 }
@@ -809,7 +849,7 @@ export async function setTeachingPracticeTrackTraineesAsInstructor(
   instructorId: string,
   trackId: string,
   traineeIdsInRotationOrder: string[]
-): Promise<ActionResult> {
+): Promise<TeachingPracticeTrackTraineeSaveResult> {
   const instructor = await getInstructorForAssignmentWrite(instructorId);
   if (!instructor) return { success: false, error: NO_ASSIGNMENT_PERMISSION };
   return setTeachingPracticeTrackTraineesInternal(trackId, traineeIdsInRotationOrder);
@@ -823,15 +863,18 @@ export async function setTeachingPracticeTrackTraineesAsInstructor(
 // [B] -> B persisted at rotationOrder 0, not 1). This action only ever
 // deletes/creates the exact (trackId, rotationOrder) row requested - every
 // other slot on the track is left completely untouched, never reindexed.
-// No roster-complete side effect either: unlike the replace-all path, this
-// never calls syncTeachingPracticeTrackParticipants and never touches
-// TeachingPracticeParticipant, TeachingPracticeChildAssignment, or
-// feedback - fixed structure only.
+// Stage E3 - this now DOES trigger the new track-scoped generated-lesson
+// sync (runTrackScopedSyncForTraineeEdit) after each successful write below,
+// same as the replace-all path - but it still never calls the OLD
+// syncTeachingPracticeTrackParticipants, and never touches
+// TeachingPracticeParticipant / TeachingPracticeChildAssignment / feedback
+// directly itself - only the fixed-structure TeachingPracticeTrackTrainee
+// row for this exact slot.
 async function setTeachingPracticeTrackTraineeSlotInternal(
   trackId: string,
   rotationOrder: number,
   traineeId: string | null
-): Promise<ActionResult> {
+): Promise<TeachingPracticeTrackTraineeSaveResult> {
   const track = await prisma.teachingPracticeTrack.findUnique({ where: { id: trackId } });
   if (!track) return { success: false, error: NOT_FOUND_TRACK };
 
@@ -843,9 +886,12 @@ async function setTeachingPracticeTrackTraineeSlotInternal(
   if (!traineeId) {
     // Idempotent: clearing an already-empty slot deletes zero rows and
     // still returns success - the caller's intent (this slot should be
-    // empty) is already satisfied either way.
+    // empty) is already satisfied either way. Still worth syncing: an
+    // already-cleared slot can be reached this way after e.g. a retry, and
+    // the sync itself is cheap/idempotent too.
     await prisma.teachingPracticeTrackTrainee.deleteMany({ where: { trackId, rotationOrder } });
-    return { success: true };
+    const syncSummary = await runTrackScopedSyncForTraineeEdit(trackId, track.groupTrackId);
+    return { success: true, syncSummary };
   }
 
   const trainee = await prisma.student.findUnique({ where: { id: traineeId } });
@@ -868,14 +914,15 @@ async function setTeachingPracticeTrackTraineeSlotInternal(
     prisma.teachingPracticeTrackTrainee.deleteMany({ where: { trackId, rotationOrder } }),
     prisma.teachingPracticeTrackTrainee.create({ data: { trackId, traineeId, rotationOrder } }),
   ]);
-  return { success: true };
+  const syncSummary = await runTrackScopedSyncForTraineeEdit(trackId, track.groupTrackId);
+  return { success: true, syncSummary };
 }
 
 export async function setTeachingPracticeTrackTraineeSlotAsAdmin(
   trackId: string,
   rotationOrder: number,
   traineeId: string | null
-): Promise<ActionResult> {
+): Promise<TeachingPracticeTrackTraineeSaveResult> {
   await requireAdmin();
   return setTeachingPracticeTrackTraineeSlotInternal(trackId, rotationOrder, traineeId);
 }

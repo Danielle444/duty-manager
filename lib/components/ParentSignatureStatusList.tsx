@@ -1,15 +1,47 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import type { ParentSignatureStatusResult } from "@/lib/actions/parent-signatures";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import type {
+  ParentSignatureStatusResult,
+  ParentSignatureSubmitInput,
+  ParentSignatureSubmitResult,
+} from "@/lib/actions/parent-signatures";
+import { ParentSignatureSignModal } from "@/lib/components/ParentSignatureSignModal";
+import type { ParentSignatureFormTypeValue } from "@/lib/parent-signatures/types";
 
-// Shared, read-only presentation for the Stage 2 parent-signature status
-// view - used by both the admin page and the instructor/tablet section, each
-// of which only differs in which server action fetches the data (admin vs.
-// instructor-permission-gated). No signing action here yet: the "חתימה"
-// button is a disabled placeholder until the Stage 3 signing flow exists.
-export function ParentSignatureStatusList({ data }: { data: ParentSignatureStatusResult | null }) {
+interface SigningTarget {
+  childId: string;
+  childName: string;
+  childAge: number | null;
+  parentName: string | null;
+  parentPhone: string | null;
+  formType: ParentSignatureFormTypeValue;
+}
+
+// Shared, read+sign presentation for the parent-signature status view - used
+// by both the admin page and the instructor/tablet section, each of which
+// only differs in which server actions fetch/submit (admin vs.
+// instructor-permission-gated - see fetchStatus/submit props). Owns its own
+// fetch lifecycle (including refetch-after-signing) so both callers stay
+// thin wrappers that just bind their respective server actions.
+export function ParentSignatureStatusList({
+  fetchStatus,
+  submit,
+}: {
+  fetchStatus: () => Promise<ParentSignatureStatusResult>;
+  submit: (input: ParentSignatureSubmitInput) => Promise<ParentSignatureSubmitResult>;
+}) {
+  const [data, setData] = useState<ParentSignatureStatusResult | null>(null);
   const [search, setSearch] = useState("");
+  const [signingTarget, setSigningTarget] = useState<SigningTarget | null>(null);
+
+  const reload = useCallback(() => {
+    fetchStatus().then(setData);
+  }, [fetchStatus]);
+
+  useEffect(() => {
+    reload();
+  }, [reload]);
 
   const filteredChildren = useMemo(() => {
     if (!data) return [];
@@ -75,31 +107,64 @@ export function ParentSignatureStatusList({ data }: { data: ParentSignatureStatu
                 </span>
               </div>
 
-              <div className="mt-3 flex flex-wrap gap-2">
+              <div className="mt-3 flex flex-col gap-2">
                 {child.requiredForms.map((form) => (
-                  <span
+                  <div
                     key={form.formType}
-                    className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${
-                      form.status === "SIGNED"
-                        ? "border-success/30 bg-success-muted text-success"
-                        : "border-warning/30 bg-warning-muted text-warning"
-                    }`}
+                    className="flex items-center justify-between gap-2 rounded-xl border border-border/60 px-3 py-2"
                   >
-                    {form.title} · {form.status === "SIGNED" ? "חתום" : "חסר"}
-                  </span>
+                    <span
+                      className={`text-xs font-semibold ${
+                        form.status === "SIGNED" ? "text-success" : "text-warning"
+                      }`}
+                    >
+                      {form.title} · {form.status === "SIGNED" ? "חתום" : "חסר"}
+                    </span>
+                    {form.status === "MISSING" ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setSigningTarget({
+                            childId: child.childId,
+                            childName: child.childName,
+                            childAge: child.childAge,
+                            parentName: child.parentName,
+                            parentPhone: child.parentPhone,
+                            formType: form.formType,
+                          })
+                        }
+                        className="shrink-0 rounded-lg bg-primary px-3 py-1 text-xs font-semibold text-primary-foreground hover:opacity-90"
+                      >
+                        חתימה
+                      </button>
+                    ) : (
+                      <span className="shrink-0 text-[10px] text-muted-foreground">
+                        {form.signedAt ? new Date(form.signedAt).toLocaleDateString("he-IL") : ""}
+                      </span>
+                    )}
+                  </div>
                 ))}
               </div>
-
-              <button
-                type="button"
-                disabled
-                className="mt-3 w-full cursor-not-allowed rounded-xl border border-dashed border-border py-2 text-sm font-semibold text-muted-foreground"
-              >
-                חתימה — בשלב הבא
-              </button>
             </div>
           ))}
         </div>
+      )}
+
+      {signingTarget && (
+        <ParentSignatureSignModal
+          open
+          onClose={() => setSigningTarget(null)}
+          onSigned={reload}
+          child={{
+            childId: signingTarget.childId,
+            childName: signingTarget.childName,
+            childAge: signingTarget.childAge,
+            parentName: signingTarget.parentName,
+            parentPhone: signingTarget.parentPhone,
+          }}
+          formType={signingTarget.formType}
+          submit={submit}
+        />
       )}
     </div>
   );

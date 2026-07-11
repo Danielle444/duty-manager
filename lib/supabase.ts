@@ -10,6 +10,14 @@ export const COURSE_BOOKLET_STORAGE_PATH = "current.pdf";
 // its own path (${materialId}/${sanitizedFileName}), not a single fixed path.
 export const COURSE_MATERIALS_BUCKET = "course-materials";
 
+// Signature images for the Teaching Practice parent-signature feature (see
+// lib/actions/parent-signatures.ts) - one PNG per signed form, path
+// "{courseCycle}/{childId}/{formType}/{signedFormId}-signature.png" (see
+// lib/parent-signatures/storage-path.ts). Private, same as the other two
+// buckets - never made public, no signed URLs generated yet (Stage 3 has no
+// download/preview UI for these).
+export const PARENT_SIGNATURES_BUCKET = "parent-signatures";
+
 let cachedClient: SupabaseClient | null | undefined;
 
 // Returns null (rather than throwing) whenever Supabase isn't configured,

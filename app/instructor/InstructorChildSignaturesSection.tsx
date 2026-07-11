@@ -1,29 +1,29 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback } from "react";
 import {
   getParentSignatureStatusForInstructor,
-  type ParentSignatureStatusResult,
+  submitTeachingPracticeSignedFormAsInstructor,
+  type ParentSignatureSubmitInput,
 } from "@/lib/actions/parent-signatures";
 import { ParentSignatureStatusList } from "@/lib/components/ParentSignatureStatusList";
 
-// Stage 2: read-only. The tab this renders under is only shown to
+// Stage 2 read + Stage 3 sign. The tab this renders under is only shown to
 // instructors whose stored session has canManageChildSignatures=true (see
 // InstructorClient), but that's a UX convenience only - the real gate is
-// server-side in getParentSignatureStatusForInstructor, which re-checks the
-// flag fresh from the DB and returns an empty result for anyone without it.
+// server-side in both getParentSignatureStatusForInstructor and
+// submitTeachingPracticeSignedFormAsInstructor, which re-check the flag
+// fresh from the DB regardless of how this screen was reached.
 export function InstructorChildSignaturesSection({ instructorId }: { instructorId: string }) {
-  const [data, setData] = useState<ParentSignatureStatusResult | null>(null);
+  const fetchStatus = useCallback(
+    () => getParentSignatureStatusForInstructor(instructorId),
+    [instructorId]
+  );
+  const submit = useCallback(
+    (input: ParentSignatureSubmitInput) =>
+      submitTeachingPracticeSignedFormAsInstructor(instructorId, input),
+    [instructorId]
+  );
 
-  useEffect(() => {
-    let cancelled = false;
-    getParentSignatureStatusForInstructor(instructorId).then((result) => {
-      if (!cancelled) setData(result);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [instructorId]);
-
-  return <ParentSignatureStatusList data={data} />;
+  return <ParentSignatureStatusList fetchStatus={fetchStatus} submit={submit} />;
 }

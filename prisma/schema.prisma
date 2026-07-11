@@ -38,6 +38,7 @@ model Student {
   ridingLessonNotesTaught RidingLessonNoteTaughtStudent[]
   weeklyFeedbackResponses WeeklyFeedbackResponse[]
   ridingProgressFeedback  StudentRidingProgressFeedback[]
+  lungeProgressFeedback   StudentLungeProgressFeedback[]
 
   teachingPracticeTrackMemberships TeachingPracticeTrackTrainee[]
   teachingPracticeParticipations   TeachingPracticeParticipant[]
@@ -541,6 +542,38 @@ model StudentRidingProgressFeedback {
 
   @@index([studentId])
   @@map("student_riding_progress_feedback")
+}
+
+// Manager-entered לונג׳ בלי רוכב ("lunge without a rider") progress feedback -
+// a standalone journal per trainee, structurally identical to
+// StudentRidingProgressFeedback above (same rationale: not per-session, no
+// relation to ScheduleItem/RidingSlot, multiple rows accumulate over time,
+// both createdByName and updatedByName so an edited row still shows who
+// originally wrote it). Deliberately NOT related to TeachingPracticeLesson/
+// TeachingPracticeFeedback: a TeachingPracticeLesson with practiceType
+// LUNGE is "לונג׳ עם רוכב/ילד" (an admin/instructor generated-lesson
+// concept, tracked entirely separately - see that model's own comments) -
+// this model is the unrelated, always-manager-entered "לונג׳ בלי רוכב"
+// concept the trainee-progress UI keeps in its own top-level section so the
+// two are never confused or merged.
+model StudentLungeProgressFeedback {
+  id               String   @id @default(cuid())
+  studentId        String
+  date             DateTime @db.Date
+  ratingHalfPoints Int?
+  feedback         String?
+  horseName        String?
+  topic            String?
+  instructorName   String?
+  createdByName    String?
+  updatedByName    String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  student Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@index([studentId])
+  @@map("student_lunge_progress_feedback")
 }
 
 enum MessageTaskType {

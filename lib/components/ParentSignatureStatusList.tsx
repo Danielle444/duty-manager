@@ -5,8 +5,10 @@ import type {
   ParentSignatureStatusResult,
   ParentSignatureSubmitInput,
   ParentSignatureSubmitResult,
+  ParentSignatureViewerData,
 } from "@/lib/actions/parent-signatures";
 import { ParentSignatureSignModal } from "@/lib/components/ParentSignatureSignModal";
+import { ParentSignatureViewModal } from "@/lib/components/ParentSignatureViewModal";
 import type { ParentSignatureFormTypeValue } from "@/lib/parent-signatures/types";
 
 interface SigningTarget {
@@ -18,22 +20,26 @@ interface SigningTarget {
   formType: ParentSignatureFormTypeValue;
 }
 
-// Shared, read+sign presentation for the parent-signature status view - used
-// by both the admin page and the instructor/tablet section, each of which
-// only differs in which server actions fetch/submit (admin vs.
-// instructor-permission-gated - see fetchStatus/submit props). Owns its own
-// fetch lifecycle (including refetch-after-signing) so both callers stay
-// thin wrappers that just bind their respective server actions.
+// Shared, read+sign+view presentation for the parent-signature status view -
+// used by both the admin page and the instructor/tablet section, each of
+// which only differs in which server actions fetch/submit/view (admin vs.
+// instructor-permission-gated - see fetchStatus/submit/viewSignedForm
+// props). Owns its own fetch lifecycle (including refetch-after-signing) so
+// both callers stay thin wrappers that just bind their respective server
+// actions.
 export function ParentSignatureStatusList({
   fetchStatus,
   submit,
+  viewSignedForm,
 }: {
   fetchStatus: () => Promise<ParentSignatureStatusResult>;
   submit: (input: ParentSignatureSubmitInput) => Promise<ParentSignatureSubmitResult>;
+  viewSignedForm: (signedFormId: string) => Promise<ParentSignatureViewerData | null>;
 }) {
   const [data, setData] = useState<ParentSignatureStatusResult | null>(null);
   const [search, setSearch] = useState("");
   const [signingTarget, setSigningTarget] = useState<SigningTarget | null>(null);
+  const [viewingFormId, setViewingFormId] = useState<string | null>(null);
 
   const reload = useCallback(() => {
     fetchStatus().then(setData);
@@ -138,9 +144,20 @@ export function ParentSignatureStatusList({
                         חתימה
                       </button>
                     ) : (
-                      <span className="shrink-0 text-[10px] text-muted-foreground">
-                        {form.signedAt ? new Date(form.signedAt).toLocaleDateString("he-IL") : ""}
-                      </span>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <span className="text-[10px] text-muted-foreground">
+                          {form.signedAt ? new Date(form.signedAt).toLocaleDateString("he-IL") : ""}
+                        </span>
+                        {form.signedFormId && (
+                          <button
+                            type="button"
+                            onClick={() => setViewingFormId(form.signedFormId)}
+                            className="rounded-lg border border-border px-3 py-1 text-xs font-semibold text-card-foreground hover:bg-muted"
+                          >
+                            צפייה בטופס חתום
+                          </button>
+                        )}
+                      </div>
                     )}
                   </div>
                 ))}
@@ -164,6 +181,15 @@ export function ParentSignatureStatusList({
           }}
           formType={signingTarget.formType}
           submit={submit}
+        />
+      )}
+
+      {viewingFormId && (
+        <ParentSignatureViewModal
+          open
+          onClose={() => setViewingFormId(null)}
+          signedFormId={viewingFormId}
+          fetchData={viewSignedForm}
         />
       )}
     </div>

@@ -25,20 +25,20 @@ export function Modal({ open, title, onClose, children, size = "md" }: ModalProp
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 print:static print:block print:bg-white print:p-0"
       onClick={onClose}
     >
       <div
         className={
           isLarge
-            ? "flex h-[90vh] w-[95vw] max-w-[1600px] flex-col rounded-xl bg-card p-6 shadow-xl"
+            ? "flex h-[90vh] w-[95vw] max-w-[1600px] flex-col rounded-xl bg-card p-6 shadow-xl print:h-auto print:w-auto print:max-w-none print:rounded-none print:p-0 print:shadow-none"
             : isWide
-              ? "w-[95vw] max-w-3xl rounded-xl bg-card p-6 shadow-xl"
-              : "w-full max-w-md rounded-xl bg-card p-6 shadow-xl"
+              ? "w-[95vw] max-w-3xl rounded-xl bg-card p-6 shadow-xl print:w-auto print:max-w-none print:rounded-none print:p-0 print:shadow-none"
+              : "w-full max-w-md rounded-xl bg-card p-6 shadow-xl print:w-auto print:max-w-none print:rounded-none print:p-0 print:shadow-none"
         }
         onClick={(e) => e.stopPropagation()}
       >
-        <div className={`mb-4 flex min-w-0 items-center justify-between gap-2 ${isLarge ? "shrink-0" : ""}`}>
+        <div className={`mb-4 flex min-w-0 items-center justify-between gap-2 print:hidden ${isLarge ? "shrink-0" : ""}`}>
           <h2 className="min-w-0 truncate text-lg font-semibold text-card-foreground">{title}</h2>
           <button
             onClick={onClose}

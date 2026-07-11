@@ -9,7 +9,7 @@ import { CURRENT_TEACHING_PRACTICE_COURSE_CYCLE } from "@/lib/parent-signatures/
 import { buildParentSignatureImagePath } from "@/lib/parent-signatures/storage-path";
 import { requiredParentSignatureFormTypes } from "@/lib/parent-signatures/required-forms";
 import { getFormContent, CURRENT_FORM_VERSION } from "@/lib/parent-signatures/form-definitions";
-import type { ParentSignatureFormTypeValue } from "@/lib/parent-signatures/types";
+import type { ParentSignatureFormContent, ParentSignatureFormTypeValue } from "@/lib/parent-signatures/types";
 import type { ActionResult } from "@/lib/actions/students";
 import {
   buildParentSignatureChildStatus,
@@ -372,4 +372,109 @@ export async function submitTeachingPracticeSignedFormAsAdmin(
 ): Promise<ParentSignatureSubmitResult> {
   const admin = await requireAdmin();
   return submitParentSignatureInternal(input, { kind: "admin", email: admin.email, name: admin.name });
+}
+
+// ---------------------------------------------------------------------------
+// View a signed form (Stage 4 alternative) - read, no PDF
+// ---------------------------------------------------------------------------
+
+// Deliberately much shorter than course-booklet.ts/materials.ts's 1-hour TTL
+// - those are long-lived documents meant to stay openable for a while; a
+// signature image is only ever needed for the few seconds a single viewer
+// modal is open, so a short expiry limits how long a leaked/cached URL
+// could possibly work.
+const SIGNATURE_VIEW_URL_TTL_SECONDS = 10 * 60; // 10 minutes
+
+// Everything the in-app viewer needs to reconstruct the signed form on
+// screen - full form content (from form-definitions.ts, never summarized),
+// every field snapshot actually collected at signing time, and a short-lived
+// signed URL for the signature image (never a public URL, and never the raw
+// Storage path - the parent-signatures bucket stays private; see
+// lib/supabase.ts). No signedPdfPath field here - this stage never
+// generates or reads a PDF.
+export interface ParentSignatureViewerData {
+  signedFormId: string;
+  formType: ParentSignatureFormTypeValue;
+  formVersion: string;
+  courseCycle: string;
+  signedAt: string;
+  content: ParentSignatureFormContent;
+  childNameSnapshot: string;
+  childAgeSnapshot: number | null;
+  parentNameSnapshot: string | null;
+  parentPhoneSnapshot: string | null;
+  parentEmail: string | null;
+  address: string | null;
+  medicalNotes: string | null;
+  photoConsent: boolean | null;
+  signerName: string;
+  signerRole: string | null;
+  // null if the Storage object/bucket is unreachable (e.g. Supabase env vars
+  // missing) - the viewer still renders every other field in that case,
+  // just without the signature image.
+  signatureUrl: string | null;
+}
+
+// Shared by both entry points below - permission check always happens
+// before this is ever called. Only ever resolves an ACTIVE row (a REVOKED
+// form has no viewer in this stage - "history" UI is explicitly out of
+// scope) and returns null for anything that doesn't resolve cleanly
+// (missing row, wrong status, or a formType/formVersion combination that
+// no longer has a content entry) rather than throwing, so the UI can show a
+// plain "not available" state.
+async function loadSignedFormViewerDataInternal(
+  signedFormId: string
+): Promise<ParentSignatureViewerData | null> {
+  const form = await prisma.teachingPracticeSignedForm.findUnique({ where: { id: signedFormId } });
+  if (!form || form.status !== "ACTIVE") return null;
+
+  const content = getFormContent(form.formType, form.formVersion);
+  if (!content) return null;
+
+  let signatureUrl: string | null = null;
+  if (form.signatureDataPath) {
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      const { data } = await supabase.storage
+        .from(PARENT_SIGNATURES_BUCKET)
+        .createSignedUrl(form.signatureDataPath, SIGNATURE_VIEW_URL_TTL_SECONDS);
+      signatureUrl = data?.signedUrl ?? null;
+    }
+  }
+
+  return {
+    signedFormId: form.id,
+    formType: form.formType,
+    formVersion: form.formVersion,
+    courseCycle: form.courseCycle,
+    signedAt: form.signedAt.toISOString(),
+    content,
+    childNameSnapshot: form.childNameSnapshot,
+    childAgeSnapshot: form.childAgeSnapshot,
+    parentNameSnapshot: form.parentNameSnapshot,
+    parentPhoneSnapshot: form.parentPhoneSnapshot,
+    parentEmail: form.parentEmail,
+    address: form.address,
+    medicalNotes: form.medicalNotes,
+    photoConsent: form.photoConsent,
+    signerName: form.signerName,
+    signerRole: form.signerRole,
+    signatureUrl,
+  };
+}
+
+export async function getTeachingPracticeSignedFormForAdmin(
+  signedFormId: string
+): Promise<ParentSignatureViewerData | null> {
+  await requireAdmin();
+  return loadSignedFormViewerDataInternal(signedFormId);
+}
+
+export async function getTeachingPracticeSignedFormForInstructor(
+  instructorId: string,
+  signedFormId: string
+): Promise<ParentSignatureViewerData | null> {
+  const instructor = await getInstructorForSignatureRead(instructorId);
+  if (!instructor) return null;
+  return loadSignedFormViewerDataInternal(signedFormId);
 }

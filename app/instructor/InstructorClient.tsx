@@ -25,6 +25,7 @@ import { InstructorAttendanceSection } from "@/app/instructor/InstructorAttendan
 import { InstructorRidingSlotsSection } from "@/app/instructor/InstructorRidingSlotsSection";
 import { InstructorTeachingPracticeSection } from "@/app/instructor/InstructorTeachingPracticeSection";
 import { InstructorChildSignaturesSection } from "@/app/instructor/InstructorChildSignaturesSection";
+import { InstructorTraineeProgressSection } from "@/app/instructor/InstructorTraineeProgressSection";
 import { ContactsSection } from "@/lib/components/ContactsSection";
 import { HelpContent } from "@/lib/components/HelpContent";
 import { NotificationsList } from "@/lib/components/NotificationsList";
@@ -448,14 +449,27 @@ export function InstructorClient({
   // it. This is a UX convenience only: the underlying server action
   // re-checks the flag fresh from the DB regardless of how this list was
   // built (see getParentSignatureStatusForInstructor).
-  const instructorMoreItems: { id: MainTabId; label: string }[] = session.canManageChildSignatures
-    ? (() => {
-        const items = [...INSTRUCTOR_MORE_ITEMS];
-        const helpIndex = items.findIndex((item) => item.id === "help");
-        items.splice(helpIndex, 0, { id: "childSignatures", label: "חתימות ילדים" });
-        return items;
-      })()
-    : INSTRUCTOR_MORE_ITEMS;
+  //
+  // Stage I2 - "מעקב חניכים" is likewise only inserted for instructors with
+  // canEditRidingNotes, deliberately reusing that existing permission
+  // rather than adding a new one (see
+  // lib/actions/student-riding-progress-feedback-instructor.ts's own
+  // comment on why this is intentional/temporary). Same UX-convenience-only
+  // caveat: every InstructorTraineeProgressSection action re-checks the
+  // flag fresh from the DB regardless of how this list was built.
+  let instructorMoreItems: { id: MainTabId; label: string }[] = INSTRUCTOR_MORE_ITEMS;
+  if (session.canManageChildSignatures) {
+    const items = [...instructorMoreItems];
+    const helpIndex = items.findIndex((item) => item.id === "help");
+    items.splice(helpIndex, 0, { id: "childSignatures", label: "חתימות ילדים" });
+    instructorMoreItems = items;
+  }
+  if (session.canEditRidingNotes) {
+    const items = [...instructorMoreItems];
+    const helpIndex = items.findIndex((item) => item.id === "help");
+    items.splice(helpIndex, 0, { id: "traineeProgress", label: "מעקב חניכים" });
+    instructorMoreItems = items;
+  }
   const instructorAllTabs = [...INSTRUCTOR_MAIN_TABS, ...instructorMoreItems];
 
   const activeTabLabel = instructorAllTabs.find((t) => t.id === activeTab)?.label ?? "";
@@ -720,6 +734,10 @@ export function InstructorClient({
 
         {activeTab === "childSignatures" && session.canManageChildSignatures && (
           <InstructorChildSignaturesSection instructorId={session.id} />
+        )}
+
+        {activeTab === "traineeProgress" && session.canEditRidingNotes && (
+          <InstructorTraineeProgressSection instructorId={session.id} students={students} />
         )}
 
         {activeTab === "help" && <HelpContent role="instructor" />}

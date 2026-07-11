@@ -19,6 +19,7 @@ export type MainTabId =
   | "weeklyFeedback"
   | "teachingPractice"
   | "childSignatures"
+  | "traineeProgress"
   | "more";
 
 export const MAIN_TABS: { id: MainTabId; label: string }[] = [
@@ -122,6 +123,12 @@ const TAB_ICON_PATHS: Record<MainTabId, ReactNode> = {
       <path d="M6 3h9l4 4v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z" />
       <path d="M8 15c1.2-1 2-1 3 0s1.8 1 3 0" />
       <path d="M9 10h6M9 7h3" />
+    </>
+  ),
+  traineeProgress: (
+    <>
+      <path d="M4 19V5M4 19h16" />
+      <path d="M8 15l3-4 3 2.5L18 8" />
     </>
   ),
   more: (

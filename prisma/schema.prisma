@@ -30,15 +30,16 @@ model Student {
   privateHorseName  String?
   assignedHorseName String?
 
-  availability            StudentAvailability[]
-  assignments             DutyAssignment[]
-  messageTaskRecipients   MessageTaskRecipient[]
-  attendance              StudentAttendance[]
-  ridingLessonNotes       RidingLessonNote[]
-  ridingLessonNotesTaught RidingLessonNoteTaughtStudent[]
-  weeklyFeedbackResponses WeeklyFeedbackResponse[]
-  ridingProgressFeedback  StudentRidingProgressFeedback[]
-  lungeProgressFeedback   StudentLungeProgressFeedback[]
+  availability                 StudentAvailability[]
+  assignments                  DutyAssignment[]
+  messageTaskRecipients        MessageTaskRecipient[]
+  attendance                   StudentAttendance[]
+  ridingLessonNotes            RidingLessonNote[]
+  ridingLessonNotesTaught      RidingLessonNoteTaughtStudent[]
+  weeklyFeedbackResponses      WeeklyFeedbackResponse[]
+  ridingProgressFeedback       StudentRidingProgressFeedback[]
+  lungeProgressFeedback        StudentLungeProgressFeedback[]
+  presentationProgressFeedback StudentPresentationProgressFeedback[]
 
   teachingPracticeTrackMemberships TeachingPracticeTrackTrainee[]
   teachingPracticeParticipations   TeachingPracticeParticipant[]
@@ -574,6 +575,35 @@ model StudentLungeProgressFeedback {
 
   @@index([studentId])
   @@map("student_lunge_progress_feedback")
+}
+
+// Manager-entered פרזנטציה progress feedback - a standalone journal per
+// trainee, structurally identical to StudentRidingProgressFeedback/
+// StudentLungeProgressFeedback above (same rationale: not per-session, no
+// relation to ScheduleItem/RidingSlot/TeachingPracticeLesson, multiple rows
+// accumulate over time, both createdByName and updatedByName so an edited
+// row still shows who originally wrote it). Deliberately no horseName field
+// (unlike the other two progress models above) - a presentation has no
+// horse of its own to record. presentationType is free text (e.g. a stage/
+// type label), same "grows from whatever gets typed" convention as
+// topic/horseName on the sibling models - never a closed enum.
+model StudentPresentationProgressFeedback {
+  id               String   @id @default(cuid())
+  studentId        String
+  date             DateTime @db.Date
+  ratingHalfPoints Int?
+  feedback         String?
+  topic            String?
+  presentationType String?
+  createdByName    String?
+  updatedByName    String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  student Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@index([studentId])
+  @@map("student_presentation_progress_feedback")
 }
 
 enum MessageTaskType {

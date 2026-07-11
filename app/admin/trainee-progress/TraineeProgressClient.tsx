@@ -23,6 +23,14 @@ import {
   type StudentLungeProgressFeedbackInput,
   type StudentLungeProgressFeedbackRow,
 } from "@/lib/actions/student-lunge-progress-feedback";
+import {
+  createStudentPresentationProgressFeedbackAsAdmin,
+  deleteStudentPresentationProgressFeedbackAsAdmin,
+  listStudentPresentationProgressFeedbackForAdmin,
+  updateStudentPresentationProgressFeedbackAsAdmin,
+  type StudentPresentationProgressFeedbackInput,
+  type StudentPresentationProgressFeedbackRow,
+} from "@/lib/actions/student-presentation-progress-feedback";
 import { RidingHistoryList } from "@/lib/components/RidingHistoryList";
 import { getHorseDisplayInfo } from "@/lib/horse-info";
 import { formatHebrewDate, formatHebrewDateTime, parseDateKey } from "@/lib/dates";
@@ -1002,6 +1010,363 @@ function LungeProgressFeedbackList({
   );
 }
 
+// Stage P4c - manager-entered פרזנטציה progress feedback
+// (StudentPresentationProgressFeedback) - a standalone journal per trainee,
+// structurally cloned from the Stage P4b לונג׳ pattern above, minus
+// horseName (a presentation has no horse of its own) and plus
+// presentationType in its place.
+interface PresentationProgressFormValues {
+  date: string;
+  ratingHalfPoints: string;
+  feedback: string;
+  topic: string;
+  presentationType: string;
+}
+
+function emptyPresentationProgressForm(): PresentationProgressFormValues {
+  return {
+    date: todayDateInputValue(),
+    ratingHalfPoints: "",
+    feedback: "",
+    topic: "",
+    presentationType: "",
+  };
+}
+
+function presentationProgressFormToInput(
+  values: PresentationProgressFormValues
+): StudentPresentationProgressFeedbackInput {
+  return {
+    date: values.date,
+    ratingHalfPoints: values.ratingHalfPoints ? Number(values.ratingHalfPoints) : null,
+    feedback: values.feedback.trim() || null,
+    topic: values.topic.trim() || null,
+    presentationType: values.presentationType.trim() || null,
+  };
+}
+
+// Mirrors the server's own "meaningful content" guard (see
+// hasMeaningfulContent in lib/actions/student-presentation-progress-feedback.ts)
+// - checked here too so the admin gets an immediate, specific Hebrew error
+// instead of a round-trip just to learn the same thing.
+function hasPresentationProgressFormContent(values: PresentationProgressFormValues): boolean {
+  return (
+    values.ratingHalfPoints !== "" ||
+    values.feedback.trim() !== "" ||
+    values.topic.trim() !== "" ||
+    values.presentationType.trim() !== ""
+  );
+}
+
+// Same shape/behavior as LungeProgressEntryForm above (see that component's
+// own comment on why this is duplicated rather than generalized), swapping
+// horseName/instructorName for topic/presentationType.
+function PresentationProgressEntryForm({
+  initialValues,
+  submitLabel,
+  pending,
+  error,
+  onSubmit,
+  onCancel,
+  onDelete,
+  isDeleting,
+  deleteError,
+}: {
+  initialValues: PresentationProgressFormValues;
+  submitLabel: string;
+  pending: boolean;
+  error: string | null;
+  onSubmit: (values: PresentationProgressFormValues) => void;
+  onCancel: () => void;
+  onDelete?: () => void;
+  isDeleting?: boolean;
+  deleteError?: string | null;
+}) {
+  const [values, setValues] = useState(initialValues);
+
+  return (
+    <div className="flex flex-col gap-2 rounded-lg border border-border bg-muted/40 p-3">
+      <div className="flex flex-wrap gap-2">
+        <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+          תאריך
+          <input
+            type="date"
+            value={values.date}
+            onChange={(e) => setValues((v) => ({ ...v, date: e.target.value }))}
+            className="rounded-lg border border-border px-2 py-1.5 text-sm"
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+          דירוג
+          <select
+            value={values.ratingHalfPoints}
+            onChange={(e) => setValues((v) => ({ ...v, ratingHalfPoints: e.target.value }))}
+            className="rounded-lg border border-border px-2 py-1.5 text-sm"
+          >
+            <option value="">ללא דירוג</option>
+            {RATING_HALF_POINT_OPTIONS.map((v) => (
+              <option key={v} value={v}>
+                {(v / 2).toFixed(1)}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+          נושא / כותרת
+          <input
+            type="text"
+            value={values.topic}
+            onChange={(e) => setValues((v) => ({ ...v, topic: e.target.value }))}
+            className="rounded-lg border border-border px-2 py-1.5 text-sm"
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+          סוג / שלב
+          <input
+            type="text"
+            value={values.presentationType}
+            onChange={(e) => setValues((v) => ({ ...v, presentationType: e.target.value }))}
+            className="rounded-lg border border-border px-2 py-1.5 text-sm"
+          />
+        </label>
+      </div>
+      <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+        משוב
+        <textarea
+          value={values.feedback}
+          onChange={(e) => setValues((v) => ({ ...v, feedback: e.target.value }))}
+          rows={2}
+          className="rounded-lg border border-border px-2 py-1.5 text-sm"
+        />
+      </label>
+      {error && <p className="text-xs text-danger">{error}</p>}
+      {deleteError && <p className="text-xs text-danger">{deleteError}</p>}
+      <div className="flex gap-2">
+        <button
+          type="button"
+          disabled={pending}
+          onClick={() => onSubmit(values)}
+          className="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+        >
+          {submitLabel}
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="rounded-lg bg-muted px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-muted/70"
+        >
+          ביטול
+        </button>
+        {onDelete && (
+          <button
+            type="button"
+            disabled={isDeleting}
+            onClick={onDelete}
+            className="rounded-lg px-3 py-1.5 text-xs font-medium text-danger underline hover:opacity-80 disabled:opacity-50"
+          >
+            {isDeleting ? "מוחק..." : "מחיקה"}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Same shape/behavior as LungeProgressFeedbackList above.
+function PresentationProgressFeedbackList({
+  studentId,
+  rows,
+  onChanged,
+}: {
+  studentId: string;
+  rows: StudentPresentationProgressFeedbackRow[];
+  onChanged: () => void;
+}) {
+  const [isAdding, setIsAdding] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
+  const [isAddPending, startAddTransition] = useTransition();
+
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editError, setEditError] = useState<string | null>(null);
+  const [isEditPending, startEditTransition] = useTransition();
+
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<{ id: string; message: string } | null>(null);
+  const [, startDeleteTransition] = useTransition();
+
+  function handleDelete(id: string) {
+    if (!window.confirm("למחוק את משוב הפרזנטציה הזה? לא ניתן לשחזר את הפעולה.")) return;
+    setDeleteError(null);
+    setDeletingId(id);
+    startDeleteTransition(async () => {
+      const result = await deleteStudentPresentationProgressFeedbackAsAdmin(id);
+      if (!result.success) {
+        setDeleteError({ id, message: result.error ?? "אירעה שגיאה" });
+        setDeletingId(null);
+        return;
+      }
+      if (editingId === id) {
+        setEditingId(null);
+        setEditError(null);
+      }
+      setDeletingId(null);
+      onChanged();
+    });
+  }
+
+  function handleAdd(values: PresentationProgressFormValues) {
+    if (!hasPresentationProgressFormContent(values)) {
+      setAddError("יש להזין דירוג, משוב, נושא או סוג פרזנטציה");
+      return;
+    }
+    setAddError(null);
+    startAddTransition(async () => {
+      const result = await createStudentPresentationProgressFeedbackAsAdmin(
+        studentId,
+        presentationProgressFormToInput(values)
+      );
+      if (!result.success) {
+        setAddError(result.error ?? "אירעה שגיאה");
+        return;
+      }
+      setIsAdding(false);
+      onChanged();
+    });
+  }
+
+  function handleEdit(id: string, values: PresentationProgressFormValues) {
+    if (!hasPresentationProgressFormContent(values)) {
+      setEditError("יש להזין דירוג, משוב, נושא או סוג פרזנטציה");
+      return;
+    }
+    setEditError(null);
+    startEditTransition(async () => {
+      const result = await updateStudentPresentationProgressFeedbackAsAdmin(
+        id,
+        presentationProgressFormToInput(values)
+      );
+      if (!result.success) {
+        setEditError(result.error ?? "אירעה שגיאה");
+        return;
+      }
+      setEditingId(null);
+      onChanged();
+    });
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      {isAdding ? (
+        <PresentationProgressEntryForm
+          initialValues={emptyPresentationProgressForm()}
+          submitLabel="שמירה"
+          pending={isAddPending}
+          error={addError}
+          onSubmit={handleAdd}
+          onCancel={() => {
+            setIsAdding(false);
+            setAddError(null);
+          }}
+        />
+      ) : (
+        <button
+          type="button"
+          onClick={() => setIsAdding(true)}
+          className="self-start rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:opacity-90"
+        >
+          הוספת משוב פרזנטציה
+        </button>
+      )}
+
+      {rows.length === 0 ? (
+        <p className="rounded-xl border border-border bg-card p-4 text-sm text-muted-foreground">
+          עדיין לא הוזן משוב פרזנטציה לחניך/ה זה/זו.
+        </p>
+      ) : (
+        rows.map((row) =>
+          editingId === row.id ? (
+            <PresentationProgressEntryForm
+              key={row.id}
+              initialValues={{
+                date: row.date,
+                ratingHalfPoints: row.ratingHalfPoints != null ? String(row.ratingHalfPoints) : "",
+                feedback: row.feedback ?? "",
+                topic: row.topic ?? "",
+                presentationType: row.presentationType ?? "",
+              }}
+              submitLabel="עדכון"
+              pending={isEditPending}
+              error={editError}
+              onSubmit={(values) => handleEdit(row.id, values)}
+              onCancel={() => {
+                setEditingId(null);
+                setEditError(null);
+              }}
+              onDelete={() => handleDelete(row.id)}
+              isDeleting={deletingId === row.id}
+              deleteError={deleteError?.id === row.id ? deleteError.message : null}
+            />
+          ) : (
+            <div key={row.id} className="rounded-xl border border-border bg-card p-4">
+              <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+                <span className="font-semibold text-card-foreground">
+                  {formatHebrewDate(parseDateKey(row.date))}
+                </span>
+                <span
+                  className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                    row.ratingHalfPoints != null
+                      ? "bg-success-muted text-success"
+                      : "bg-muted text-muted-foreground"
+                  }`}
+                >
+                  {row.ratingHalfPoints != null ? `דירוג: ${row.ratingHalfPoints / 2}` : "אין דירוג"}
+                </span>
+              </div>
+              {row.feedback && <p className="mb-1 text-sm text-card-foreground">{row.feedback}</p>}
+              {(row.topic || row.presentationType) && (
+                <p className="mb-1 text-xs text-muted-foreground">
+                  {row.topic ? `נושא: ${row.topic}` : ""}
+                  {row.topic && row.presentationType ? " · " : ""}
+                  {row.presentationType ? `סוג: ${row.presentationType}` : ""}
+                </p>
+              )}
+              <p className="text-xs text-muted-foreground">
+                {row.createdByName && `נוצר על ידי: ${row.createdByName}`}
+                {row.createdByName && " · "}
+                {row.updatedByName && `עודכן על ידי: ${row.updatedByName} · `}
+                עודכן בתאריך: {formatHebrewDateTime(new Date(row.updatedAt))}
+              </p>
+              <div className="mt-1 flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingId(row.id);
+                    setEditError(null);
+                  }}
+                  className="text-xs font-medium text-secondary-foreground underline hover:opacity-80"
+                >
+                  עריכה
+                </button>
+                <button
+                  type="button"
+                  disabled={deletingId === row.id}
+                  onClick={() => handleDelete(row.id)}
+                  className="text-xs font-medium text-danger underline hover:opacity-80 disabled:opacity-50"
+                >
+                  {deletingId === row.id ? "מוחק..." : "מחיקה"}
+                </button>
+              </div>
+              {deleteError?.id === row.id && (
+                <p className="mt-1 text-xs text-danger">{deleteError.message}</p>
+              )}
+            </div>
+          )
+        )
+      )}
+    </div>
+  );
+}
+
 // Stage P3 - a client-side-only merge of the two already-loaded row arrays
 // above (no new server action, no new query) into one chronological
 // timeline. source drives both the badge label below and which of each row
@@ -1025,7 +1390,17 @@ interface CombinedTimelineItem {
   // merged or double-counted, and so its own badge text
   // (TIMELINE_SOURCE_LABELS.lungeProgress) reads unambiguously as the
   // standalone category, never the Teaching Practice one.
-  source: "riding" | "teachingPracticeLunge" | "teachingPracticeBeginner" | "ridingProgress" | "lungeProgress";
+  //
+  // Stage P4c - "presentationProgress" is the same standalone,
+  // manager-entered journal shape (StudentPresentationProgressFeedback), for
+  // the unrelated פרזנטציה topic.
+  source:
+    | "riding"
+    | "teachingPracticeLunge"
+    | "teachingPracticeBeginner"
+    | "ridingProgress"
+    | "lungeProgress"
+    | "presentationProgress";
   date: string;
   time: string;
   title: string;
@@ -1147,6 +1522,31 @@ function buildLungeProgressTimelineItems(rows: StudentLungeProgressFeedbackRow[]
   });
 }
 
+// Stage P4c - same "no time-of-day field" shape as buildRidingProgressTimelineItems/
+// buildLungeProgressTimelineItems above (a פרזנטציה entry isn't tied to any
+// scheduled slot either), contextParts built from topic/presentationType.
+function buildPresentationProgressTimelineItems(
+  rows: StudentPresentationProgressFeedbackRow[]
+): CombinedTimelineItem[] {
+  return rows.map((row) => {
+    const contextParts: string[] = [];
+    if (row.topic) contextParts.push(`נושא: ${row.topic}`);
+    if (row.presentationType) contextParts.push(`סוג: ${row.presentationType}`);
+    return {
+      key: `presentation-progress-${row.id}`,
+      source: "presentationProgress",
+      date: row.date,
+      time: "",
+      title: "פרזנטציה",
+      ratingHalfPoints: row.ratingHalfPoints,
+      text: row.feedback,
+      updatedByName: row.updatedByName,
+      updatedAt: row.updatedAt,
+      contextParts,
+    };
+  });
+}
+
 // Newest first: date desc, then time desc, then updatedAt desc as a final
 // tie-break - plain string comparison only (dateKey is "YYYY-MM-DD",
 // startTime is "HH:MM", updatedAt is an ISO string - all sort correctly
@@ -1167,12 +1567,16 @@ function compareTimelineItemsNewestFirst(a: CombinedTimelineItem, b: CombinedTim
 // Stage P4b - lungeProgress gets its own unambiguous "לונג׳ בלי רוכב" badge,
 // deliberately never sharing wording with either teachingPracticeLunge label
 // above, so the two לונג׳ concepts are never confused in the combined view.
+//
+// Stage P4c - presentationProgress gets its own "פרזנטציה" badge - no other
+// source uses that word, so no disambiguation suffix is needed here.
 const TIMELINE_SOURCE_LABELS: Record<CombinedTimelineItem["source"], string> = {
   riding: "הדרכת מתקדמים",
   teachingPracticeLunge: "התנסות מתחילים · לונג׳ עם רוכב",
   teachingPracticeBeginner: "התנסות מתחילים · פרטני/קבוצתי",
   ridingProgress: "רכיבה",
   lungeProgress: "לונג׳ בלי רוכב",
+  presentationProgress: "פרזנטציה",
 };
 
 // Compact, read-only, no filters - same convention as
@@ -1262,6 +1666,7 @@ export function TraineeProgressClient({
   // history, while still being one click away.
   const [isRidingProgressOpen, setIsRidingProgressOpen] = useState(true);
   const [isLungeProgressOpen, setIsLungeProgressOpen] = useState(true);
+  const [isPresentationProgressOpen, setIsPresentationProgressOpen] = useState(true);
   const [isRidingOpen, setIsRidingOpen] = useState(true);
   const [isTeachingPracticeOpen, setIsTeachingPracticeOpen] = useState(true);
   const [isTimelineOpen, setIsTimelineOpen] = useState(false);
@@ -1294,6 +1699,9 @@ export function TraineeProgressClient({
   const [lungeProgressRows, setLungeProgressRows] = useState<StudentLungeProgressFeedbackRow[] | null>(
     null
   );
+  const [presentationProgressRows, setPresentationProgressRows] = useState<
+    StudentPresentationProgressFeedbackRow[] | null
+  >(null);
   const [ridingRows, setRidingRows] = useState<RidingHistoryRow[] | null>(null);
   const [teachingPracticeRows, setTeachingPracticeRows] = useState<TeachingPracticeFeedbackHistoryRow[] | null>(
     null
@@ -1365,6 +1773,37 @@ export function TraineeProgressClient({
     startTransition(async () => {
       const result = await listStudentLungeProgressFeedbackForAdmin(selectedStudentId);
       setLungeProgressRows(result ?? []);
+    });
+  }
+
+  // Stage P4c - same fetch/cancellation-guard shape as lungeProgressRows
+  // above, against the new StudentPresentationProgressFeedback action.
+  useEffect(() => {
+    if (!selectedStudentId) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setPresentationProgressRows(null);
+      return;
+    }
+    let cancelled = false;
+    setPresentationProgressRows(null);
+    startTransition(async () => {
+      const result = await listStudentPresentationProgressFeedbackForAdmin(selectedStudentId);
+      if (!cancelled) {
+        setPresentationProgressRows(result ?? []);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedStudentId]);
+
+  // Manual refresh after a successful create/update from
+  // PresentationProgressFeedbackList - same reasoning as refreshRidingProgress above.
+  function refreshPresentationProgress() {
+    if (!selectedStudentId) return;
+    startTransition(async () => {
+      const result = await listStudentPresentationProgressFeedbackForAdmin(selectedStudentId);
+      setPresentationProgressRows(result ?? []);
     });
   }
 
@@ -1440,6 +1879,16 @@ export function TraineeProgressClient({
     [lungeProgressRows]
   );
 
+  // Stage P4c - the standalone "פרזנטציה" TopicSection's own average, from
+  // StudentPresentationProgressFeedback rows only.
+  const presentationProgressAverageRating = useMemo(
+    () =>
+      presentationProgressRows
+        ? averageRatingFromHalfPoints(presentationProgressRows.map((r) => r.ratingHalfPoints))
+        : null,
+    [presentationProgressRows]
+  );
+
   // Stage P4a - teachingPracticeRows (from getStudentTeachingPracticeFeedbackForAdmin,
   // unchanged) already contains every practice type, including LUNGE. Split
   // here, client-side only, purely so TeachingPracticeFeedbackSection can
@@ -1489,6 +1938,7 @@ export function TraineeProgressClient({
     if (
       ridingProgressRows === null ||
       lungeProgressRows === null ||
+      presentationProgressRows === null ||
       ridingRows === null ||
       lungeTeachingPracticeFeedback === null ||
       beginnerTeachingPracticeFeedback === null
@@ -1497,6 +1947,7 @@ export function TraineeProgressClient({
     return [
       ...buildRidingProgressTimelineItems(ridingProgressRows),
       ...buildLungeProgressTimelineItems(lungeProgressRows),
+      ...buildPresentationProgressTimelineItems(presentationProgressRows),
       ...buildRidingTimelineItems(ridingRows),
       ...buildTeachingPracticeTimelineItems(lungeTeachingPracticeFeedback, "teachingPracticeLunge"),
       ...buildTeachingPracticeTimelineItems(beginnerTeachingPracticeFeedback, "teachingPracticeBeginner"),
@@ -1504,6 +1955,7 @@ export function TraineeProgressClient({
   }, [
     ridingProgressRows,
     lungeProgressRows,
+    presentationProgressRows,
     ridingRows,
     lungeTeachingPracticeFeedback,
     beginnerTeachingPracticeFeedback,
@@ -1515,10 +1967,13 @@ export function TraineeProgressClient({
   // standalone לונג׳-בלי-רוכב rows and Teaching Practice לונג׳-עם-רוכב rows
   // are both counted, each exactly once, never double-counted against each
   // other.
+  //
+  // Stage P4c - presentationProgressRows added the same way.
   const combinedAverageRating = useMemo(() => {
     if (
       ridingProgressRows === null ||
       lungeProgressRows === null ||
+      presentationProgressRows === null ||
       ridingRows === null ||
       teachingPracticeRows === null
     )
@@ -1526,10 +1981,11 @@ export function TraineeProgressClient({
     return averageRatingFromHalfPoints([
       ...ridingProgressRows.map((r) => r.ratingHalfPoints),
       ...lungeProgressRows.map((r) => r.ratingHalfPoints),
+      ...presentationProgressRows.map((r) => r.ratingHalfPoints),
       ...ridingRows.map((r) => r.ratingHalfPoints),
       ...teachingPracticeRows.map((r) => r.ratingHalfPoints),
     ]);
-  }, [ridingProgressRows, lungeProgressRows, ridingRows, teachingPracticeRows]);
+  }, [ridingProgressRows, lungeProgressRows, presentationProgressRows, ridingRows, teachingPracticeRows]);
 
   function handleSelectStudent(studentId: string) {
     setSelectedStudentId(studentId);
@@ -1687,6 +2143,29 @@ export function TraineeProgressClient({
                 studentId={selectedStudent.id}
                 rows={lungeProgressRows}
                 onChanged={refreshLungeProgress}
+              />
+            )}
+          </TopicSection>
+
+          {/* Stage P4c - standalone, manager-entered פרזנטציה progress
+              journal (StudentPresentationProgressFeedback) - same pattern as
+              "לונג׳" above, own subtitle for consistency even though
+              (unlike לונג׳) there's no similarly-named Teaching Practice
+              concept to disambiguate from. */}
+          <TopicSection
+            title="פרזנטציה"
+            subtitle="משובי פרזנטציה להזנה ידנית על ידי המנהלת."
+            average={presentationProgressAverageRating}
+            isOpen={isPresentationProgressOpen}
+            onToggle={() => setIsPresentationProgressOpen((v) => !v)}
+          >
+            {presentationProgressRows === null ? (
+              <p className="text-sm text-muted-foreground">טוען...</p>
+            ) : (
+              <PresentationProgressFeedbackList
+                studentId={selectedStudent.id}
+                rows={presentationProgressRows}
+                onChanged={refreshPresentationProgress}
               />
             )}
           </TopicSection>

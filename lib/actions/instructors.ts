@@ -206,3 +206,17 @@ export async function setInstructorCanEditTeachingPracticeFeedback(
   revalidatePath("/instructor");
   return { success: true };
 }
+
+export async function setInstructorCanManageChildSignatures(
+  instructorId: string,
+  canManageChildSignatures: boolean
+): Promise<ActionResult> {
+  await requireAdmin();
+  await prisma.instructor.update({
+    where: { id: instructorId },
+    data: { canManageChildSignatures },
+  });
+  revalidatePath("/admin/instructors");
+  revalidatePath("/instructor");
+  return { success: true };
+}

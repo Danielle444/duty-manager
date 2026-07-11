@@ -14,6 +14,7 @@ import {
   setInstructorCanManageTeachingPracticeAssignments,
   setInstructorCanManageTeachingPracticeHorses,
   setInstructorCanEditTeachingPracticeFeedback,
+  setInstructorCanManageChildSignatures,
   updateInstructor,
 } from "@/lib/actions/instructors";
 import { maskIdentityNumber } from "@/lib/format";
@@ -42,6 +43,7 @@ interface InstructorRow {
   canManageTeachingPracticeAssignments: boolean;
   canManageTeachingPracticeHorses: boolean;
   canEditTeachingPracticeFeedback: boolean;
+  canManageChildSignatures: boolean;
   ridingSummary: InstructorRidingSummary;
 }
 
@@ -142,6 +144,15 @@ export function InstructorsClient({ instructors }: { instructors: InstructorRow[
     });
   }
 
+  function handleToggleCanManageChildSignatures(instructor: InstructorRow) {
+    startTransition(async () => {
+      await setInstructorCanManageChildSignatures(
+        instructor.id,
+        !instructor.canManageChildSignatures
+      );
+    });
+  }
+
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap gap-2">
@@ -183,6 +194,7 @@ export function InstructorsClient({ instructors }: { instructors: InstructorRow[
               <th className="sticky top-0 z-10 bg-muted px-4 py-3 text-right font-medium">ניהול שיבוץ התנסויות</th>
               <th className="sticky top-0 z-10 bg-muted px-4 py-3 text-right font-medium">ניהול סוסים וציוד בהתנסויות</th>
               <th className="sticky top-0 z-10 bg-muted px-4 py-3 text-right font-medium">עריכת משוב התנסויות</th>
+              <th className="sticky top-0 z-10 bg-muted px-4 py-3 text-right font-medium">ניהול חתימות ילדים</th>
               <th className="sticky top-0 z-10 bg-muted px-4 py-3 text-right font-medium">שיבוצי רכיבה (סה&quot;כ)</th>
               <th className="sticky top-0 z-10 bg-muted px-4 py-3 text-right font-medium">פעולות</th>
             </tr>
@@ -294,6 +306,16 @@ export function InstructorsClient({ instructors }: { instructors: InstructorRow[
                     title="יכול/ה לערוך משוב התנסויות"
                   />
                 </td>
+                <td className="px-4 py-3">
+                  <input
+                    type="checkbox"
+                    checked={instructor.canManageChildSignatures}
+                    disabled={isPending}
+                    onChange={() => handleToggleCanManageChildSignatures(instructor)}
+                    aria-label={`יכול/ה לנהל חתימות ילדים עבור ${instructor.fullName}`}
+                    title="יכול/ה לנהל חתימות ילדים"
+                  />
+                </td>
                 <td
                   className="px-4 py-3 text-muted-foreground"
                   title={`היום: ${instructor.ridingSummary.todayAssigned} · עתידיות: ${instructor.ridingSummary.upcomingAssigned} · עברו: ${instructor.ridingSummary.pastAssigned}`}
@@ -329,7 +351,7 @@ export function InstructorsClient({ instructors }: { instructors: InstructorRow[
             ))}
             {filteredInstructors.length === 0 && (
               <tr>
-                <td colSpan={14} className="px-4 py-8 text-center text-muted-foreground">
+                <td colSpan={15} className="px-4 py-8 text-center text-muted-foreground">
                   {instructors.length === 0 ? "אין מדריכים עדיין" : "אין מדריכים התואמים את החיפוש"}
                 </td>
               </tr>

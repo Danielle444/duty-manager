@@ -38,6 +38,7 @@ export default async function InstructorsPage() {
           canManageTeachingPracticeAssignments: i.canManageTeachingPracticeAssignments,
           canManageTeachingPracticeHorses: i.canManageTeachingPracticeHorses,
           canEditTeachingPracticeFeedback: i.canEditTeachingPracticeFeedback,
+          canManageChildSignatures: i.canManageChildSignatures,
           ridingSummary: ridingSummaryByInstructorId.get(i.id) ?? {
             instructorId: i.id,
             totalAssigned: 0,

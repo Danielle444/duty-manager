@@ -963,7 +963,7 @@ export async function upsertRidingLessonNoteAsInstructor(
 ): Promise<RidingLessonNoteActionResult> {
   const instructor = await prisma.instructor.findUnique({ where: { id: instructorId } });
   if (!instructor || !instructor.isActive || !instructor.canEditRidingNotes) {
-    return { success: false, error: "אין הרשאה לערוך הערות רכיבה" };
+    return { success: false, error: "אין הרשאה לערוך הערות הדרכת מתקדמים" };
   }
 
   const ridingSlot = await prisma.ridingSlot.findUnique({ where: { id: ridingSlotId } });

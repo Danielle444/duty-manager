@@ -267,7 +267,7 @@ function StudentCompactRow({
         )}
         {row.note && (
           <span
-            title="קיימת הערת רכיבה"
+            title="קיימת הערת הדרכת מתקדמים"
             className="h-1.5 w-1.5 shrink-0 rounded-full bg-secondary-foreground"
           />
         )}
@@ -709,7 +709,7 @@ function StudentEditor({
       {canEdit ? (
         <>
           <label className="flex flex-col gap-1 text-base">
-            הערת רכיבה
+            הערת הדרכת מתקדמים
             <textarea
               value={note}
               onChange={(e) => setNote(e.target.value)}
@@ -761,7 +761,7 @@ function StudentEditor({
         </>
       ) : (
         <>
-          <p className="text-base text-muted-foreground">הערת רכיבה: {row.note ?? "אין הערה"}</p>
+          <p className="text-base text-muted-foreground">הערת הדרכת מתקדמים: {row.note ?? "אין הערה"}</p>
           <p className="text-base text-muted-foreground">
             דירוג: {row.ratingHalfPoints != null ? row.ratingHalfPoints / 2 : "ללא"}
           </p>
@@ -1098,7 +1098,7 @@ export function InstructorRidingSlotsSection({
           </div>
         </div>
         {!canEdit && (
-          <p className="text-xs text-muted-foreground">תצוגה בלבד - אין הרשאת עריכת הערות רכיבה</p>
+          <p className="text-xs text-muted-foreground">תצוגה בלבד - אין הרשאת עריכת הערות הדרכת מתקדמים</p>
         )}
       </div>
 

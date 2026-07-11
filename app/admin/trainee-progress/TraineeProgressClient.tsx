@@ -133,11 +133,23 @@ const ROLE_LABELS: Record<TeachingPracticeRoleValue, string> = {
 // asks for a simple list, and there's no established date/topic filter
 // convention to reuse here yet. Rows already arrive newest-first from the
 // action.
-function TeachingPracticeFeedbackHistoryList({ rows }: { rows: TeachingPracticeFeedbackHistoryRow[] }) {
+//
+// Stage P4a - reused for both internal subsections of the "התנסויות
+// מתחילים" TopicSection (see TeachingPracticeFeedbackSection below: "לונג׳
+// עם רוכב" and "שיעורי מתחילים - פרטני/קבוצתי" both render one of these,
+// filtered to their own practiceType rows), so the empty-state wording is a
+// prop rather than hardcoded to one subsection's phrasing.
+function TeachingPracticeFeedbackHistoryList({
+  rows,
+  emptyMessage = "עדיין לא הוזן משוב התנסויות מתחילים לחניך/ה זה/זו.",
+}: {
+  rows: TeachingPracticeFeedbackHistoryRow[];
+  emptyMessage?: string;
+}) {
   if (rows.length === 0) {
     return (
       <p className="rounded-xl border border-border bg-card p-4 text-sm text-muted-foreground">
-        עדיין לא הוזן משוב התנסויות מתחילים לחניך/ה זה/זו.
+        {emptyMessage}
       </p>
     );
   }
@@ -185,6 +197,52 @@ function TeachingPracticeFeedbackHistoryList({ rows }: { rows: TeachingPracticeF
           </p>
         </div>
       ))}
+    </div>
+  );
+}
+
+// Stage P4a - product clarification: Teaching Practice LUNGE ("לונג׳ עם
+// רוכב/ילד") is part of the Teaching Practice / "התנסויות מתחילים" family,
+// NOT the future standalone manager-entered "לונג׳ בלי רוכב" progress
+// category - so it stays inside one top-level TopicSection, split only as
+// two internal, non-collapsible subsections. Each subsection gets its own
+// small average badge (cheap and useful - see the "very clean way" product
+// note); the section's own TopicSection average (passed by the caller in
+// TraineeProgressClient) still reflects every Teaching Practice row
+// together, unaffected by this internal split.
+function TeachingPracticeFeedbackSection({
+  lungeRows,
+  beginnerRows,
+}: {
+  lungeRows: TeachingPracticeFeedbackHistoryRow[];
+  beginnerRows: TeachingPracticeFeedbackHistoryRow[];
+}) {
+  const lungeAverage = averageRatingFromHalfPoints(lungeRows.map((r) => r.ratingHalfPoints));
+  const beginnerAverage = averageRatingFromHalfPoints(beginnerRows.map((r) => r.ratingHalfPoints));
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <h4 className="text-sm font-bold text-card-foreground">לונג׳ עם רוכב</h4>
+          <TopicAverageBadge average={lungeAverage} />
+        </div>
+        <TeachingPracticeFeedbackHistoryList
+          rows={lungeRows}
+          emptyMessage="עדיין לא הוזן משוב לונג׳ עם רוכב לחניך/ה זה/זו."
+        />
+      </div>
+
+      <div className="flex flex-col gap-2 border-t border-border pt-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <h4 className="text-sm font-bold text-card-foreground">שיעורי מתחילים - פרטני/קבוצתי</h4>
+          <TopicAverageBadge average={beginnerAverage} />
+        </div>
+        <TeachingPracticeFeedbackHistoryList
+          rows={beginnerRows}
+          emptyMessage="עדיין לא הוזן משוב שיעורי מתחילים לחניך/ה זה/זו."
+        />
+      </div>
     </div>
   );
 }
@@ -560,7 +618,14 @@ function RidingProgressFeedbackList({
 // so this is where they're normalized into one shape, once.
 interface CombinedTimelineItem {
   key: string;
-  source: "riding" | "teachingPractice" | "ridingProgress";
+  // Stage P4a - "teachingPractice" split into "teachingPracticeLunge" /
+  // "teachingPracticeBeginner" purely so the timeline badge
+  // (TIMELINE_SOURCE_LABELS below) can distinguish "לונג׳ עם רוכב" from
+  // "פרטני/קבוצתי" text - both still resolve to a "התנסות מתחילים · ..."
+  // label, never a standalone "לונג׳" one; there is no separate top-level
+  // TopicSection behind this split (see TeachingPracticeFeedbackSection,
+  // which renders both as subsections of the one "התנסויות מתחילים" section).
+  source: "riding" | "teachingPracticeLunge" | "teachingPracticeBeginner" | "ridingProgress";
   date: string;
   time: string;
   title: string;
@@ -598,8 +663,15 @@ function buildRidingTimelineItems(rows: RidingHistoryRow[]): CombinedTimelineIte
   });
 }
 
+// Stage P4a - source is now passed in by the caller (one call for
+// lungeTeachingPracticeFeedback, one for beginnerTeachingPracticeFeedback)
+// rather than hardcoded, so the same builder produces correctly-badged items
+// for both practiceType groups without duplicating this mapping logic. Both
+// still belong to one Teaching Practice "family" in the UI - see
+// TIMELINE_SOURCE_LABELS.
 function buildTeachingPracticeTimelineItems(
-  rows: TeachingPracticeFeedbackHistoryRow[]
+  rows: TeachingPracticeFeedbackHistoryRow[],
+  source: "teachingPracticeLunge" | "teachingPracticeBeginner"
 ): CombinedTimelineItem[] {
   return rows.map((row) => {
     const contextParts: string[] = [];
@@ -611,7 +683,7 @@ function buildTeachingPracticeTimelineItems(
     if (row.location) contextParts.push(`מיקום: ${row.location}`);
     return {
       key: `teaching-practice-${row.feedbackId}`,
-      source: "teachingPractice",
+      source,
       date: row.date,
       time: row.startTime,
       title: PRACTICE_TYPE_LABELS[row.practiceType],
@@ -662,9 +734,15 @@ function compareTimelineItemsNewestFirst(a: CombinedTimelineItem, b: CombinedTim
   );
 }
 
+// Stage P4a - both Teaching Practice labels below stay explicitly branded
+// "התנסות מתחילים · ..." (never a bare "לונג׳") per product clarification:
+// LUNGE-with-rider is a Teaching Practice subtype, not the future
+// standalone manager-entered לונג׳ progress category, and the combined
+// timeline badge must not blur that distinction.
 const TIMELINE_SOURCE_LABELS: Record<CombinedTimelineItem["source"], string> = {
   riding: "הדרכת מתקדמים",
-  teachingPractice: "התנסות מתחילים",
+  teachingPracticeLunge: "התנסות מתחילים · לונג׳ עם רוכב",
+  teachingPracticeBeginner: "התנסות מתחילים · פרטני/קבוצתי",
   ridingProgress: "רכיבה",
 };
 
@@ -886,6 +964,34 @@ export function TraineeProgressClient({
     [ridingRows]
   );
 
+  // Stage P4a - teachingPracticeRows (from getStudentTeachingPracticeFeedbackForAdmin,
+  // unchanged) already contains every practice type, including LUNGE. Split
+  // here, client-side only, purely so TeachingPracticeFeedbackSection can
+  // render "לונג׳ עם רוכב" and "שיעורי מתחילים - פרטני/קבוצתי" as two
+  // internal subsections of the one "התנסויות מתחילים" TopicSection (and so
+  // the combined timeline below can badge them distinctly) - no new fetch,
+  // no row duplicated or dropped, since every row has exactly one
+  // practiceType and therefore lands in exactly one of the two arrays below.
+  const lungeTeachingPracticeFeedback = useMemo(
+    () => (teachingPracticeRows ? teachingPracticeRows.filter((r) => r.practiceType === "LUNGE") : null),
+    [teachingPracticeRows]
+  );
+
+  const beginnerTeachingPracticeFeedback = useMemo(
+    () =>
+      teachingPracticeRows
+        ? teachingPracticeRows.filter(
+            (r) => r.practiceType === "BEGINNER_PRIVATE" || r.practiceType === "BEGINNER_GROUP"
+          )
+        : null,
+    [teachingPracticeRows]
+  );
+
+  // Per product direction, the top-level "התנסויות מתחילים" TopicSection's
+  // own average badge covers every Teaching Practice row together
+  // (LUNGE + beginner), not just one subsection - each subsection's own
+  // narrower average is computed separately, inline, inside
+  // TeachingPracticeFeedbackSection.
   const teachingPracticeAverageRating = useMemo(
     () =>
       teachingPracticeRows
@@ -894,20 +1000,30 @@ export function TraineeProgressClient({
     [teachingPracticeRows]
   );
 
-  // Stage P3/R2 - combined timeline, purely a client-side merge/sort of the
-  // three already-loaded arrays above (no new fetch). null (still loading)
-  // only while ANY source hasn't finished loading yet - waiting for all
-  // three avoids briefly showing an incomplete timeline that would look
-  // like "no feedback exists" for a source that's really just still in
-  // flight.
+  // Stage P3/R2/P4a - combined timeline, purely a client-side merge/sort of
+  // the already-loaded arrays above (no new fetch). null (still loading)
+  // only while ANY source hasn't finished loading yet - waiting for all of
+  // them avoids briefly showing an incomplete timeline that would look like
+  // "no feedback exists" for a source that's really just still in flight.
+  // lungeTeachingPracticeFeedback/beginnerTeachingPracticeFeedback are both
+  // derived from teachingPracticeRows (never independently null once it
+  // isn't), so gating on teachingPracticeRows alone is equivalent to gating
+  // on both splits and avoids a redundant null check.
   const combinedTimelineItems = useMemo(() => {
-    if (ridingProgressRows === null || ridingRows === null || teachingPracticeRows === null) return null;
+    if (
+      ridingProgressRows === null ||
+      ridingRows === null ||
+      lungeTeachingPracticeFeedback === null ||
+      beginnerTeachingPracticeFeedback === null
+    )
+      return null;
     return [
       ...buildRidingProgressTimelineItems(ridingProgressRows),
       ...buildRidingTimelineItems(ridingRows),
-      ...buildTeachingPracticeTimelineItems(teachingPracticeRows),
+      ...buildTeachingPracticeTimelineItems(lungeTeachingPracticeFeedback, "teachingPracticeLunge"),
+      ...buildTeachingPracticeTimelineItems(beginnerTeachingPracticeFeedback, "teachingPracticeBeginner"),
     ].sort(compareTimelineItemsNewestFirst);
-  }, [ridingProgressRows, ridingRows, teachingPracticeRows]);
+  }, [ridingProgressRows, ridingRows, lungeTeachingPracticeFeedback, beginnerTeachingPracticeFeedback]);
 
   const combinedAverageRating = useMemo(() => {
     if (ridingProgressRows === null || ridingRows === null || teachingPracticeRows === null) return null;
@@ -1068,16 +1184,26 @@ export function TraineeProgressClient({
             )}
           </TopicSection>
 
+          {/* Stage P4a - one top-level section for the whole Teaching
+              Practice family; LUNGE ("לונג׳ עם רוכב") and beginner
+              ("שיעורי מתחילים - פרטני/קבוצתי") rows render as two internal
+              subsections inside TeachingPracticeFeedbackSection, never as
+              separate top-level TopicSections - per product clarification,
+              LUNGE-with-rider is a Teaching Practice subtype, not the future
+              standalone manager-entered לונג׳ progress category. */}
           <TopicSection
             title="התנסויות מתחילים"
             average={teachingPracticeAverageRating}
             isOpen={isTeachingPracticeOpen}
             onToggle={() => setIsTeachingPracticeOpen((v) => !v)}
           >
-            {teachingPracticeRows === null ? (
+            {lungeTeachingPracticeFeedback === null || beginnerTeachingPracticeFeedback === null ? (
               <p className="text-sm text-muted-foreground">טוען...</p>
             ) : (
-              <TeachingPracticeFeedbackHistoryList rows={teachingPracticeRows} />
+              <TeachingPracticeFeedbackSection
+                lungeRows={lungeTeachingPracticeFeedback}
+                beginnerRows={beginnerTeachingPracticeFeedback}
+              />
             )}
           </TopicSection>
 

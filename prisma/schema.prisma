@@ -280,11 +280,20 @@ model Instructor {
   // flag; feedback content itself stays admin/authorized-instructor-only.
   canEditTeachingPracticeFeedback Boolean @default(false)
 
+  // Grants permission to collect/manage parent digital-signature consent
+  // forms for Teaching Practice children (the ranch-tablet flow); false by
+  // default. Independent of canManageTeachingPracticeAssignments/Horses -
+  // collecting legal consent/medical data is a different trust level than
+  // scheduling. Intended for a dedicated tablet Instructor account, not a
+  // capability granted to every instructor.
+  canManageChildSignatures Boolean @default(false)
+
   ridingSlotAssignments           RidingSlotAssignment[]
   ridingSlotAssignmentInstructors RidingSlotAssignmentInstructor[]
 
-  teachingPracticeTracksResponsible  TeachingPracticeTrack[]
-  teachingPracticeLessonsResponsible TeachingPracticeLesson[]
+  teachingPracticeTracksResponsible    TeachingPracticeTrack[]
+  teachingPracticeLessonsResponsible   TeachingPracticeLesson[]
+  teachingPracticeSignedFormsCollected TeachingPracticeSignedForm[]
 
   @@map("instructors")
 }
@@ -962,6 +971,7 @@ model TeachingPracticeChild {
 
   trackDefaults TeachingPracticeTrackChild[]
   assignments   TeachingPracticeChildAssignment[]
+  signedForms   TeachingPracticeSignedForm[]
 
   @@map("teaching_practice_children")
 }
@@ -1003,4 +1013,118 @@ model TeachingPracticeFeedback {
   participant TeachingPracticeParticipant @relation(fields: [participantId], references: [id], onDelete: Cascade)
 
   @@map("teaching_practice_feedback")
+}
+
+enum TeachingPracticeSignedFormType {
+  SAFETY_INSTRUCTIONS
+  LUNGE_CONSENT
+  BEGINNER_LESSON_CONSENT
+}
+
+enum TeachingPracticeSignedFormStatus {
+  ACTIVE
+  REVOKED
+}
+
+// A completed, signed parent-consent record for one TeachingPracticeChild.
+// Snapshot-based by design: child*/parent* fields are copied at signing time
+// from TeachingPracticeChild and never re-read live afterwards, so a record
+// always reflects exactly what the parent saw and signed, even if the
+// child's profile changes later. formVersion pins the record to an exact
+// entry in lib/parent-signatures/form-definitions.ts (the actual form text
+// lives in code, not in the DB - see that file's header) so old signatures
+// stay resolvable to their original wording after the form text is next
+// updated.
+//
+// courseCycle (e.g. "2026-summer") is the Stage 1 season boundary: there is
+// no dedicated Teaching Practice season/course model yet (CourseSettings is
+// a single global row, not scoped per Teaching Practice run), and
+// TeachingPracticeChild rows are matched/reused by name+phone across course
+// imports (see teaching-practice-child-import.ts), so without this field a
+// signature from a past course could otherwise silently satisfy the
+// requirement for the same returning child in a future one.
+//
+// Stage 1: schema/data-model only - no signing UI, no PDF generation, no
+// Storage upload writes to this table yet (signatureDataPath/signedPdfPath
+// exist now so a later stage can fill them in without another migration).
+//
+// Re-sign / replacement history: rows are never deleted or overwritten in
+// place. Superseding a signature (parent corrects a mistake, or the form
+// content version changes) means creating a new row and setting the old
+// row's status to REVOKED, preserving full history. A hand-written partial
+// unique index (see the migration for this table - Prisma's schema.prisma
+// has no syntax for a WHERE-qualified/partial unique index) enforces at most
+// one ACTIVE row per (childId, formType, courseCycle); REVOKED rows are
+// exempt so history can accumulate freely.
+model TeachingPracticeSignedForm {
+  id       String                         @id @default(cuid())
+  childId  String
+  formType TeachingPracticeSignedFormType
+
+  // Stage 1 season boundary - see model comment above. Required (no static
+  // schema default makes sense for a value that must track "the current
+  // course run"); every write must set it explicitly.
+  courseCycle String
+
+  // Snapshots taken at signing time - see model comment above.
+  // childNameSnapshot is required (always known at signing); the rest
+  // mirror how sparse TeachingPracticeChild itself is (age/parentName/
+  // parentPhone are all nullable there too).
+  childNameSnapshot   String
+  childAgeSnapshot    Int?
+  parentNameSnapshot  String?
+  parentPhoneSnapshot String?
+
+  // Collected only on this record, never backfilled onto
+  // TeachingPracticeChild - mixing parent-self-reported data (address,
+  // email, medical disclosures) into the operational child record would
+  // conflate two different trust levels/purposes.
+  parentEmail  String?
+  address      String?
+  medicalNotes String?
+  photoConsent Boolean?
+
+  signerName String
+  // Free text on purpose (e.g. "אב"/"אם"/"אפוטרופוס") rather than an enum -
+  // the source forms never constrain this to a fixed list, and a rider aged
+  // 18+ signing SAFETY_INSTRUCTIONS for themselves is a real case a small
+  // enum would need to special-case anyway.
+  signerRole String?
+
+  // Both nullable "for future" per Stage 1 scope - populated by later
+  // stages (signature capture, PDF generation); nothing writes to either
+  // yet.
+  signatureDataPath String?
+  signedPdfPath     String?
+
+  // Pins this record to an exact entry in
+  // lib/parent-signatures/form-definitions.ts, e.g. "v1". String (not Int)
+  // to match that file's .v1/.v2 naming directly.
+  formVersion String
+
+  // No DRAFT/pending state in the designed flow (a row is only ever created
+  // at the moment of a completed submit), so every row is signed by
+  // construction; defaults to creation time like createdAt.
+  signedAt DateTime @default(now())
+
+  // Exactly one of collectedByInstructorId / collectedByAdminName is
+  // expected to be set in practice (the Stage 1+ tablet flow always sets
+  // the instructor; the admin fields exist so a future admin-side
+  // collection path doesn't need another migration). Admin identity is
+  // denormalized (name/email strings, not an AdminEmail relation) - same
+  // "who touched this" convention as StudentAttendance.updatedByName.
+  collectedByInstructorId String?
+  collectedByAdminEmail   String?
+  collectedByAdminName    String?
+
+  status TeachingPracticeSignedFormStatus @default(ACTIVE)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  child                 TeachingPracticeChild @relation(fields: [childId], references: [id], onDelete: Cascade)
+  collectedByInstructor Instructor?           @relation(fields: [collectedByInstructorId], references: [id])
+
+  @@index([childId, formType, courseCycle])
+  @@map("teaching_practice_signed_forms")
 }

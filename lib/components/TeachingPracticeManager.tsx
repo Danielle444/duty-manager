@@ -16,6 +16,7 @@ import { Button } from "@/lib/components/Button";
 import { Modal } from "@/lib/components/Modal";
 import { SearchableSelect, type SearchableSelectOption } from "@/lib/components/SearchableSelect";
 import { formatHebrewDate, formatHebrewWeekday, parseDateKey, todayDateKey } from "@/lib/dates";
+import { buildTelLink, buildWhatsAppLink } from "@/lib/phone-contact-links";
 import type { ActionResult } from "@/lib/actions/students";
 import {
   addMinutesToTimeString,
@@ -317,6 +318,49 @@ function SameParentBadge({ otherNames, onClick }: { otherNames: string[]; onClic
     >
       אותו הורה
     </span>
+  );
+}
+
+// Reuses the exact same tel:/wa.me derivation as the trainee-facing PhoneCell
+// in app/student/StudentTeachingPracticeSection.tsx (both consume the same
+// lib/phone-contact-links.ts helpers, never a second normalization). `phone`
+// is whatever text a call site already showed (joined-multiple values and
+// the "—" placeholder both simply yield no action links, never a broken
+// one) - the raw text always keeps rendering unchanged. Action links are
+// additive only and are suppressed entirely whenever the caller says it's in
+// edit mode, same "hide while editable" convention ChildAssignmentCell above
+// already uses for its own same-parent badge. The actions wrapper stops
+// propagation so tapping "התקשר"/WhatsApp inside a ClickableCell/clickable
+// row never also opens that row's track-manager drawer.
+function ParentPhoneCell({ phone, isEditMode }: { phone: string; isEditMode: boolean }) {
+  if (isEditMode) return <>{phone}</>;
+  const telLink = buildTelLink(phone);
+  const waLink = buildWhatsAppLink(phone);
+  if (!telLink && !waLink) return <>{phone}</>;
+  return (
+    <div className="flex flex-col items-start gap-1">
+      <span>{phone}</span>
+      <div className="flex flex-wrap gap-1" onClick={(e) => e.stopPropagation()}>
+        {telLink && (
+          <a
+            href={telLink}
+            className="rounded-full bg-secondary px-1.5 py-0.5 text-[10px] font-medium text-secondary-foreground hover:opacity-80"
+          >
+            התקשר
+          </a>
+        )}
+        {waLink && (
+          <a
+            href={waLink}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="rounded-full bg-success-muted px-1.5 py-0.5 text-[10px] font-medium text-success hover:opacity-80"
+          >
+            WhatsApp
+          </a>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -3638,7 +3682,9 @@ export function TeachingPracticeManager({
                                     <td className="px-2 py-2">{row.parentName}</td>
                                   )}
                                   {columnVisibility.parentPhone && (
-                                    <td className="px-2 py-2">{row.parentPhone}</td>
+                                    <td className="px-2 py-2">
+                                      <ParentPhoneCell phone={row.parentPhone} isEditMode={isEditMode} />
+                                    </td>
                                   )}
                                   {columnVisibility.notes && (
                                     <InlineTextEditCell
@@ -4047,7 +4093,7 @@ export function TeachingPracticeManager({
                                                   isActive={privateRow.track.isActive}
                                                   onOpen={() => openTrackManager(privateRow.track)}
                                                 >
-                                                  {privateRow.parentPhone}
+                                                  <ParentPhoneCell phone={privateRow.parentPhone} isEditMode={isEditMode} />
                                                 </ClickableCell>
                                               )}
                                               {columnVisibility.notes && (
@@ -4276,7 +4322,7 @@ export function TeachingPracticeManager({
                                     )}
                                     {columnVisibility.parentPhone && (
                                       <ClickableCell isActive={row.track.isActive} onOpen={() => openTrackManager(row.track)}>
-                                        {row.parentPhone}
+                                        <ParentPhoneCell phone={row.parentPhone} isEditMode={isEditMode} />
                                       </ClickableCell>
                                     )}
                                     {columnVisibility.notes && (
@@ -7821,7 +7867,10 @@ function LessonTableRow({
                   {soleChild?.parentName ?? "—"}
                 </td>
                 <td rowSpan={rowCount} className="px-2 py-2 align-top">
-                  {soleChild?.parentPhone ?? "—"}
+                  {/* canEdit here is already effectiveCanEdit (permission AND
+                      the global isEditMode toggle) - equivalent to "is this
+                      table currently in edit mode" for suppressing actions. */}
+                  <ParentPhoneCell phone={soleChild?.parentPhone ?? "—"} isEditMode={canEdit} />
                 </td>
               </>
             )
@@ -7872,7 +7921,9 @@ function LessonTableRow({
                 <td className="px-2 py-2">{row.child?.equipmentNotes ?? "—"}</td>
               )}
               <td className="px-2 py-2">{row.child?.parentName ?? "—"}</td>
-              <td className="px-2 py-2">{row.child?.parentPhone ?? "—"}</td>
+              <td className="px-2 py-2">
+                <ParentPhoneCell phone={row.child?.parentPhone ?? "—"} isEditMode={canEdit} />
+              </td>
             </>
           )}
           {i === 0 && (

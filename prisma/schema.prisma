@@ -44,6 +44,9 @@ model Student {
   teachingPracticeTrackMemberships TeachingPracticeTrackTrainee[]
   teachingPracticeParticipations   TeachingPracticeParticipant[]
 
+  ridingSlotHorseListItems        RidingSlotHorseListItem[]
+  ridingSlotHorsePublicationItems RidingSlotHorsePublicationItem[]
+
   @@map("students")
 }
 
@@ -308,6 +311,13 @@ model Instructor {
   presentationProgressFeedbackCreated StudentPresentationProgressFeedback[] @relation("PresentationProgressFeedbackCreatedBy")
   presentationProgressFeedbackUpdated StudentPresentationProgressFeedback[] @relation("PresentationProgressFeedbackUpdatedBy")
 
+  // Stage H2 - horse-preparation-list/publication "last updated by" back-
+  // relations. Two distinct relations to this same model (one per FK field
+  // below), so each gets its own explicit name/array field - see
+  // RidingSlotHorseList.updatedByInstructor / RidingSlotHorsePublication.updatedByInstructor.
+  ridingSlotHorseListUpdates        RidingSlotHorseList[]        @relation("HorseListUpdatedByInstructor")
+  ridingSlotHorsePublicationUpdates RidingSlotHorsePublication[] @relation("HorsePublicationUpdatedByInstructor")
+
   @@map("instructors")
 }
 
@@ -412,6 +422,7 @@ model RidingSlot {
   assignments   RidingSlotAssignment[]
   notes         RidingLessonNote[]
   scheduleItems RidingSlotScheduleItem[]
+  horseList     RidingSlotHorseList?
 
   @@map("riding_slots")
 }
@@ -525,6 +536,143 @@ model RidingLessonNoteTaughtStudent {
 
   @@unique([ridingLessonNoteId, studentId])
   @@map("riding_lesson_note_taught_students")
+}
+
+enum RidingHorsePublicationAudience {
+  INSTRUCTORS
+  GROUP_A_TRAINEES
+  GROUP_B_TRAINEES
+}
+
+// Stage H2 (schema/design only - no server actions or UI yet). The editable
+// source of truth for "which horses need to be saddled" for one RidingSlot -
+// one row per slot, created on first save. version/updatedAt/updatedBy* live
+// here, not on RidingSlotHorseListItem below: every save fully replaces the
+// item set (delete+recreate, same convention as
+// syncAssignmentInstructors in lib/actions/riding-slots.ts) and bumps this
+// row's version - so a deletion, or the list becoming entirely empty, is
+// still captured by this row's own version/updatedAt even though no item
+// row survives to carry a timestamp of its own.
+model RidingSlotHorseList {
+  id           String   @id @default(cuid())
+  ridingSlotId String   @unique
+  version      Int      @default(1)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Exactly one of updatedByInstructorId / updatedByAdminEmail is expected to
+  // be set per save (never both) - same denormalized dual-actor-identity
+  // convention as TeachingPracticeSignedForm.collectedByInstructorId /
+  // collectedByAdminEmail/collectedByAdminName, chosen because admin and
+  // instructor use two different auth systems in this app (see requireAdmin
+  // vs lib/actions/instructor-auth.ts) and admin identity is never a stable
+  // FK-able relation elsewhere in this schema. updatedByName is always set
+  // regardless of actor type, for simple display.
+  updatedByInstructorId String?
+  updatedByAdminEmail   String?
+  updatedByAdminName    String?
+  updatedByName         String
+
+  ridingSlot          RidingSlot                   @relation(fields: [ridingSlotId], references: [id], onDelete: Cascade)
+  updatedByInstructor Instructor?                  @relation("HorseListUpdatedByInstructor", fields: [updatedByInstructorId], references: [id], onDelete: SetNull)
+  items               RidingSlotHorseListItem[]
+  publications        RidingSlotHorsePublication[]
+
+  @@map("riding_slot_horse_lists")
+}
+
+// One row per selected horse. No version/updatedAt of its own - see
+// RidingSlotHorseList comment above. studentId nullable so a horse with no
+// assigned trainee can still be selected.
+//
+// @@unique([listId, studentId]) only prevents the same non-null trainee
+// appearing twice in one list (a trainee can't need two horses in one
+// session - a changed horse is an update to their existing row, not a second
+// insert). Postgres treats every NULL as distinct, so this constraint is
+// deliberately a no-op for studentId = null rows (horses with no trainee) -
+// those are never mutually exclusive with each other, so allowing several is
+// correct, not a gap. This is NOT a horseName dedup mechanism - horseName is
+// free text (same natural-but-imprecise-key convention as
+// HorseFeedingMeal.horseName/RidingLessonNote.sessionHorseName elsewhere in
+// this schema), so a DB-level uniqueness constraint on it would claim a
+// guarantee this schema can't actually deliver; same-horse-selected-twice
+// validation belongs in a later stage's action layer instead.
+model RidingSlotHorseListItem {
+  id             String   @id @default(cuid())
+  listId         String
+  groupName      String?
+  subgroupNumber Int?
+  studentId      String?
+  horseName      String
+  createdAt      DateTime @default(now())
+
+  list    RidingSlotHorseList @relation(fields: [listId], references: [id], onDelete: Cascade)
+  student Student?            @relation(fields: [studentId], references: [id], onDelete: SetNull)
+
+  @@unique([listId, studentId])
+  @@index([listId, groupName, subgroupNumber])
+  @@map("riding_slot_horse_list_items")
+}
+
+// One row per (horse list, audience) - one publication per riding session
+// per audience, never per subgroup. Belongs directly to
+// RidingSlotHorseList (not RidingSlot) - the RidingSlot is reached via
+// publication.horseList.ridingSlot, since a horse list already has a unique
+// 1:1 tie to its RidingSlot and duplicating ridingSlotId here would just be
+// a redundant, independently-driftable copy of that same fact.
+model RidingSlotHorsePublication {
+  id               String                         @id @default(cuid())
+  horseListId      String
+  audience         RidingHorsePublicationAudience
+  title            String
+  generalNote      String?
+  // Copied from RidingSlotHorseList.version at the moment this publication's
+  // items were last (re)generated - compared against the live list's version
+  // by a later stage to detect staleness. Never derived from item timestamps.
+  sourceVersion    Int
+  firstPublishedAt DateTime                       @default(now())
+  updatedAt        DateTime                       @updatedAt
+
+  // Same dual-actor-identity convention as RidingSlotHorseList above.
+  updatedByInstructorId String?
+  updatedByAdminEmail   String?
+  updatedByAdminName    String?
+  updatedByName         String
+
+  horseList           RidingSlotHorseList              @relation(fields: [horseListId], references: [id], onDelete: Cascade)
+  updatedByInstructor Instructor?                      @relation("HorsePublicationUpdatedByInstructor", fields: [updatedByInstructorId], references: [id], onDelete: SetNull)
+  items               RidingSlotHorsePublicationItem[]
+
+  // Exactly one active publication per horse-list+audience - a later stage's
+  // "update publication" is an upsert against this key, never a second insert.
+  @@unique([horseListId, audience])
+  @@map("riding_slot_horse_publications")
+}
+
+// Immutable/generated snapshot rows - regenerated wholesale (delete+recreate)
+// only by a later stage's publish/update-publication action, never edited
+// directly. studentName/horseName/responsibleInstructorNames are all
+// snapshots taken at generation time (materialize-at-creation, same
+// convention as WeeklyFeedbackQuestion/TeachingPracticeSignedForm elsewhere
+// in this schema) so a later Student rename or RidingSlotHorseListItem edit
+// never rewrites already-published content. studentId is kept only for a
+// possible future click-through - display must always use studentName.
+model RidingSlotHorsePublicationItem {
+  id                         String   @id @default(cuid())
+  publicationId              String
+  groupName                  String?
+  subgroupNumber             Int?
+  responsibleInstructorNames String?
+  studentId                  String?
+  studentName                String?
+  horseName                  String
+  createdAt                  DateTime @default(now())
+
+  publication RidingSlotHorsePublication @relation(fields: [publicationId], references: [id], onDelete: Cascade)
+  student     Student?                   @relation(fields: [studentId], references: [id], onDelete: SetNull)
+
+  @@index([publicationId])
+  @@map("riding_slot_horse_publication_items")
 }
 
 // Manager-entered riding progress feedback, separate from RidingLessonNote,

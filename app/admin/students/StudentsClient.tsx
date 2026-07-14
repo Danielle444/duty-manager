@@ -33,6 +33,85 @@ interface CourseRange {
   endDate: string;
 }
 
+type GroupFilter = "all" | "א" | "ב" | "none";
+type ActiveFilter = "all" | "active" | "inactive";
+type SortMode = "name" | "group-subgroup" | "subgroup-name";
+
+function matchesGroupFilter(student: StudentRow, filter: GroupFilter): boolean {
+  if (filter === "all") return true;
+  if (filter === "none") return student.groupName === null;
+  return student.groupName === filter;
+}
+
+// Which subgroup-select options are valid for the given group scope (`"all"`
+// shows every subgroup in the whole list, a specific group/`"none"` scopes
+// down to just that group's own subgroups) - used both to render the select
+// and, on group change, to check whether the currently-picked subgroup is
+// still one of them.
+function subgroupOptionsFor(rows: StudentRow[], group: GroupFilter): { numbers: number[]; hasNone: boolean } {
+  const scoped = group === "all" ? rows : rows.filter((s) => matchesGroupFilter(s, group));
+  const numbers = Array.from(
+    new Set(scoped.map((s) => s.subgroupNumber).filter((n): n is number => n !== null))
+  ).sort((a, b) => a - b);
+  const hasNone = scoped.some((s) => s.subgroupNumber === null);
+  return { numbers, hasNone };
+}
+
+function matchesSubgroupFilter(student: StudentRow, filter: string): boolean {
+  if (filter === "all") return true;
+  if (filter === "none") return student.subgroupNumber === null;
+  // Defensive Number() coercion on both sides - subgroupNumber is typed as
+  // number|null from the server, but this keeps the comparison correct even
+  // if it ever arrives as a numeric string.
+  return student.subgroupNumber !== null && Number(student.subgroupNumber) === Number(filter);
+}
+
+// א before ב before any other (unexpected) group text, missing group last.
+function groupRank(groupName: string | null): number {
+  if (groupName === null) return 3;
+  if (groupName === "א") return 0;
+  if (groupName === "ב") return 1;
+  return 2;
+}
+
+// Ascending numeric order (2 before 10), missing subgroup last - Number()
+// coercion guards the same defensive case as matchesSubgroupFilter above.
+function subgroupRank(subgroupNumber: number | null): number {
+  if (subgroupNumber === null) return Number.POSITIVE_INFINITY;
+  const n = Number(subgroupNumber);
+  return Number.isFinite(n) ? n : Number.POSITIVE_INFINITY;
+}
+
+function compareFullName(a: StudentRow, b: StudentRow): number {
+  return a.fullName.localeCompare(b.fullName, "he");
+}
+
+function compareByName(a: StudentRow, b: StudentRow): number {
+  return compareFullName(a, b);
+}
+
+function compareByGroupThenSubgroup(a: StudentRow, b: StudentRow): number {
+  return (
+    groupRank(a.groupName) - groupRank(b.groupName) ||
+    subgroupRank(a.subgroupNumber) - subgroupRank(b.subgroupNumber) ||
+    compareFullName(a, b)
+  );
+}
+
+function compareBySubgroupThenName(a: StudentRow, b: StudentRow): number {
+  return (
+    subgroupRank(a.subgroupNumber) - subgroupRank(b.subgroupNumber) ||
+    compareFullName(a, b) ||
+    groupRank(a.groupName) - groupRank(b.groupName)
+  );
+}
+
+function comparatorForSortMode(mode: SortMode): (a: StudentRow, b: StudentRow) => number {
+  if (mode === "group-subgroup") return compareByGroupThenSubgroup;
+  if (mode === "subgroup-name") return compareBySubgroupThenName;
+  return compareByName;
+}
+
 export function StudentsClient({
   students,
   presets,
@@ -54,15 +133,47 @@ export function StudentsClient({
   const [availabilityMessage, setAvailabilityMessage] = useState<string | null>(null);
   const [availabilityError, setAvailabilityError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [groupFilter, setGroupFilter] = useState<GroupFilter>("all");
+  const [subgroupFilter, setSubgroupFilter] = useState("all");
+  // "all" preserves the page's existing default of showing active and
+  // inactive trainees together - no existing active/inactive filter existed
+  // before this, so this default must not silently hide anyone.
+  const [activeFilter, setActiveFilter] = useState<ActiveFilter>("all");
+  const [sortMode, setSortMode] = useState<SortMode>("group-subgroup");
+
+  const hasNoGroup = useMemo(() => students.some((s) => s.groupName === null), [students]);
+  const { numbers: subgroupNumbers, hasNone: hasNoSubgroup } = useMemo(
+    () => subgroupOptionsFor(students, groupFilter),
+    [students, groupFilter]
+  );
+
+  // Changing the group can leave a previously-picked subgroup no longer
+  // meaningful (e.g. "תת-קבוצה 3" picked while on "קבוצה א", then switching
+  // to "קבוצה ב" which has no subgroup 3) - reset it back to "כל תתי
+  // הקבוצות" rather than silently filtering against a stale, invisible value.
+  function handleGroupFilterChange(next: GroupFilter) {
+    setGroupFilter(next);
+    const nextOptions = subgroupOptionsFor(students, next);
+    const stillValid =
+      subgroupFilter === "all" ||
+      (subgroupFilter === "none" && nextOptions.hasNone) ||
+      nextOptions.numbers.some((n) => String(n) === subgroupFilter);
+    if (!stillValid) setSubgroupFilter("all");
+  }
 
   const filteredStudents = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return students;
-    return students.filter(
-      (s) =>
-        s.fullName.toLowerCase().includes(q) || (s.phone ?? "").toLowerCase().includes(q)
-    );
-  }, [students, search]);
+    const matches = students.filter((s) => {
+      if (activeFilter === "active" && !s.isActive) return false;
+      if (activeFilter === "inactive" && s.isActive) return false;
+      if (!matchesGroupFilter(s, groupFilter)) return false;
+      if (!matchesSubgroupFilter(s, subgroupFilter)) return false;
+      if (q && !(s.fullName.toLowerCase().includes(q) || (s.phone ?? "").toLowerCase().includes(q))) return false;
+      return true;
+    });
+    // Sort a copy - never mutate the original loaded `students` array.
+    return [...matches].sort(comparatorForSortMode(sortMode));
+  }, [students, search, groupFilter, subgroupFilter, activeFilter, sortMode]);
 
   function openModal(student: StudentRow | "new") {
     setError(null);
@@ -128,6 +239,50 @@ export function StudentsClient({
           placeholder="חיפוש לפי שם או טלפון..."
           className="flex-1 rounded-lg border border-border px-3 py-2 text-sm"
         />
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <select
+          value={groupFilter}
+          onChange={(e) => handleGroupFilterChange(e.target.value as GroupFilter)}
+          className="rounded-lg border border-border px-3 py-2 text-sm"
+        >
+          <option value="all">כל הקבוצות</option>
+          <option value="א">קבוצה א</option>
+          <option value="ב">קבוצה ב</option>
+          {hasNoGroup && <option value="none">ללא קבוצה</option>}
+        </select>
+        <select
+          value={subgroupFilter}
+          onChange={(e) => setSubgroupFilter(e.target.value)}
+          className="rounded-lg border border-border px-3 py-2 text-sm"
+        >
+          <option value="all">כל תתי הקבוצות</option>
+          {subgroupNumbers.map((n) => (
+            <option key={n} value={String(n)}>
+              תת-קבוצה {n}
+            </option>
+          ))}
+          {hasNoSubgroup && <option value="none">ללא תת־קבוצה</option>}
+        </select>
+        <select
+          value={activeFilter}
+          onChange={(e) => setActiveFilter(e.target.value as ActiveFilter)}
+          className="rounded-lg border border-border px-3 py-2 text-sm"
+        >
+          <option value="all">כולם</option>
+          <option value="active">פעילים</option>
+          <option value="inactive">לא פעילים</option>
+        </select>
+        <select
+          value={sortMode}
+          onChange={(e) => setSortMode(e.target.value as SortMode)}
+          className="rounded-lg border border-border px-3 py-2 text-sm"
+        >
+          <option value="group-subgroup">קבוצה ותת־קבוצה</option>
+          <option value="name">שם א׳–ב׳</option>
+          <option value="subgroup-name">תת־קבוצה ושם</option>
+        </select>
       </div>
 
       {/* Bounded self-contained scroll box (same max-h-[70vh] overflow-auto
@@ -212,7 +367,7 @@ export function StudentsClient({
             {filteredStudents.length === 0 && (
               <tr>
                 <td colSpan={7} className="px-4 py-8 text-center text-muted-foreground">
-                  {students.length === 0 ? "אין חניכים עדיין" : "אין חניכים התואמים את החיפוש"}
+                  {students.length === 0 ? "אין חניכים עדיין" : "אין חניכים התואמים את הסינון הנוכחי"}
                 </td>
               </tr>
             )}

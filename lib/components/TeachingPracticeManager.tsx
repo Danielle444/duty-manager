@@ -2592,6 +2592,40 @@ export function TeachingPracticeManager({
     });
   }
 
+  // "הערות" cell. Same full-object-rebuild idiom as handleInlineUpdateLessonField
+  // (only notes changes; roleLabelOverrides stays omitted so it's left
+  // untouched) and the same shared savingLessonCellKey/lessonActionError
+  // convention every other Stage 1 cell uses - rendered via the existing
+  // InlineTextEditCell (see its own comment), the same always-visible
+  // blur/Enter-commit control already used for horseName/equipmentNotes/
+  // track notes, so this field's edit UX matches those exactly.
+  function handleInlineUpdateLessonNotes(lesson: TeachingPracticeLessonSummary, notes: string) {
+    const cellKey = `lesson-${lesson.id}-notes`;
+    const input: TeachingPracticeLessonInput = {
+      date: lesson.date,
+      startTime: lesson.startTime,
+      responsibleInstructorId: lesson.responsibleInstructorId,
+      location: lesson.location,
+      notes,
+    };
+
+    setLessonActionError(null);
+    setSavingLessonCellKey(cellKey);
+    startLessonActionTransition(async () => {
+      const result =
+        role === "admin"
+          ? await updateTeachingPracticeLessonAsAdmin(lesson.id, input)
+          : await updateTeachingPracticeLessonAsInstructor(actorId!, lesson.id, input);
+      setSavingLessonCellKey(null);
+      if (!result.success) {
+        setLessonActionError(result.error ?? "אירעה שגיאה בעדכון ההערות");
+        return;
+      }
+      await refreshLessons();
+      if (selectedLessonDate) await refreshLessonDateDetail(selectedLessonDate);
+    });
+  }
+
   // "חניך"/"תפקיד" cells. Rebuilds one row per expected role slot (the exact
   // same shape lessonToEditForm already builds for the expanded form),
   // changing only the one row at changedIndex, then drops any still-empty
@@ -5019,6 +5053,7 @@ export function TeachingPracticeManager({
                                   onInlineUpdateField={handleInlineUpdateLessonField}
                                   onInlineUpdateParticipant={handleInlineUpdateLessonParticipant}
                                   onInlineUpdateChild={handleInlineUpdateLessonChild}
+                                  onInlineUpdateNotes={handleInlineUpdateLessonNotes}
                                 />
                               ))}
                             </div>
@@ -5049,6 +5084,7 @@ export function TeachingPracticeManager({
                                   onInlineUpdateField={handleInlineUpdateLessonField}
                                   onInlineUpdateParticipant={handleInlineUpdateLessonParticipant}
                                   onInlineUpdateChild={handleInlineUpdateLessonChild}
+                                  onInlineUpdateNotes={handleInlineUpdateLessonNotes}
                                 />
                               ))}
                             </div>
@@ -5079,6 +5115,7 @@ export function TeachingPracticeManager({
                                   onInlineUpdateField={handleInlineUpdateLessonField}
                                   onInlineUpdateParticipant={handleInlineUpdateLessonParticipant}
                                   onInlineUpdateChild={handleInlineUpdateLessonChild}
+                                  onInlineUpdateNotes={handleInlineUpdateLessonNotes}
                                 />
                               ))}
                             </div>
@@ -7291,6 +7328,7 @@ function LessonGroupTable({
   onInlineUpdateField,
   onInlineUpdateParticipant,
   onInlineUpdateChild,
+  onInlineUpdateNotes,
 }: {
   groupName: string | null;
   lessons: TeachingPracticeLessonDetail[];
@@ -7328,6 +7366,7 @@ function LessonGroupTable({
     changedIndex: number,
     patch: { childId?: string; horseName?: string; equipmentNotes?: string }
   ) => void;
+  onInlineUpdateNotes: (lesson: TeachingPracticeLessonSummary, notes: string) => void;
 }) {
   if (lessons.length === 0) return null;
   const roleSlots = ROLE_SLOTS_BY_PRACTICE_TYPE[lessons[0].practiceType];
@@ -7404,6 +7443,7 @@ function LessonGroupTable({
                 onInlineUpdateField={onInlineUpdateField}
                 onInlineUpdateParticipant={onInlineUpdateParticipant}
                 onInlineUpdateChild={onInlineUpdateChild}
+                onInlineUpdateNotes={onInlineUpdateNotes}
               />
             ))}
           </tbody>
@@ -7570,6 +7610,7 @@ function LessonTableRow({
   onInlineUpdateField,
   onInlineUpdateParticipant,
   onInlineUpdateChild,
+  onInlineUpdateNotes,
 }: {
   lesson: TeachingPracticeLessonDetail;
   roleSlots: TeachingPracticeRoleValue[];
@@ -7615,6 +7656,7 @@ function LessonTableRow({
     changedIndex: number,
     patch: { childId?: string; horseName?: string; equipmentNotes?: string }
   ) => void;
+  onInlineUpdateNotes: (lesson: TeachingPracticeLessonSummary, notes: string) => void;
 }) {
   const [isEditing, setIsEditing] = useState(false);
   const [editForm, setEditForm] = useState<LessonEditFormState>(() => lessonToEditForm(lesson, roleSlots));
@@ -7927,11 +7969,16 @@ function LessonTableRow({
             </>
           )}
           {i === 0 && (
-            <td rowSpan={rowCount} className="max-w-[220px] px-2 py-2 align-top">
-              <span className="block truncate" title={lesson.notes ?? undefined}>
-                {lesson.notes || "—"}
-              </span>
-            </td>
+            <InlineTextEditCell
+              value={lesson.notes ?? ""}
+              label={lesson.notes || "—"}
+              editable={canEdit}
+              disabled={savingCellKey === `lesson-${lesson.id}-notes`}
+              truncateClassName="max-w-[220px] truncate"
+              title={lesson.notes ?? undefined}
+              onCommit={(value) => onInlineUpdateNotes(lesson, value)}
+              rowSpan={rowCount}
+            />
           )}
           {i === 0 && (
             <td rowSpan={rowCount} className="px-2 py-2 align-top">

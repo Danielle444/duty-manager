@@ -15,7 +15,14 @@ import {
   saveRidingSlotHorseListAsInstructor,
   type RidingHorseCandidate,
   type RidingSlotHorseListForEditing,
+  type RidingSlotHorseListItemRow,
 } from "@/lib/actions/riding-slot-horses";
+import {
+  RidingHorsePublicationModal,
+  RIDING_HORSE_PUBLICATION_ACTION_LABELS,
+  type RidingHorsePublicationPreviewGroup,
+} from "@/lib/components/RidingHorsePublicationModal";
+import type { RidingHorsePublicationStatusLabel } from "@/lib/actions/riding-slot-horse-publications";
 
 export type RidingHorseListEditorActor = { type: "admin" } | { type: "instructor"; instructorId: string };
 
@@ -38,6 +45,54 @@ function buildSelectionFromData(data: RidingSlotHorseListForEditing): Record<str
       : { selected: false, horseName: candidate.horseName ?? "" };
   }
   return selection;
+}
+
+// Whether the current in-memory selection differs from the last SAVED
+// state (re-derived from `data` via buildSelectionFromData) - used only to
+// block publishing unsaved client-only changes, never to gate the horse-list
+// save itself.
+function hasUnsavedListChanges(
+  current: Record<string, SelectionEntry>,
+  data: RidingSlotHorseListForEditing
+): boolean {
+  const saved = buildSelectionFromData(data);
+  return data.candidates.some((candidate) => {
+    const a = current[candidate.studentId] ?? { selected: false, horseName: "" };
+    const b = saved[candidate.studentId] ?? { selected: false, horseName: "" };
+    if (a.selected !== b.selected) return true;
+    if (a.selected && a.horseName.trim() !== b.horseName.trim()) return true;
+    return false;
+  });
+}
+
+// Preview-only projection of what publishing would send - built strictly
+// from the last SAVED horse-list items (data.items), never from local
+// unsaved selection state. responsibleInstructorNames is looked up per
+// group/subgroup from the candidate sections already computed for the main
+// editor list, so it isn't resolved a second time.
+function buildPublicationPreviewGroups(
+  items: RidingSlotHorseListItemRow[],
+  candidateSections: ReturnType<typeof groupByGroupAndSubgroup<RidingHorseCandidate>>
+): RidingHorsePublicationPreviewGroup[] {
+  const instructorNamesByKey = new Map<string, string | null>();
+  for (const section of candidateSections) {
+    for (const sub of section.subgroups) {
+      instructorNamesByKey.set(
+        `${section.groupName ?? ""}::${sub.subgroupNumber ?? ""}`,
+        sub.items[0]?.responsibleInstructorNames ?? null
+      );
+    }
+  }
+
+  return groupByGroupAndSubgroup(items).map((section) => ({
+    groupName: section.groupName,
+    subgroups: section.subgroups.map((sub) => ({
+      subgroupNumber: sub.subgroupNumber,
+      responsibleInstructorNames:
+        instructorNamesByKey.get(`${section.groupName ?? ""}::${sub.subgroupNumber ?? ""}`) ?? null,
+      rows: sub.items.map((item) => ({ horseName: item.horseName, studentName: item.studentName })),
+    })),
+  }));
 }
 
 // Shared between the admin RidingSlotModal and InstructorRidingSlotsSection -
@@ -68,6 +123,11 @@ export function RidingHorseListEditor({
   // Synchronous guard (isSaving from useTransition only updates on the next
   // render) so a fast double-click can never fire a second overlapping save.
   const isSavingRef = useRef(false);
+
+  // Independent of the horse-list load/save state above - opening/closing
+  // this never touches `selection`, so in-progress unsaved edits are never
+  // reset by it.
+  const [showPublicationModal, setShowPublicationModal] = useState(false);
 
   const instructorKey = actor.type === "instructor" ? actor.instructorId : null;
 
@@ -196,6 +256,25 @@ export function RidingHorseListEditor({
   const orphanItems = (data?.items ?? []).filter(
     (item) => !item.studentId || !candidateStudentIds.has(item.studentId)
   );
+
+  // Drives the entry-point button's label - derived from the same H3
+  // booleans already loaded on `data` (hasPublications/hasStalePublication),
+  // not a second fetch. Kept in sync after a successful publish via
+  // handlePublished below, without a full reload.
+  const publicationButtonStatus: RidingHorsePublicationStatusLabel = !data?.hasPublications
+    ? "UNPUBLISHED"
+    : data.hasStalePublication
+      ? "STALE"
+      : "CURRENT";
+  const isListDirty = data ? hasUnsavedListChanges(selection, data) : false;
+  const previewGroups = data ? buildPublicationPreviewGroups(data.items, sections) : [];
+
+  function handlePublished() {
+    // A successful publish/update always results in CURRENT status (its
+    // sourceVersion was just set to the live list's version) - update this
+    // editor's own status display immediately, without a full reload.
+    setData((prev) => (prev ? { ...prev, hasPublications: true, hasStalePublication: false } : prev));
+  }
 
   return (
     <Modal
@@ -342,7 +421,15 @@ export function RidingHorseListEditor({
               <p className="shrink-0 text-sm text-success">✓ רשימת הסוסים נשמרה בהצלחה</p>
             )}
 
-            <div className="flex shrink-0 justify-end gap-2">
+            <div className="flex shrink-0 flex-wrap justify-end gap-2">
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={!data.listId}
+                onClick={() => setShowPublicationModal(true)}
+              >
+                {RIDING_HORSE_PUBLICATION_ACTION_LABELS[publicationButtonStatus]}
+              </Button>
               <Button type="button" variant="secondary" onClick={onClose}>
                 ביטול
               </Button>
@@ -353,6 +440,19 @@ export function RidingHorseListEditor({
           </>
         )}
       </div>
+
+      {data && (
+        <RidingHorsePublicationModal
+          open={showPublicationModal}
+          onClose={() => setShowPublicationModal(false)}
+          ridingSlotId={ridingSlotId}
+          actor={actor}
+          isListDirty={isListDirty}
+          hasHorseList={Boolean(data.listId)}
+          previewGroups={previewGroups}
+          onPublished={handlePublished}
+        />
+      )}
     </Modal>
   );
 }

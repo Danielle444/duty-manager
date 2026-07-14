@@ -21,6 +21,7 @@ import { InstructorScheduleSection } from "@/app/instructor/InstructorScheduleSe
 import { InstructorDutiesSection } from "@/app/instructor/InstructorDutiesSection";
 import { InstructorHorsesSection } from "@/app/instructor/InstructorHorsesSection";
 import { InstructorMessagesSection } from "@/app/instructor/InstructorMessagesSection";
+import { InstructorRidingHorsePublicationsSection } from "@/app/instructor/InstructorRidingHorsePublicationsSection";
 import { InstructorAttendanceSection } from "@/app/instructor/InstructorAttendanceSection";
 import { InstructorRidingSlotsSection } from "@/app/instructor/InstructorRidingSlotsSection";
 import { InstructorTeachingPracticeSection } from "@/app/instructor/InstructorTeachingPracticeSection";
@@ -710,11 +711,14 @@ export function InstructorClient({
         )}
 
         {activeTab === "messages" && (
-          <InstructorMessagesSection
-            instructorId={session.id}
-            canSend={session.canSendMessages}
-            students={students}
-          />
+          <div className="flex flex-col gap-4">
+            <InstructorRidingHorsePublicationsSection instructorId={session.id} />
+            <InstructorMessagesSection
+              instructorId={session.id}
+              canSend={session.canSendMessages}
+              students={students}
+            />
+          </div>
         )}
 
         {activeTab === "contacts" && <ContactsSection />}

@@ -6,6 +6,7 @@ import {
   type InstructorDutyRow,
 } from "@/lib/actions/instructor-schedule";
 import { getNoDutyStatusForRange } from "@/lib/actions/no-duty-dates";
+import { getPhoneHref, getWhatsAppHref } from "@/lib/phone-format";
 
 interface StudentOption {
   id: string;
@@ -141,10 +142,41 @@ export function InstructorDutiesSection({
                 {dayRows[0].dayLabel} · {dayRows[0].dateLabel}
               </div>
               <div className="flex flex-col gap-3">
-                {dayRows.map((row) => (
-                  <div key={row.id} className="rounded-xl border-2 border-border p-4">
+                {dayRows.map((row) => {
+                  const phoneHref = getPhoneHref(row.studentPhone);
+                  const whatsAppHref = getWhatsAppHref(row.studentPhone);
+                  return (
+                    <div key={row.id} className="rounded-xl border-2 border-border p-4">
                     <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
-                      <p className="text-lg font-bold text-card-foreground">{row.studentName}</p>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="text-lg font-bold text-card-foreground">{row.studentName}</p>
+                        {phoneHref || whatsAppHref ? (
+                          <span className="flex items-center gap-1.5">
+                            {phoneHref && (
+                              <a
+                                href={phoneHref}
+                                onClick={(e) => e.stopPropagation()}
+                                className="rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-accent"
+                              >
+                                התקשר
+                              </a>
+                            )}
+                            {whatsAppHref && (
+                              <a
+                                href={whatsAppHref}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                onClick={(e) => e.stopPropagation()}
+                                className="rounded-full bg-success-muted px-2.5 py-1 text-xs font-medium text-success"
+                              >
+                                WhatsApp
+                              </a>
+                            )}
+                          </span>
+                        ) : (
+                          <span className="text-xs italic text-muted-foreground">לא הוגדר טלפון</span>
+                        )}
+                      </div>
                       {!row.isPublished && (
                         <span className="rounded-full bg-warning-muted px-3 py-1 text-sm font-medium text-warning">
                           טיוטה
@@ -172,7 +204,8 @@ export function InstructorDutiesSection({
                       {row.isCompleted ? "בוצע" : "טרם בוצע"}
                     </span>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           ))}

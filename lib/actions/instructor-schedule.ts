@@ -134,6 +134,7 @@ export interface InstructorDutyRow {
   studentName: string;
   studentGroupName: string | null;
   studentSubgroupNumber: number | null;
+  studentPhone: string | null;
   dutyTypeId: string;
   dutyTypeName: string;
   isCompleted: boolean;
@@ -191,6 +192,7 @@ export async function getDutyAssignmentsForInstructor(
     studentName: a.student.fullName,
     studentGroupName: a.student.groupName,
     studentSubgroupNumber: a.student.subgroupNumber,
+    studentPhone: a.student.phone,
     dutyTypeId: a.dutyTypeId,
     dutyTypeName: a.dutyType.name,
     isCompleted: a.isCompleted,

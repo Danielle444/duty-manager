@@ -1769,6 +1769,22 @@ model TeachingPracticeSignedForm {
 
   status TeachingPracticeSignedFormStatus @default(ACTIVE)
 
+  // Revocation metadata - admin-only correction path (never set by the
+  // instructor tablet flow, never set by the automatic re-sign supersession
+  // above). All four stay null for a row revoked by that automatic
+  // supersession - that is a distinct, expected REVOKED meaning ("replaced by
+  // a newer signature for the same child"), not a data-loss bug, and the
+  // admin history UI must render it as such rather than as a blank/broken
+  // manual revoke. Admin identity denormalized (name/email strings, not an
+  // AdminEmail relation) - same convention as collectedByAdminEmail/Name
+  // above. revokedReason is required by the revoke action itself (never
+  // fabricated here) even though the column stays nullable, since old/
+  // auto-superseded rows legitimately have no reason to record.
+  revokedAt           DateTime?
+  revokedByAdminEmail String?
+  revokedByAdminName  String?
+  revokedReason       String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

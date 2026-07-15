@@ -7,6 +7,26 @@ import { formatHebrewDateTime } from "@/lib/dates";
 import { FORM_TYPE_SHORT_LABEL } from "@/lib/parent-signatures/form-definitions";
 import type { ParentSignatureViewerData } from "@/lib/actions/parent-signatures";
 
+// Structurally a superset of ParentSignatureViewerData - the live ACTIVE-only
+// viewer's fetchData (getTeachingPracticeSignedFormForAdmin/Instructor)
+// never sets the revocation fields (they stay undefined, and the row is by
+// construction always ACTIVE), while the admin-only history drill-down's
+// fetchData (getTeachingPracticeSignedFormHistoryForAdmin) sets all of them.
+// One component renders both cases - see the `status === "REVOKED"` banner
+// and `onRevoke` gating below.
+export type ParentSignatureViewModalData = ParentSignatureViewerData & {
+  status?: "ACTIVE" | "REVOKED";
+  revokedAt?: string | null;
+  revokedByAdminEmail?: string | null;
+  revokedByAdminName?: string | null;
+  revokedReason?: string | null;
+};
+
+interface RevokeActionResult {
+  success: boolean;
+  error?: string;
+}
+
 // Stage 4 alternative: reconstructs the signed form on screen from its
 // stored field snapshots + the same versioned content used at signing time
 // (lib/parent-signatures/form-definitions.ts) - no PDF anywhere. Shared by
@@ -24,13 +44,29 @@ export function ParentSignatureViewModal({
   onClose,
   signedFormId,
   fetchData,
+  onRevoke,
+  onRevoked,
 }: {
   open: boolean;
   onClose: () => void;
   signedFormId: string;
-  fetchData: (signedFormId: string) => Promise<ParentSignatureViewerData | null>;
+  fetchData: (signedFormId: string) => Promise<ParentSignatureViewModalData | null>;
+  // Admin-only wrong-child correction - omitted entirely by the instructor
+  // entry point (InstructorChildSignaturesSection), so the revoke button
+  // below never renders there. Never reassigns the form to another child;
+  // only ever flips this one row to REVOKED.
+  onRevoke?: (signedFormId: string, reason: string) => Promise<RevokeActionResult>;
+  // Fired after a successful revoke, before this modal closes itself - the
+  // caller uses this to refetch the status list/history so the now-revoked
+  // form disappears from "signed" and the child/form becomes collectable
+  // again.
+  onRevoked?: () => void;
 }) {
-  const [data, setData] = useState<ParentSignatureViewerData | null | undefined>(undefined);
+  const [data, setData] = useState<ParentSignatureViewModalData | null | undefined>(undefined);
+  const [revokePanelOpen, setRevokePanelOpen] = useState(false);
+  const [revokeReason, setRevokeReason] = useState("");
+  const [revokeSubmitting, setRevokeSubmitting] = useState(false);
+  const [revokeError, setRevokeError] = useState<string | null>(null);
 
   // The parent only ever mounts this component while a form is being
   // viewed (`{viewingFormId && <ParentSignatureViewModal ... />}`) and
@@ -45,6 +81,35 @@ export function ParentSignatureViewModal({
       cancelled = true;
     };
   }, [signedFormId, fetchData]);
+
+  // Client-side mirror of the server's trim+required check - purely to avoid
+  // a round trip for the common "typed nothing" case; the server action
+  // re-validates independently and is the actual source of truth.
+  function handleConfirmRevoke() {
+    if (!onRevoke) return;
+    const trimmed = revokeReason.trim();
+    if (!trimmed) {
+      setRevokeError("יש להזין סיבת ביטול");
+      return;
+    }
+    setRevokeSubmitting(true);
+    setRevokeError(null);
+    onRevoke(signedFormId, trimmed).then((result) => {
+      setRevokeSubmitting(false);
+      if (!result.success) {
+        setRevokeError(result.error ?? "אירעה שגיאה בביטול החתימה");
+        return;
+      }
+      onRevoked?.();
+      onClose();
+    });
+  }
+
+  // Only offered when the caller wired onRevoke (admin entry point) and the
+  // form being viewed isn't already REVOKED - the live ACTIVE-only viewer's
+  // data never sets `status`, so it reads as revocable by default; the
+  // history drill-down's data always sets it explicitly.
+  const isRevocable = Boolean(onRevoke) && data != null && data.status !== "REVOKED";
 
   return (
     <Modal
@@ -116,6 +181,22 @@ export function ParentSignatureViewModal({
                 {data.parentPhoneSnapshot ? ` · ${data.parentPhoneSnapshot}` : ""}
               </p>
             </div>
+
+            {data.status === "REVOKED" &&
+              (data.revokedReason ? (
+                <div className="print-avoid-break mt-4 rounded-xl border border-danger/40 bg-danger-muted/30 p-4 text-sm">
+                  <p className="font-semibold text-danger">חתימה זו בוטלה</p>
+                  <p className="mt-1 text-card-foreground">
+                    בוטלה ע״י {data.revokedByAdminName ?? data.revokedByAdminEmail ?? "מנהל/ת"}
+                    {data.revokedAt ? ` · ${formatHebrewDateTime(new Date(data.revokedAt))}` : ""}
+                  </p>
+                  <p className="mt-1 text-card-foreground">סיבה: {data.revokedReason}</p>
+                </div>
+              ) : (
+                <div className="print-avoid-break mt-4 rounded-xl border border-border bg-muted/40 p-4 text-sm text-muted-foreground">
+                  הוחלפה בחתימה חדשה
+                </div>
+              ))}
 
             <div className="mt-4 flex flex-col gap-3 text-card-foreground">
               <h3 className="text-xl font-extrabold md:text-2xl">{data.content.title}</h3>
@@ -208,18 +289,63 @@ export function ParentSignatureViewModal({
             </p>
           </div>
 
-          <div className="flex shrink-0 flex-wrap justify-end gap-3 border-t border-border pt-4 print:hidden">
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={onClose}
-              className="!px-5 !py-3 !text-base"
-            >
-              סגירה
-            </Button>
-            <Button type="button" onClick={() => window.print()} className="!px-5 !py-3 !text-base">
-              הדפסת הטופס / שמירה כ-PDF
-            </Button>
+          <div className="flex shrink-0 flex-col gap-3 border-t border-border pt-4 print:hidden">
+            {revokePanelOpen && (
+              <div className="flex flex-col gap-2 rounded-xl border border-danger/40 bg-danger-muted/20 p-3">
+                <label className="text-sm font-semibold text-card-foreground">
+                  סיבת ביטול (חובה):
+                </label>
+                <textarea
+                  value={revokeReason}
+                  onChange={(e) => setRevokeReason(e.target.value)}
+                  rows={2}
+                  className="rounded-lg border border-border bg-card px-3 py-2 text-sm text-card-foreground"
+                  placeholder='לדוגמה: החתימה נאספה בטעות עבור ילד/ה אחר/ת'
+                  disabled={revokeSubmitting}
+                />
+                {revokeError && <p className="text-sm text-danger">{revokeError}</p>}
+                <div className="flex justify-end gap-2">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => {
+                      setRevokePanelOpen(false);
+                      setRevokeReason("");
+                      setRevokeError(null);
+                    }}
+                    disabled={revokeSubmitting}
+                  >
+                    ביטול
+                  </Button>
+                  <Button type="button" variant="danger" onClick={handleConfirmRevoke} disabled={revokeSubmitting}>
+                    {revokeSubmitting ? "מבטל..." : "אישור ביטול חתימה"}
+                  </Button>
+                </div>
+              </div>
+            )}
+            <div className="flex flex-wrap justify-end gap-3">
+              {isRevocable && !revokePanelOpen && (
+                <Button
+                  type="button"
+                  variant="danger"
+                  onClick={() => setRevokePanelOpen(true)}
+                  className="!px-5 !py-3 !text-base"
+                >
+                  ביטול חתימה (נחתמה עבור ילד/ה שגוי/ה)
+                </Button>
+              )}
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={onClose}
+                className="!px-5 !py-3 !text-base"
+              >
+                סגירה
+              </Button>
+              <Button type="button" onClick={() => window.print()} className="!px-5 !py-3 !text-base">
+                הדפסת הטופס / שמירה כ-PDF
+              </Button>
+            </div>
           </div>
         </div>
       )}

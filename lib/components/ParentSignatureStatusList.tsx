@@ -10,6 +10,7 @@ import type {
 import { ParentSignatureSignModal } from "@/lib/components/ParentSignatureSignModal";
 import { ParentSignatureViewModal } from "@/lib/components/ParentSignatureViewModal";
 import type { ParentSignatureFormTypeValue } from "@/lib/parent-signatures/types";
+import type { RevokeParentSignatureResult } from "@/lib/actions/parent-signatures";
 import type { ParentSignatureTeachingPracticeContext } from "@/lib/parent-signatures/status";
 
 interface SigningTarget {
@@ -110,10 +111,16 @@ export function ParentSignatureStatusList({
   fetchStatus,
   submit,
   viewSignedForm,
+  revokeSignedForm,
 }: {
   fetchStatus: () => Promise<ParentSignatureStatusResult>;
   submit: (input: ParentSignatureSubmitInput) => Promise<ParentSignatureSubmitResult>;
   viewSignedForm: (signedFormId: string) => Promise<ParentSignatureViewerData | null>;
+  // Admin-only wrong-child correction, threaded straight through to
+  // ParentSignatureViewModal - omitted entirely by the instructor entry
+  // point (InstructorChildSignaturesSection), so instructors never see the
+  // revoke button this enables.
+  revokeSignedForm?: (signedFormId: string, reason: string) => Promise<RevokeParentSignatureResult>;
 }) {
   const [data, setData] = useState<ParentSignatureStatusResult | null>(null);
   const [search, setSearch] = useState("");
@@ -314,6 +321,8 @@ export function ParentSignatureStatusList({
           onClose={() => setViewingFormId(null)}
           signedFormId={viewingFormId}
           fetchData={viewSignedForm}
+          onRevoke={revokeSignedForm}
+          onRevoked={reload}
         />
       )}
     </div>

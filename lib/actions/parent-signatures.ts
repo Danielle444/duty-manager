@@ -453,6 +453,25 @@ export interface ParentSignatureViewerData {
 // (missing row, wrong status, or a formType/formVersion combination that
 // no longer has a content entry) rather than throwing, so the UI can show a
 // plain "not available" state.
+// Shared by the ACTIVE-only viewer below and the admin-only history viewer -
+// swallows a thrown error (not just a `{ error }` response) the same way a
+// missing/unreachable Storage object already degrades: a network hiccup
+// generating one signature's signed URL must not take down the whole viewer
+// (or, for the bulk export below, the entire batch) with it.
+async function resolveSignatureUrl(signatureDataPath: string | null): Promise<string | null> {
+  if (!signatureDataPath) return null;
+  const supabase = getSupabaseClient();
+  if (!supabase) return null;
+  try {
+    const { data } = await supabase.storage
+      .from(PARENT_SIGNATURES_BUCKET)
+      .createSignedUrl(signatureDataPath, SIGNATURE_VIEW_URL_TTL_SECONDS);
+    return data?.signedUrl ?? null;
+  } catch {
+    return null;
+  }
+}
+
 async function loadSignedFormViewerDataInternal(
   signedFormId: string
 ): Promise<ParentSignatureViewerData | null> {
@@ -462,25 +481,7 @@ async function loadSignedFormViewerDataInternal(
   const content = getFormContent(form.formType, form.formVersion);
   if (!content) return null;
 
-  let signatureUrl: string | null = null;
-  if (form.signatureDataPath) {
-    const supabase = getSupabaseClient();
-    if (supabase) {
-      // Swallow a thrown error (not just a `{ error }` response) the same
-      // way a missing/unreachable Storage object already degrades - a
-      // network hiccup generating one signature's signed URL must not take
-      // down the whole viewer (or, for the bulk export below, the entire
-      // batch) with it.
-      try {
-        const { data } = await supabase.storage
-          .from(PARENT_SIGNATURES_BUCKET)
-          .createSignedUrl(form.signatureDataPath, SIGNATURE_VIEW_URL_TTL_SECONDS);
-        signatureUrl = data?.signedUrl ?? null;
-      } catch {
-        signatureUrl = null;
-      }
-    }
-  }
+  const signatureUrl = await resolveSignatureUrl(form.signatureDataPath);
 
   return {
     signedFormId: form.id,
@@ -563,4 +564,204 @@ export async function getAllActiveTeachingPracticeSignedFormsForAdmin(): Promise
 
   const results = await Promise.all(ordered.map((f) => loadSignedFormViewerDataInternal(f.id)));
   return results.filter((r): r is ParentSignatureViewerData => r !== null);
+}
+
+// ---------------------------------------------------------------------------
+// Wrong-child correction: admin-only manual revoke + revoked-signature history
+// ---------------------------------------------------------------------------
+//
+// This never transfers/reassigns a signed form to another child - childId is
+// never written by anything below. Correcting a signature collected under the
+// wrong child is always two separate steps: revoke the mistaken ACTIVE row
+// here, then collect a brand-new signature for the correct child through the
+// normal submitTeachingPracticeSignedFormAs*/ParentSignatureSignModal flow
+// (unchanged by this section). Deliberately admin-only, unlike collecting a
+// signature - there is no instructor-facing revoke action, and
+// canManageChildSignatures is never consulted here.
+
+export interface RevokeParentSignatureResult extends ActionResult {
+  // True when the ACTIVE-only conditional update matched zero rows - the form
+  // was already revoked (by a prior manual revoke) or superseded (by the
+  // child being re-signed for the same formType/courseCycle) since the admin
+  // opened the viewer. Distinguished from a hard failure so the caller can
+  // show a calmer "this was already resolved" message instead of a generic
+  // error.
+  alreadyResolved?: boolean;
+}
+
+// Revokes exactly one ACTIVE signed form - never creates a row, so this can
+// never collide with the partial unique ACTIVE index. Race-safe against the
+// existing re-sign supersession (lib/actions/parent-signatures.ts's
+// submitParentSignatureInternal) and against a double-click of this same
+// action: the conditional `updateMany({ where: { id, status: "ACTIVE" } })`
+// only ever matches (and only ever writes revocation metadata onto) a row
+// that is still ACTIVE at the moment of the write, so an already-REVOKED row
+// - whichever path revoked it first - keeps whatever metadata (or lack of
+// it) that first revocation set. Never overwrites existing revocation
+// metadata.
+export async function revokeTeachingPracticeSignedFormAsAdmin(
+  signedFormId: string,
+  reason: string
+): Promise<RevokeParentSignatureResult> {
+  const admin = await requireAdmin();
+
+  const revokedReason = reason.trim();
+  if (!revokedReason) {
+    return { success: false, error: "יש להזין סיבת ביטול" };
+  }
+
+  const { count } = await prisma.teachingPracticeSignedForm.updateMany({
+    where: { id: signedFormId, status: "ACTIVE" },
+    data: {
+      status: "REVOKED",
+      revokedAt: new Date(),
+      revokedByAdminEmail: admin.email,
+      revokedByAdminName: admin.name,
+      revokedReason,
+    },
+  });
+
+  if (count === 0) {
+    return {
+      success: false,
+      error: "הטופס כבר בוטל או הוחלף בחתימה חדשה",
+      alreadyResolved: true,
+    };
+  }
+
+  revalidatePath("/admin/parent-signatures");
+  revalidatePath("/instructor");
+
+  return { success: true };
+}
+
+// One row in the admin-only revoked-signature history list - deliberately
+// narrower than ParentSignatureHistoryViewerData below (no form content/
+// signature URL), since the list itself never needs to render the full form,
+// only enough to identify it and distinguish why it was revoked.
+export interface ParentSignatureRevokedHistoryRow {
+  signedFormId: string;
+  formType: ParentSignatureFormTypeValue;
+  childNameSnapshot: string;
+  signedAt: string;
+  revokedAt: string | null;
+  revokedByAdminEmail: string | null;
+  revokedByAdminName: string | null;
+  revokedReason: string | null;
+  // True when revokedReason is present - i.e. this row went through
+  // revokeTeachingPracticeSignedFormAsAdmin above, as opposed to the
+  // automatic re-sign supersession in submitParentSignatureInternal, which
+  // never sets any revocation-metadata field. The UI must render the two
+  // differently ("בוטל ע"י ..." vs. a neutral "הוחלפה בחתימה חדשה") rather
+  // than showing blank admin/reason fields as if data is missing.
+  isManualRevoke: boolean;
+}
+
+// Admin-only, scoped to the current course cycle (same scoping as every
+// other read in this file) - every REVOKED row, most recently revoked/
+// superseded first. A row from the automatic supersession path has no
+// revokedAt (nothing sets it there), so it sorts by signedAt instead -
+// still a reasonable recency ordering for a row with no revocation
+// timestamp of its own.
+export async function getRevokedTeachingPracticeSignedFormsForAdmin(): Promise<
+  ParentSignatureRevokedHistoryRow[]
+> {
+  await requireAdmin();
+
+  const courseCycle = CURRENT_TEACHING_PRACTICE_COURSE_CYCLE;
+  const forms = await prisma.teachingPracticeSignedForm.findMany({
+    where: { courseCycle, status: "REVOKED" },
+    select: {
+      id: true,
+      formType: true,
+      childNameSnapshot: true,
+      signedAt: true,
+      revokedAt: true,
+      revokedByAdminEmail: true,
+      revokedByAdminName: true,
+      revokedReason: true,
+    },
+  });
+
+  const ordered = [...forms].sort((a, b) => {
+    const aTime = (a.revokedAt ?? a.signedAt).getTime();
+    const bTime = (b.revokedAt ?? b.signedAt).getTime();
+    return bTime - aTime;
+  });
+
+  return ordered.map((f) => ({
+    signedFormId: f.id,
+    formType: f.formType,
+    childNameSnapshot: f.childNameSnapshot,
+    signedAt: f.signedAt.toISOString(),
+    revokedAt: f.revokedAt ? f.revokedAt.toISOString() : null,
+    revokedByAdminEmail: f.revokedByAdminEmail,
+    revokedByAdminName: f.revokedByAdminName,
+    revokedReason: f.revokedReason,
+    isManualRevoke: f.revokedReason !== null,
+  }));
+}
+
+// Same shape as ParentSignatureViewerData plus the revocation metadata -
+// used only by the admin-only history drill-down (never by the ACTIVE-only
+// viewer/bulk-print above, and never by any instructor-facing action).
+export interface ParentSignatureHistoryViewerData extends ParentSignatureViewerData {
+  status: "ACTIVE" | "REVOKED";
+  revokedAt: string | null;
+  revokedByAdminEmail: string | null;
+  revokedByAdminName: string | null;
+  revokedReason: string | null;
+}
+
+// Admin-only, status-agnostic single-form read - unlike
+// loadSignedFormViewerDataInternal, this deliberately resolves a REVOKED row
+// too (so the history list above can drill into what a revoked form actually
+// said), but it is a pure read: it never changes status, so it can never
+// make a revoked form "active" again, and nothing else in this file ever
+// reads this function's output as a signal that the form is currently valid.
+// Scoped to the current course cycle like every other read in this file -
+// returns null (the same "not available" outcome as a missing row) for a
+// form from a past cycle rather than resolving it.
+async function loadSignedFormHistoryViewerDataInternal(
+  signedFormId: string
+): Promise<ParentSignatureHistoryViewerData | null> {
+  const form = await prisma.teachingPracticeSignedForm.findUnique({ where: { id: signedFormId } });
+  if (!form || form.courseCycle !== CURRENT_TEACHING_PRACTICE_COURSE_CYCLE) return null;
+
+  const content = getFormContent(form.formType, form.formVersion);
+  if (!content) return null;
+
+  const signatureUrl = await resolveSignatureUrl(form.signatureDataPath);
+
+  return {
+    signedFormId: form.id,
+    formType: form.formType,
+    formVersion: form.formVersion,
+    courseCycle: form.courseCycle,
+    signedAt: form.signedAt.toISOString(),
+    content,
+    childNameSnapshot: form.childNameSnapshot,
+    childAgeSnapshot: form.childAgeSnapshot,
+    parentNameSnapshot: form.parentNameSnapshot,
+    parentPhoneSnapshot: form.parentPhoneSnapshot,
+    parentEmail: form.parentEmail,
+    address: form.address,
+    medicalNotes: form.medicalNotes,
+    photoConsent: form.photoConsent,
+    signerName: form.signerName,
+    signerRole: form.signerRole,
+    signatureUrl,
+    status: form.status,
+    revokedAt: form.revokedAt ? form.revokedAt.toISOString() : null,
+    revokedByAdminEmail: form.revokedByAdminEmail,
+    revokedByAdminName: form.revokedByAdminName,
+    revokedReason: form.revokedReason,
+  };
+}
+
+export async function getTeachingPracticeSignedFormHistoryForAdmin(
+  signedFormId: string
+): Promise<ParentSignatureHistoryViewerData | null> {
+  await requireAdmin();
+  return loadSignedFormHistoryViewerDataInternal(signedFormId);
 }

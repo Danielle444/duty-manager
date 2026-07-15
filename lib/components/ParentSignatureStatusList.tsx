@@ -58,6 +58,7 @@ export function ParentSignatureStatusList({
 }) {
   const [data, setData] = useState<ParentSignatureStatusResult | null>(null);
   const [search, setSearch] = useState("");
+  const [scheduleFilter, setScheduleFilter] = useState<"ALL" | "UNSCHEDULED">("ALL");
   const [signingTarget, setSigningTarget] = useState<SigningTarget | null>(null);
   const [viewingFormId, setViewingFormId] = useState<string | null>(null);
 
@@ -72,12 +73,12 @@ export function ParentSignatureStatusList({
   const filteredChildren = useMemo(() => {
     if (!data) return [];
     const trimmed = search.trim();
-    if (!trimmed) return data.children;
-    return data.children.filter(
-      (child) =>
-        child.childName.includes(trimmed) || (child.parentName?.includes(trimmed) ?? false)
-    );
-  }, [data, search]);
+    return data.children.filter((child) => {
+      if (scheduleFilter === "UNSCHEDULED" && !child.isUnscheduled) return false;
+      if (!trimmed) return true;
+      return child.childName.includes(trimmed) || (child.parentName?.includes(trimmed) ?? false);
+    });
+  }, [data, search, scheduleFilter]);
 
   if (data === null) {
     return <p className="text-base text-muted-foreground">טוען...</p>;
@@ -86,7 +87,7 @@ export function ParentSignatureStatusList({
   if (data.children.length === 0) {
     return (
       <div className="rounded-2xl border border-border bg-card p-5 text-sm text-muted-foreground">
-        אין כרגע ילדים משובצים להתנסויות מתחילים.
+        אין כרגע ילדי התנסות פעילים במערכת.
       </div>
     );
   }
@@ -103,6 +104,28 @@ export function ParentSignatureStatusList({
         className="rounded-xl border border-border bg-card px-4 py-3 text-base text-card-foreground placeholder:text-muted-foreground"
       />
 
+      <div className="flex gap-2">
+        {(
+          [
+            { value: "ALL", label: "הכל" },
+            { value: "UNSCHEDULED", label: "ללא שיבוץ" },
+          ] as const
+        ).map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            onClick={() => setScheduleFilter(option.value)}
+            className={`rounded-lg px-3 py-1.5 text-sm font-semibold ${
+              scheduleFilter === option.value
+                ? "bg-primary text-primary-foreground"
+                : "border border-border text-muted-foreground hover:bg-muted"
+            }`}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+
       {filteredChildren.length === 0 ? (
         <p className="text-base text-muted-foreground">לא נמצאו ילדים תואמים לחיפוש.</p>
       ) : (
@@ -115,6 +138,11 @@ export function ParentSignatureStatusList({
                     {child.childName}
                     {child.childAge != null && (
                       <span className="font-normal text-muted-foreground"> · גיל {child.childAge}</span>
+                    )}
+                    {child.isUnscheduled && (
+                      <span className="mr-2 rounded-full bg-muted px-2.5 py-0.5 align-middle text-xs font-semibold text-muted-foreground">
+                        ללא שיבוץ
+                      </span>
                     )}
                   </p>
                   <p className="truncate text-sm text-muted-foreground">

@@ -7,7 +7,7 @@ import { dateKey } from "@/lib/dates";
 import { getSupabaseClient, PARENT_SIGNATURES_BUCKET } from "@/lib/supabase";
 import { CURRENT_TEACHING_PRACTICE_COURSE_CYCLE } from "@/lib/parent-signatures/course-cycle";
 import { buildParentSignatureImagePath } from "@/lib/parent-signatures/storage-path";
-import { requiredParentSignatureFormTypes } from "@/lib/parent-signatures/required-forms";
+import { requiredParentSignatureFormTypesForChild } from "@/lib/parent-signatures/required-forms";
 import { getFormContent, CURRENT_FORM_VERSION } from "@/lib/parent-signatures/form-definitions";
 import type { ParentSignatureFormContent, ParentSignatureFormTypeValue } from "@/lib/parent-signatures/types";
 import type { ActionResult } from "@/lib/actions/students";
@@ -44,49 +44,59 @@ async function getInstructorForSignatureRead(instructorId: string) {
   return instructor;
 }
 
-// Loads every active child's Teaching Practice assignments (all lessons,
-// published or not - this is an internal staff readiness view, not the
-// trainee-facing surface), groups them per child, and resolves each child's
-// required forms against their ACTIVE TeachingPracticeSignedForm rows for
-// the current course cycle. Shared by both the admin and instructor entry
+// Loads every active TeachingPracticeChild (not just ones with a generated
+// lesson assignment - an active child may exist in the system before ever
+// being scheduled, and still needs SAFETY_INSTRUCTIONS collectible), plus
+// every active child's Teaching Practice assignments (all lessons, published
+// or not - this is an internal staff readiness view, not the trainee-facing
+// surface), groups the latter per child, and resolves each child's required
+// forms against their ACTIVE TeachingPracticeSignedForm rows for the current
+// course cycle. A child with no assignments simply gets an empty
+// assignments array (never a fake one) - see buildParentSignatureChildStatus/
+// requiredParentSignatureFormTypesForChild for how that yields
+// SAFETY_INSTRUCTIONS-only. Shared by both the admin and instructor entry
 // points below - the permission check happens before this is ever called.
 async function loadParentSignatureStatusInternal(): Promise<ParentSignatureStatusResult> {
   const courseCycle = CURRENT_TEACHING_PRACTICE_COURSE_CYCLE;
 
-  const assignments = await prisma.teachingPracticeChildAssignment.findMany({
-    where: { child: { isActive: true } },
-    select: {
-      childId: true,
-      child: {
-        select: { fullName: true, age: true, parentName: true, parentPhone: true },
-      },
-      lesson: {
-        select: {
-          id: true,
-          date: true,
-          startTime: true,
-          practiceType: true,
-          groupName: true,
-          // Display-only, for the status list's "which trainees/lesson"
-          // navigation context (see buildTeachingPracticeContexts in
-          // lib/parent-signatures/status.ts) - never shown in the signed
-          // form viewer/printed form, which only ever reads
-          // TeachingPracticeSignedForm's own stored snapshot fields.
-          participants: {
-            select: { trainee: { select: { fullName: true } } },
-            orderBy: { createdAt: "asc" },
+  // Two independent batch queries (never per-child) - no N+1.
+  const [activeChildren, assignments] = await Promise.all([
+    prisma.teachingPracticeChild.findMany({
+      where: { isActive: true },
+      select: { id: true, fullName: true, age: true, parentName: true, parentPhone: true },
+    }),
+    prisma.teachingPracticeChildAssignment.findMany({
+      where: { child: { isActive: true } },
+      select: {
+        childId: true,
+        lesson: {
+          select: {
+            id: true,
+            date: true,
+            startTime: true,
+            practiceType: true,
+            groupName: true,
+            // Display-only, for the status list's "which trainees/lesson"
+            // navigation context (see buildTeachingPracticeContexts in
+            // lib/parent-signatures/status.ts) - never shown in the signed
+            // form viewer/printed form, which only ever reads
+            // TeachingPracticeSignedForm's own stored snapshot fields.
+            participants: {
+              select: { trainee: { select: { fullName: true } } },
+              orderBy: { createdAt: "asc" },
+            },
           },
         },
       },
-    },
-    orderBy: [{ lesson: { date: "asc" } }],
-  });
+      orderBy: [{ lesson: { date: "asc" } }],
+    }),
+  ]);
 
-  if (assignments.length === 0) {
+  if (activeChildren.length === 0) {
     return { courseCycle, children: [] };
   }
 
-  const childIds = Array.from(new Set(assignments.map((a) => a.childId)));
+  const childIds = activeChildren.map((c) => c.id);
 
   const signedForms = await prisma.teachingPracticeSignedForm.findMany({
     where: { childId: { in: childIds }, courseCycle, status: "ACTIVE" },
@@ -103,16 +113,7 @@ async function loadParentSignatureStatusInternal(): Promise<ParentSignatureStatu
     }
   }
 
-  interface ChildAccumulator {
-    childId: string;
-    childName: string;
-    childAge: number | null;
-    parentName: string | null;
-    parentPhone: string | null;
-    assignments: ParentSignatureAssignmentContext[];
-  }
-
-  const byChild = new Map<string, ChildAccumulator>();
+  const assignmentsByChild = new Map<string, ParentSignatureAssignmentContext[]>();
   for (const a of assignments) {
     const assignmentContext: ParentSignatureAssignmentContext = {
       lessonId: a.lesson.id,
@@ -122,26 +123,24 @@ async function loadParentSignatureStatusInternal(): Promise<ParentSignatureStatu
       groupName: a.lesson.groupName,
       traineeNames: a.lesson.participants.map((p) => p.trainee.fullName),
     };
-    const existing = byChild.get(a.childId);
-    if (existing) {
-      existing.assignments.push(assignmentContext);
+    const list = assignmentsByChild.get(a.childId);
+    if (list) {
+      list.push(assignmentContext);
     } else {
-      byChild.set(a.childId, {
-        childId: a.childId,
-        childName: a.child.fullName,
-        childAge: a.child.age,
-        parentName: a.child.parentName,
-        parentPhone: a.child.parentPhone,
-        assignments: [assignmentContext],
-      });
+      assignmentsByChild.set(a.childId, [assignmentContext]);
     }
   }
 
   const children = sortParentSignatureChildStatusRows(
-    Array.from(byChild.values()).map((child) =>
+    activeChildren.map((child) =>
       buildParentSignatureChildStatus({
-        ...child,
-        activeSignedForms: signedByChild.get(child.childId) ?? [],
+        childId: child.id,
+        childName: child.fullName,
+        childAge: child.age,
+        parentName: child.parentName,
+        parentPhone: child.parentPhone,
+        assignments: assignmentsByChild.get(child.id) ?? [],
+        activeSignedForms: signedByChild.get(child.id) ?? [],
       })
     )
   );
@@ -286,16 +285,20 @@ async function submitParentSignatureInternal(
   }
 
   // formType must actually be required for this child right now - derived
-  // fresh from their current assignments, same rule as
-  // buildParentSignatureChildStatus (lib/parent-signatures/status.ts) uses
-  // for the status list, so a form can never be signed here that wouldn't
-  // even show up as required there.
+  // fresh from their current assignments (never trusted from the client,
+  // including any "unscheduled" flag the client might send), through the
+  // same shared rule buildParentSignatureChildStatus (lib/parent-signatures/
+  // status.ts) uses for the status list, so a form can never be signed here
+  // that wouldn't even show up as required there. A child with zero
+  // assignments still requires (and permits) SAFETY_INSTRUCTIONS via that
+  // rule's baseline - practice-specific consent forms stay rejected until an
+  // assignment of the matching practiceType actually exists.
   const assignments = await prisma.teachingPracticeChildAssignment.findMany({
     where: { childId: child.id },
     select: { lesson: { select: { practiceType: true } } },
   });
   const practiceTypes = Array.from(new Set(assignments.map((a) => a.lesson.practiceType)));
-  const requiredFormTypes = new Set(practiceTypes.flatMap(requiredParentSignatureFormTypes));
+  const requiredFormTypes = new Set(requiredParentSignatureFormTypesForChild(practiceTypes));
   if (!requiredFormTypes.has(formType)) {
     return { success: false, error: "טופס זה אינו נדרש עבור ילד/ה זו" };
   }

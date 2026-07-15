@@ -6,7 +6,7 @@
 // convention as lib/teaching-practice-rotation.ts and
 // lib/teaching-practice-schedule-check.ts.
 
-import { requiredParentSignatureFormTypes } from "@/lib/parent-signatures/required-forms";
+import { requiredParentSignatureFormTypesForChild } from "@/lib/parent-signatures/required-forms";
 import { getFormContent, CURRENT_FORM_VERSION, FORM_TYPE_SHORT_LABEL } from "@/lib/parent-signatures/form-definitions";
 import type { ParentSignatureFormTypeValue } from "@/lib/parent-signatures/types";
 import type { TeachingPracticeTypeValue } from "@/lib/teaching-practice-rotation";
@@ -75,6 +75,10 @@ export interface ParentSignatureChildStatusRow {
   isCleared: boolean;
   missingCount: number;
   teachingPracticeContexts: ParentSignatureTeachingPracticeContext[];
+  // True when this child has zero TeachingPracticeChildAssignment rows (not
+  // yet placed on any generated lesson) - drives the "ללא שיבוץ" badge and
+  // the baseline-only required-forms rule in requiredParentSignatureFormTypesForChild.
+  isUnscheduled: boolean;
 }
 
 // Compact display labels for this one navigation-context string - shorter
@@ -151,7 +155,7 @@ export function buildParentSignatureChildStatus(
   input: ParentSignatureChildInput
 ): ParentSignatureChildStatusRow {
   const practiceTypes = Array.from(new Set(input.assignments.map((a) => a.practiceType)));
-  const requiredTypes = Array.from(new Set(practiceTypes.flatMap(requiredParentSignatureFormTypes)));
+  const requiredTypes = requiredParentSignatureFormTypesForChild(practiceTypes);
 
   const requiredForms: ParentSignatureRequiredFormStatus[] = requiredTypes.map((formType) => {
     const signed = input.activeSignedForms.find((f) => f.formType === formType) ?? null;
@@ -179,6 +183,7 @@ export function buildParentSignatureChildStatus(
     isCleared: missingCount === 0,
     missingCount,
     teachingPracticeContexts: buildTeachingPracticeContexts(input.assignments),
+    isUnscheduled: input.assignments.length === 0,
   };
 }
 

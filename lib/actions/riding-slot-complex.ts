@@ -6,7 +6,12 @@ import { revalidatePath } from "next/cache";
 import { requireAdmin } from "@/lib/auth/require-admin";
 import { dateKey } from "@/lib/dates";
 import type { ActionResult } from "@/lib/actions/students";
-import { getRidingSlotStudentNotes, getKnownRidingHorseNames } from "@/lib/actions/riding-slots";
+import { getKnownRidingHorseNames } from "@/lib/actions/riding-slots";
+// RIDING-PAIRS P4a - reuses the exact same horse/responsible-instructor
+// resolution the simple horse list already uses, instead of a separate,
+// reduced candidate shape. One-way dependency only (riding-slot-horses.ts
+// imports nothing from this file) - see buildHorseCandidates's own comment.
+import { buildHorseCandidates, type RidingHorseCandidate } from "@/lib/actions/riding-slot-horses";
 
 const NOT_FOUND_RIDING_SLOT = 'ניהול הרכיבה לא נמצא. נסי לרענן את העמוד.';
 const NOT_FOUND_COMPLEX_PLAN = "תכנון הרכיבה המורכבת לא נמצא. ייתכן שטרם נוצר - נסי לרענן את העמוד.";
@@ -26,12 +31,14 @@ const INVALID_BLOCK_ORDER = "רשימת סדר הבלוקים אינה תואמ�
 
 // ---------- Shared read model ----------
 
-export interface RidingSlotComplexTraineeCandidate {
-  studentId: string;
-  studentName: string;
-  groupName: string | null;
-  subgroupNumber: number | null;
-}
+// RIDING-PAIRS P4a - type alias to RidingHorseCandidate (lib/actions/riding-slot-horses.ts),
+// which already carries exactly the fields needed here (horseName/
+// horseNameDisplay/responsibleInstructorNames on top of the original
+// studentId/studentName/groupName/subgroupNumber) - kept as its own named
+// alias rather than importing RidingHorseCandidate directly everywhere, so
+// every existing downstream reference to RidingSlotComplexTraineeCandidate
+// (types, prop names) keeps working unchanged.
+export type RidingSlotComplexTraineeCandidate = RidingHorseCandidate;
 
 export interface RidingSlotComplexPairRow {
   id: string;
@@ -232,20 +239,6 @@ function toPlanRow(p: PlanWithRelations): RidingSlotComplexPlanRow {
   };
 }
 
-function toCandidate(row: {
-  studentId: string;
-  studentName: string;
-  groupName: string | null;
-  subgroupNumber: number | null;
-}): RidingSlotComplexTraineeCandidate {
-  return {
-    studentId: row.studentId,
-    studentName: row.studentName,
-    groupName: row.groupName,
-    subgroupNumber: row.subgroupNumber,
-  };
-}
-
 async function validateActiveInstructorIds(instructorIds: string[]): Promise<boolean> {
   if (instructorIds.length === 0) return true;
   const found = await prisma.instructor.findMany({ where: { id: { in: instructorIds }, isActive: true } });
@@ -261,10 +254,11 @@ async function validateActiveTraineeIds(traineeIds: string[]): Promise<boolean> 
 // Builds the full editing shape for an EXISTING complex plan only - callers
 // (get/create/save/delete/duplicate/reorder) all re-derive this after their
 // own mutation so the caller always gets a fresh, complete snapshot rather
-// than a partially-updated local copy. candidates reuse
-// getRidingSlotStudentNotes - the exact same group/subgroup/assignment
-// roster derivation the simple horse list's buildHorseCandidates already
-// relies on - rather than re-implementing that fallback chain here, per the
+// than a partially-updated local copy. candidates reuse buildHorseCandidates
+// (lib/actions/riding-slot-horses.ts) directly - the exact same group/
+// subgroup/assignment roster derivation AND horse/responsible-instructor
+// resolution the simple horse list already relies on, rather than
+// maintaining a second, independently-drifting copy of that logic, per the
 // approved "do not default to every active trainee" candidate-scope rule.
 async function buildComplexPlanForEditing(
   ridingSlotId: string,
@@ -276,9 +270,9 @@ async function buildComplexPlanForEditing(
   });
   if (!plan) return null;
 
-  const [scheduleMeta, candidateRows, knownHorseNames, simpleList] = await Promise.all([
+  const [scheduleMeta, candidates, knownHorseNames, simpleList] = await Promise.all([
     resolveComplexScheduleMeta(ridingSlotId),
-    getRidingSlotStudentNotes(ridingSlotId),
+    buildHorseCandidates(ridingSlotId),
     getKnownRidingHorseNames(),
     prisma.ridingSlotHorseList.findUnique({ where: { ridingSlotId }, select: { id: true } }),
   ]);
@@ -287,7 +281,7 @@ async function buildComplexPlanForEditing(
     ridingSlotId,
     plan: toPlanRow(plan),
     scheduleMeta,
-    candidates: candidateRows.map(toCandidate),
+    candidates,
     knownHorseNames,
     hasSimpleHorseList: Boolean(simpleList),
     canEdit: opts.canEdit,

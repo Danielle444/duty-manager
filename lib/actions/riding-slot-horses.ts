@@ -73,7 +73,14 @@ export interface RidingSlotHorseListForEditing extends RidingSlotHorseListStatus
 // trainee" candidate cannot be derived here; H3 intentionally only exposes
 // student-derived candidates (see this file's own audit note in the H3
 // report - not implemented here).
-async function buildHorseCandidates(ridingSlotId: string): Promise<RidingHorseCandidate[]> {
+//
+// RIDING-PAIRS P4a - exported so lib/actions/riding-slot-complex.ts can
+// reuse this exact resolution (horse + responsible-instructor) for its own
+// trainee candidates, instead of maintaining a second, independently-
+// drifting copy of the same logic. riding-slot-horses.ts itself imports
+// nothing from riding-slot-complex.ts, so this is a one-way dependency,
+// not a cycle.
+export async function buildHorseCandidates(ridingSlotId: string): Promise<RidingHorseCandidate[]> {
   const [studentRows, assignments] = await Promise.all([
     getRidingSlotStudentNotes(ridingSlotId),
     prisma.ridingSlotAssignment.findMany({

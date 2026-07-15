@@ -308,6 +308,11 @@ model Instructor {
   teachingPracticeLessonsResponsible   TeachingPracticeLesson[]
   teachingPracticeSignedFormsCollected TeachingPracticeSignedForm[]
 
+  // TP-DAY-NOTES - this instructor's own private day/section notes (see
+  // TeachingPracticeInstructorDayNote's own comment). Required FK on that
+  // side (onDelete: Cascade) since a note has no meaning without its owner.
+  teachingPracticeInstructorDayNotes TeachingPracticeInstructorDayNote[]
+
   // Stage I1 - instructor/coach-authored trainee-progress-journal rows (see
   // each model's own schema comment). Gated by the reused
   // canEditRidingNotes flag above, not a dedicated permission - see
@@ -1617,4 +1622,35 @@ model TeachingPracticeSignedForm {
 
   @@index([childId, formType, courseCycle])
   @@map("teaching_practice_signed_forms")
+}
+
+// TP-DAY-NOTES - private working notes an instructor keeps for themselves
+// under one activity section (LUNGE/BEGINNER_PRIVATE/BEGINNER_GROUP) on one
+// generated Teaching Practice date. Deliberately not FK'd to
+// TeachingPracticeLesson/TeachingPracticeTrack - a section can span several
+// generated lesson rows/groups on the same date (see groupName on those
+// models), and this note covers the whole section, not one row. date +
+// practiceType are plain fields (not a lesson reference) so the note
+// survives lesson regeneration/resync untouched, same "freestanding scope"
+// principle as the day-view's own selected-date navigation. v1: instructor-
+// private only - no admin read/write action exists for this model, it is
+// never joined into feedback, progress timelines, exports, or MessageTask.
+// No history: each save overwrites/deletes, same convention as
+// RidingLessonNote/TeachingPracticeFeedback. Missing row means "no note",
+// not an empty one - saving trimmed-empty content deletes the row rather
+// than persisting a blank placeholder.
+model TeachingPracticeInstructorDayNote {
+  id           String               @id @default(cuid())
+  instructorId String
+  date         DateTime             @db.Date
+  practiceType TeachingPracticeType
+  content      String
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+
+  instructor Instructor @relation(fields: [instructorId], references: [id], onDelete: Cascade)
+
+  @@unique([instructorId, date, practiceType])
+  @@index([instructorId, date])
+  @@map("teaching_practice_instructor_day_notes")
 }

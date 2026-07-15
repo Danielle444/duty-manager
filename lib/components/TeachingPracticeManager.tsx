@@ -280,6 +280,17 @@ const PRACTICE_TYPE_LABELS: Record<TeachingPracticeTypeValue, string> = {
 };
 const PRACTICE_TYPES: TeachingPracticeTypeValue[] = ["LUNGE", "BEGINNER_PRIVATE", "BEGINNER_GROUP"];
 
+// TP-INSTRUCTOR-SECTIONS - accessible collapse/expand labels for the
+// per-date practice-type section header button below. Text matches the
+// section's own visible heading (e.g. "שיעורים פרטניים", not
+// PRACTICE_TYPE_LABELS' fuller "שיעור פרטי מתחילים"), since that's what a
+// screen-reader user has just heard read out.
+const SECTION_COLLAPSE_TOGGLE_LABELS: Record<TeachingPracticeTypeValue, { collapse: string; expand: string }> = {
+  LUNGE: { collapse: "צמצום לונג׳", expand: "פתיחת לונג׳" },
+  BEGINNER_PRIVATE: { collapse: "צמצום שיעורים פרטניים", expand: "פתיחת שיעורים פרטניים" },
+  BEGINNER_GROUP: { collapse: "צמצום שיעורים קבוצתיים", expand: "פתיחת שיעורים קבוצתיים" },
+};
+
 // Fixed-structure trainee slots must always be looked up by their exact
 // rotationOrder, never by position in a sorted-and-compacted array - a
 // sparse roster (a hole at an earlier rotationOrder, e.g. after clearing a
@@ -907,6 +918,17 @@ export function TeachingPracticeManager({
   const [lessonDateDetail, setLessonDateDetail] = useState<TeachingPracticeLessonDetail[] | null>(null);
   const [lessonDateDetailLoading, setLessonDateDetailLoading] = useState(false);
   const [lessonDateDetailError, setLessonDateDetailError] = useState<string | null>(null);
+  // TP-INSTRUCTOR-SECTIONS - which (date, practiceType) section cards are
+  // collapsed, for the "lessons" tab below. Presentation-only: keyed by
+  // `${date}:${practiceType}` so each date keeps its own collapsed sections
+  // independently while staying on this page, never persisted anywhere -
+  // absent from the set (the default) means expanded, so a fresh page load
+  // always starts every section open. Collapsing only toggles a "hidden"
+  // class on the section's already-rendered content below; it never
+  // unmounts it, so no inline draft/edit state can be lost this way, and
+  // the feedback modal (rendered separately, outside this subtree) is
+  // never affected either.
+  const [collapsedLessonSections, setCollapsedLessonSections] = useState<Set<string>>(new Set());
   // Admin-only (getTeachingPracticeScheduleCheckForAdmin has no instructor
   // variant yet, see report) - fetched lazily on first visit to the tab
   // rather than in the initial Promise.all below, since it's a heavier
@@ -1264,6 +1286,53 @@ export function TeachingPracticeManager({
         <span aria-hidden="true">✎</span>
         {label}
         {hasNote && <span aria-hidden="true" className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />}
+      </button>
+    );
+  }
+
+  // TP-INSTRUCTOR-SECTIONS - key/lookup/toggle for collapsedLessonSections
+  // above. Returns false (expanded) whenever there's no selected date yet,
+  // since a section can never actually render without one.
+  function lessonSectionKey(practiceType: TeachingPracticeTypeValue): string | null {
+    return selectedLessonDate === null ? null : `${selectedLessonDate}:${practiceType}`;
+  }
+  function isLessonSectionCollapsed(practiceType: TeachingPracticeTypeValue): boolean {
+    const key = lessonSectionKey(practiceType);
+    return key !== null && collapsedLessonSections.has(key);
+  }
+  function toggleLessonSectionCollapsed(practiceType: TeachingPracticeTypeValue) {
+    const key = lessonSectionKey(practiceType);
+    if (key === null) return;
+    setCollapsedLessonSections((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  }
+
+  // Small button beside a section heading - independent collapse/expand for
+  // that practice-type section on the currently selected date. Shared by
+  // admin and instructor (same renderer both sides), since hiding/showing
+  // an already-rendered list is harmless read-only presentation either way.
+  function renderSectionCollapseToggle(practiceType: TeachingPracticeTypeValue) {
+    const collapsed = isLessonSectionCollapsed(practiceType);
+    const labels = SECTION_COLLAPSE_TOGGLE_LABELS[practiceType];
+    const contentId = `tp-lesson-section-${practiceType}`;
+    return (
+      <button
+        type="button"
+        onClick={() => toggleLessonSectionCollapsed(practiceType)}
+        aria-expanded={!collapsed}
+        aria-controls={contentId}
+        aria-label={collapsed ? labels.expand : labels.collapse}
+        title={collapsed ? labels.expand : labels.collapse}
+        className="flex shrink-0 items-center justify-center rounded-lg bg-card p-2 text-card-foreground shadow-sm transition-colors hover:opacity-80"
+      >
+        <span aria-hidden="true">{collapsed ? "▼" : "▲"}</span>
       </button>
     );
   }
@@ -5261,8 +5330,12 @@ export function TeachingPracticeManager({
                             <div className="flex min-w-0 flex-col gap-3">
                               <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-secondary px-3 py-2">
                                 <h3 className="text-sm font-bold text-secondary-foreground">לונג׳</h3>
-                                {renderDayNoteControl("LUNGE")}
+                                <div className="flex shrink-0 items-center gap-2">
+                                  {renderDayNoteControl("LUNGE")}
+                                  {renderSectionCollapseToggle("LUNGE")}
+                                </div>
                               </div>
+                              <div id="tp-lesson-section-LUNGE" className={isLessonSectionCollapsed("LUNGE") ? "hidden" : "flex min-w-0 flex-col gap-3"}>
                               {lungeGroups.map(([groupName, groupLessons]) => (
                                 <LessonGroupTable
                                   key={`lunge-${groupName ?? "none"}`}
@@ -5286,6 +5359,7 @@ export function TeachingPracticeManager({
                                   onInlineUpdateNotes={handleInlineUpdateLessonNotes}
                                 />
                               ))}
+                              </div>
                             </div>
                           )}
 
@@ -5293,8 +5367,12 @@ export function TeachingPracticeManager({
                             <div className="flex min-w-0 flex-col gap-3">
                               <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-secondary px-3 py-2">
                                 <h3 className="text-sm font-bold text-secondary-foreground">שיעורים פרטניים</h3>
-                                {renderDayNoteControl("BEGINNER_PRIVATE")}
+                                <div className="flex shrink-0 items-center gap-2">
+                                  {renderDayNoteControl("BEGINNER_PRIVATE")}
+                                  {renderSectionCollapseToggle("BEGINNER_PRIVATE")}
+                                </div>
                               </div>
+                              <div id="tp-lesson-section-BEGINNER_PRIVATE" className={isLessonSectionCollapsed("BEGINNER_PRIVATE") ? "hidden" : "flex min-w-0 flex-col gap-3"}>
                               {beginnerPrivateGroups.map(([groupName, groupLessons]) => (
                                 <LessonGroupTable
                                   key={`private-${groupName ?? "none"}`}
@@ -5318,6 +5396,7 @@ export function TeachingPracticeManager({
                                   onInlineUpdateNotes={handleInlineUpdateLessonNotes}
                                 />
                               ))}
+                              </div>
                             </div>
                           )}
 
@@ -5325,8 +5404,12 @@ export function TeachingPracticeManager({
                             <div className="flex min-w-0 flex-col gap-3">
                               <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-secondary px-3 py-2">
                                 <h3 className="text-sm font-bold text-secondary-foreground">שיעורים קבוצתיים</h3>
-                                {renderDayNoteControl("BEGINNER_GROUP")}
+                                <div className="flex shrink-0 items-center gap-2">
+                                  {renderDayNoteControl("BEGINNER_GROUP")}
+                                  {renderSectionCollapseToggle("BEGINNER_GROUP")}
+                                </div>
                               </div>
+                              <div id="tp-lesson-section-BEGINNER_GROUP" className={isLessonSectionCollapsed("BEGINNER_GROUP") ? "hidden" : "flex min-w-0 flex-col gap-3"}>
                               {beginnerGroupGroups.map(([groupName, groupLessons]) => (
                                 <LessonGroupTable
                                   key={`group-${groupName ?? "none"}`}
@@ -5350,6 +5433,7 @@ export function TeachingPracticeManager({
                                   onInlineUpdateNotes={handleInlineUpdateLessonNotes}
                                 />
                               ))}
+                              </div>
                             </div>
                           )}
                         </>

@@ -384,44 +384,88 @@ export async function unpublishComplexRidingPlanAsAdmin(
 }
 
 // ---------- Trainee-scoped read (read-only) ----------
+//
+// RIDING-COMPLEX-PUBLICATION P7C - product decision changed from "trainee
+// sees only their own pair" to "trainee sees the entire published plan for
+// the relevant riding slot, with their own name highlighted client-side by
+// ID." getPublishedComplexRidingAssignmentsForStudentInternal (the P7A
+// own-pair-only shape) is removed entirely rather than kept alongside this -
+// it was never wired into any caller (confirmed: no other file referenced
+// it), so there is nothing depending on the old shape.
 
-export interface ComplexRidingPlanStudentAssignment {
-  ridingSlotId: string;
-  blockStartTime: string;
-  blockEndTime: string;
-  // Stable ordering signal when a trainee has more than one published
-  // assignment (across different blocks, or in principle different riding
-  // slots) - the array returned below is already sorted by this, per
-  // ridingSlotId, so a caller normally never needs to sort again itself.
-  blockSortOrder: number;
+export interface PublishedComplexRidingPlanPairForStudent {
+  // Kept only so the client can compare by stable ID to highlight the
+  // logged-in trainee and to render the second trainee slot only when
+  // present - never used for anything beyond that (no name matching, no
+  // click-through target exposed here). null when the snapshot's trainee FK
+  // has gone null via onDelete: SetNull (see RidingSlotComplexPublicationPair's
+  // own schema comment) - the *Name snapshot fields remain the source of
+  // truth for display regardless.
+  trainee1Id: string | null;
+  trainee1Name: string;
+  trainee2Id: string | null;
+  trainee2Name: string | null;
+  horseName: string | null;
+  sortOrder: number;
+}
+
+export interface PublishedComplexRidingPlanStationForStudent {
   coachName: string | null;
   arena: string | null;
-  partnerName: string | null;
-  horseName: string | null;
+  sortOrder: number;
+  pairs: PublishedComplexRidingPlanPairForStudent[];
+}
+
+export interface PublishedComplexRidingPlanBlockForStudent {
+  startTime: string;
+  endTime: string;
+  sortOrder: number;
+  stations: PublishedComplexRidingPlanStationForStudent[];
+}
+
+// Never includes publication id, sourceVersion, updatedBy* fields, source*Id
+// traceability columns, pair.note, or any warning/status concept - none of
+// that exists anywhere in this return shape, not merely omitted by
+// convention.
+export interface PublishedComplexRidingPlanForStudent {
+  ridingSlotId: string;
+  blocks: PublishedComplexRidingPlanBlockForStudent[];
 }
 
 // Batched by ridingSlotIds - suitable for a single call from
 // getScheduleForStudent covering every riding-linked item in one week/day
 // view, so resolving N riding slots never costs N round trips. Exported (not
-// module-private) so lib/actions/student-schedule.ts can call it directly in
-// a future stage - not yet wired up here, per this stage's scope.
+// module-private) so lib/actions/student-schedule.ts can call it directly -
+// see that file's own integration for how ridingSlotIds is derived (always
+// from that student's own server-resolved, already-published-week schedule
+// items, never a client-supplied list).
 //
-// Privacy: reads ONLY the publication snapshot tables (RidingSlotComplex
-// Publication/Block/Station/Pair) - never the live RidingSlotComplexPlan/
-// Block/Station/Pair tables, so a trainee can never see a draft-in-progress
-// edit, and never sees STALE/CURRENT status (that concept doesn't exist in
-// this return shape at all). Re-reads Student.isActive fresh from the DB by
-// studentId on every call - the client-held session's own copy is never
-// trusted, same convention as getRidingHorsePublicationsForStudent. Returns
-// an empty map uniformly for a nonexistent/inactive student or an empty
-// ridingSlotIds list - never a distinguishable error. The Prisma `where`
-// filters to this exact student's own pairs (trainee1Id OR trainee2Id)
-// before any row is fetched - there is no post-fetch filter step that could
-// leak another trainee's pair, and pair.note is never selected at all.
-export async function getPublishedComplexRidingAssignmentsForStudentInternal(
+// Privacy has two independent layers, since any exported function in a
+// "use server" file is directly callable by a client, not merely through
+// whatever caller happens to import it - this must be safe to call with an
+// attacker-chosen ridingSlotIds array, not just a well-behaved one:
+//   1. Re-reads Student.isActive fresh from the DB by studentId on every
+//      call - the client-held session's own copy is never trusted, same
+//      convention as getRidingHorsePublicationsForStudent.
+//   2. The publication query itself additionally requires each riding slot's
+//      anchor ScheduleItem to belong to a currently PUBLISHED WeeklySchedule
+//      (plan.ridingSlot.scheduleItem.weeklySchedule.isPublished) - the exact
+//      same "a stale/tampered id must never leak unpublished content" defense-
+//      in-depth check getScheduleForStudent's own week.isPublished guard
+//      already performs, applied here so this action can never become a
+//      "fetch any complex plan by riding slot id" backdoor around that check.
+// Reads ONLY the publication snapshot tables for actual plan content
+// (RidingSlotComplexPublication/Block/Station/Pair) - the one touch of
+// RidingSlotComplexPlan/RidingSlot/ScheduleItem/WeeklySchedule below is
+// exclusively to resolve the join-key/publication-gate above, never to read
+// live block/station/pair content or any draft data. Returns an empty map
+// uniformly for a nonexistent/inactive student, an empty ridingSlotIds list,
+// or riding slots with no (or no publicly-visible) publication - never a
+// distinguishable error.
+export async function getPublishedComplexRidingPlansForStudentInternal(
   studentId: string,
   ridingSlotIds: string[]
-): Promise<Map<string, ComplexRidingPlanStudentAssignment[]>> {
+): Promise<Map<string, PublishedComplexRidingPlanForStudent>> {
   if (ridingSlotIds.length === 0) return new Map();
 
   const student = await prisma.student.findUnique({
@@ -430,31 +474,38 @@ export async function getPublishedComplexRidingAssignmentsForStudentInternal(
   });
   if (!student || !student.isActive) return new Map();
 
-  const pairs = await prisma.ridingSlotComplexPublicationPair.findMany({
+  const publications = await prisma.ridingSlotComplexPublication.findMany({
     where: {
-      OR: [{ trainee1Id: studentId }, { trainee2Id: studentId }],
-      publicationStation: {
-        publicationBlock: {
-          publication: { plan: { ridingSlotId: { in: ridingSlotIds } } },
-        },
+      plan: {
+        ridingSlotId: { in: ridingSlotIds },
+        ridingSlot: { scheduleItem: { weeklySchedule: { isPublished: true } } },
       },
     },
     select: {
-      trainee1Id: true,
-      trainee1NameSnapshot: true,
-      trainee2Id: true,
-      trainee2NameSnapshot: true,
-      horseName: true,
-      publicationStation: {
+      plan: { select: { ridingSlotId: true } },
+      blocks: {
+        orderBy: { sortOrder: "asc" },
         select: {
-          instructorNameSnapshot: true,
-          arena: true,
-          publicationBlock: {
+          startTime: true,
+          endTime: true,
+          sortOrder: true,
+          stations: {
+            orderBy: { sortOrder: "asc" },
             select: {
-              startTime: true,
-              endTime: true,
+              instructorNameSnapshot: true,
+              arena: true,
               sortOrder: true,
-              publication: { select: { plan: { select: { ridingSlotId: true } } } },
+              pairs: {
+                orderBy: { sortOrder: "asc" },
+                select: {
+                  trainee1Id: true,
+                  trainee1NameSnapshot: true,
+                  trainee2Id: true,
+                  trainee2NameSnapshot: true,
+                  horseName: true,
+                  sortOrder: true,
+                },
+              },
             },
           },
         },
@@ -462,34 +513,35 @@ export async function getPublishedComplexRidingAssignmentsForStudentInternal(
     },
   });
 
-  const result = new Map<string, ComplexRidingPlanStudentAssignment[]>();
-  for (const pair of pairs) {
-    const block = pair.publicationStation.publicationBlock;
-    const ridingSlotId = block.publication.plan.ridingSlotId;
-    const isTrainee1 = pair.trainee1Id === studentId;
-    const partnerName = isTrainee1 ? pair.trainee2NameSnapshot : pair.trainee1NameSnapshot;
-
-    const assignment: ComplexRidingPlanStudentAssignment = {
-      ridingSlotId,
-      blockStartTime: block.startTime,
-      blockEndTime: block.endTime,
-      blockSortOrder: block.sortOrder,
-      coachName: pair.publicationStation.instructorNameSnapshot,
-      arena: pair.publicationStation.arena,
-      partnerName,
-      horseName: pair.horseName,
-    };
-
-    const existing = result.get(ridingSlotId);
-    if (existing) {
-      existing.push(assignment);
-    } else {
-      result.set(ridingSlotId, [assignment]);
-    }
-  }
-
-  for (const assignments of result.values()) {
-    assignments.sort((a, b) => a.blockSortOrder - b.blockSortOrder);
+  const result = new Map<string, PublishedComplexRidingPlanForStudent>();
+  for (const pub of publications) {
+    result.set(pub.plan.ridingSlotId, {
+      ridingSlotId: pub.plan.ridingSlotId,
+      blocks: pub.blocks.map((block) => ({
+        startTime: block.startTime,
+        endTime: block.endTime,
+        sortOrder: block.sortOrder,
+        stations: block.stations.map((station) => ({
+          coachName: station.instructorNameSnapshot,
+          arena: station.arena,
+          sortOrder: station.sortOrder,
+          pairs: station.pairs.map((pair) => ({
+            trainee1Id: pair.trainee1Id,
+            // Always populated at publish time in practice (see
+            // RidingSlotComplexPublicationPair's own schema comment on why
+            // trainee1NameSnapshot is never actually null) - the `?? ""`
+            // fallback exists only to keep this field's type honest as a
+            // required string without inventing a new placeholder message
+            // for a case that should never occur.
+            trainee1Name: pair.trainee1NameSnapshot ?? "",
+            trainee2Id: pair.trainee2Id,
+            trainee2Name: pair.trainee2NameSnapshot,
+            horseName: pair.horseName,
+            sortOrder: pair.sortOrder,
+          })),
+        })),
+      })),
+    });
   }
 
   return result;

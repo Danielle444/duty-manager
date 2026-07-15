@@ -14,6 +14,10 @@ import {
   formatInstructorNames,
   type AssignmentForMatching,
 } from "@/lib/riding-assignment-matching";
+import {
+  getPublishedComplexRidingPlansForStudentInternal,
+  type PublishedComplexRidingPlanForStudent,
+} from "@/lib/actions/riding-slot-complex-publications";
 
 // Only the fields a student is allowed to see about their riding slot's
 // instructor/field/subgroup - never notes, ratings, sessionHorseName, or
@@ -41,6 +45,16 @@ export interface ScheduleItemView {
   // currently visible to students - the card should render no info box at
   // all in that case, not an empty one.
   ridingInfo: ScheduleItemRidingInfo | null;
+  // RIDING-COMPLEX-PUBLICATION P7C - a separate field/variant from
+  // ridingInfo above, never a replacement for it: simple-mode riding slots
+  // (ridingInfo) and complex-mode riding slots (this field) are mutually
+  // exclusive by construction (a RidingSlot has either a horseList or a
+  // complexPlan, never both - see RidingSlotComplexPlan's own schema
+  // comment), so a given item only ever populates one of the two. Non-null
+  // only for a complex-mode riding slot that currently has a publication;
+  // null for a simple-mode slot, a complex-mode slot with no publication
+  // yet, and every non-riding item - never inferred from the live draft.
+  publishedComplexRidingPlan: PublishedComplexRidingPlanForStudent | null;
 }
 
 type RidingSlotForStudentView = {
@@ -127,6 +141,26 @@ export async function getScheduleForStudent(
     return true;
   });
 
+  // RIDING-COMPLEX-PUBLICATION P7C - collected from the already-filtered
+  // `items` only (never the raw, unfiltered week.items), so a ridingSlotId
+  // this student shouldn't even see in "mine" scope is never sent onward
+  // either. One batched call covers every riding-linked item in this
+  // response, never one call per item - see
+  // getPublishedComplexRidingPlansForStudentInternal's own comment for the
+  // additional server-side "must belong to a published week" check it
+  // performs regardless of what's passed here.
+  const ridingSlotIds = Array.from(
+    new Set(
+      items
+        .map((i) => i.ridingSlotLink?.ridingSlot?.id)
+        .filter((id): id is string => Boolean(id))
+    )
+  );
+  const complexPlansByRidingSlotId = await getPublishedComplexRidingPlansForStudentInternal(
+    studentId,
+    ridingSlotIds
+  );
+
   return {
     hasSchedule: true,
     weekName: week.name,
@@ -151,6 +185,7 @@ export async function getScheduleForStudent(
         instructorName: ridingSlot ? null : i.instructorName,
         location: ridingSlot ? null : i.location,
         ridingInfo,
+        publishedComplexRidingPlan: ridingSlot ? (complexPlansByRidingSlotId.get(ridingSlot.id) ?? null) : null,
       };
     }),
   };

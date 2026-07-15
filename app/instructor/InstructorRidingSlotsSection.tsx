@@ -357,7 +357,7 @@ function ComplexFeedbackTraineeButton({
   if (!row) {
     return (
       <span
-        className="rounded-full bg-muted px-3 py-1.5 text-sm text-muted-foreground"
+        className="max-w-full rounded-full bg-muted px-3 py-2 text-sm break-words text-muted-foreground"
         title="אין רשומת הערכה זמינה עבור חניכ/ה זו ברכיבה זו"
       >
         {name}
@@ -368,9 +368,29 @@ function ComplexFeedbackTraineeButton({
     <button
       type="button"
       onClick={() => onOpen(row)}
-      className="rounded-full border border-border bg-card px-3 py-1.5 text-sm font-medium text-card-foreground hover:bg-muted"
+      className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-border bg-card px-3 py-2 text-sm font-medium text-card-foreground hover:border-primary/40 hover:bg-muted"
     >
-      {name}
+      <span className="break-words">{name}</span>
+      {/* Same existing-feedback indicators StudentCompactRow already shows
+          in "צפייה בחניכים" (identical conditions/classes/title) -
+          duplicated here rather than extracted into a shared component, so
+          that file's own component is not touched at all. Both read
+          directly from `row`, the exact same slotStudents entry both tabs
+          share - no separate fetch, no separate state, and this updates the
+          instant either tab's save patches slotStudents (see
+          handleStudentSaved/handleStudentAutoSaved, unchanged). A failed
+          save never calls either of those, so it never shows here either. */}
+      {row.ratingHalfPoints != null && (
+        <span className="shrink-0 rounded-full bg-success-muted px-1.5 py-0.5 text-[10px] font-medium text-success">
+          {row.ratingHalfPoints / 2}
+        </span>
+      )}
+      {row.note && (
+        <span
+          title="קיימת הערת הדרכת מתקדמים"
+          className="h-1.5 w-1.5 shrink-0 rounded-full bg-secondary-foreground"
+        />
+      )}
     </button>
   );
 }
@@ -416,29 +436,40 @@ function ComplexScheduleFeedbackView({
     return slotStudents.find((s) => s.studentId === traineeId) ?? null;
   }
 
+  // RIDING-COMPLEX-FEEDBACK-VIEW visual-polish pass - three-tier hierarchy
+  // built entirely from tokens already defined in app/globals.css (no
+  // bg-primary-muted - that token does not exist in this project, unlike
+  // what a first guess might suggest; verified against globals.css before
+  // using anything here). Each level is deliberately a step lighter than the
+  // one above it, so the eye reads block -> station -> pair -> trainee
+  // without needing a fourth distinct hue: block = secondary-tinted wash +
+  // solid secondary time badge (the only level using the secondary/blue
+  // family at all, making it read as the "loudest"), station = muted-tinted
+  // (softer, gray-blue), pair = plain card background (lightest, just a
+  // hairline border), trainee = the existing bordered pill button.
   return (
     <div className="flex flex-col gap-3">
       {blocks.map((block) => (
-        <div key={block.id} className="rounded-xl border-2 border-border p-3">
-          <p className="mb-2 text-base font-bold text-card-foreground">
+        <div key={block.id} className="rounded-xl border-2 border-border bg-secondary/30 p-3">
+          <span className="inline-block rounded-lg bg-secondary px-3 py-1.5 text-lg font-bold text-secondary-foreground">
             {block.startTime}–{block.endTime}
-          </p>
+          </span>
           {block.stations.length === 0 ? (
-            <p className="text-sm text-muted-foreground">אין תחנות בטווח זה</p>
+            <p className="mt-2 text-sm text-muted-foreground">אין תחנות בטווח זה</p>
           ) : (
-            <div className="flex flex-col gap-2">
+            <div className="mt-2 flex flex-col gap-2">
               {block.stations.map((station) => (
-                <div key={station.id} className="rounded-lg border border-border bg-card p-2.5">
-                  <p className="mb-1.5 text-sm font-semibold text-card-foreground">
-                    מאמן/ת: {station.instructor?.fullName ?? "לא הוגדר/ה מאמן/ת"} · מגרש:{" "}
-                    {station.arena ?? "לא הוגדר מגרש"}
+                <div key={station.id} className="rounded-lg border border-border bg-muted/60 p-2.5">
+                  <p className="mb-1.5 flex flex-wrap items-baseline gap-x-1.5 text-sm text-card-foreground">
+                    <span className="font-semibold">מאמן/ת: {station.instructor?.fullName ?? "לא הוגדר/ה מאמן/ת"}</span>
+                    <span className="text-muted-foreground">· מגרש: {station.arena ?? "לא הוגדר מגרש"}</span>
                   </p>
                   {station.pairs.length === 0 ? (
                     <p className="text-xs text-muted-foreground">אין זוגות בתחנה זו</p>
                   ) : (
                     <div className="flex flex-col gap-1.5">
                       {station.pairs.map((pair) => (
-                        <div key={pair.id} className="rounded-lg bg-muted/40 p-2">
+                        <div key={pair.id} className="rounded-lg border border-border/50 bg-card p-2">
                           <p className="mb-1 text-xs text-muted-foreground">
                             סוס: {pair.horseName ?? "לא הוגדר סוס"}
                             {pair.note && <> · הערה: {pair.note}</>}

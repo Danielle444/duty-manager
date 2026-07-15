@@ -379,6 +379,24 @@ const ROLE_SLOTS_BY_PRACTICE_TYPE: Record<TeachingPracticeTypeValue, TeachingPra
   BEGINNER_GROUP: ["LEAD_INSTRUCTOR", "SECOND_INSTRUCTOR", "EVALUATOR"],
 };
 
+// Which of ROLE_SLOTS_BY_PRACTICE_TYPE's roles actually taught the lesson,
+// i.e. may receive teaching-practice feedback for it. LUNGE keeps both
+// roles (unchanged - feedback there was never role-restricted). For
+// BEGINNER_PRIVATE, ASSISTANT_INSTRUCTOR ("עוזר מדריך") only assisted, not
+// taught, so is excluded. For BEGINNER_GROUP, LEAD_INSTRUCTOR and
+// SECOND_INSTRUCTOR both co-taught; EVALUATOR only observed, so is
+// excluded. Used both to gate the trainee-name click target below and to
+// scope feedbackEntries/the switcher.
+const FEEDBACK_ELIGIBLE_ROLES_BY_PRACTICE_TYPE: Record<TeachingPracticeTypeValue, TeachingPracticeRoleValue[]> = {
+  LUNGE: ["LEAD_INSTRUCTOR", "ASSISTANT_INSTRUCTOR"],
+  BEGINNER_PRIVATE: ["LEAD_INSTRUCTOR"],
+  BEGINNER_GROUP: ["LEAD_INSTRUCTOR", "SECOND_INSTRUCTOR"],
+};
+
+function isFeedbackEligibleRole(practiceType: TeachingPracticeTypeValue, role: TeachingPracticeRoleValue): boolean {
+  return FEEDBACK_ELIGIBLE_ROLES_BY_PRACTICE_TYPE[practiceType].includes(role);
+}
+
 // Expected number of TeachingPracticeChildAssignment rows per practiceType
 // for this one lesson's edit form - LUNGE/BEGINNER_PRIVATE normally share one
 // child between both trainee rows, BEGINNER_GROUP has one child per trainee.
@@ -859,6 +877,7 @@ export function TeachingPracticeManager({
       const roleSlots = ROLE_SLOTS_BY_PRACTICE_TYPE[lesson.practiceType];
       for (const row of pairLessonParticipantsWithChildren(lesson, roleSlots)) {
         if (!row.participant) continue;
+        if (!isFeedbackEligibleRole(lesson.practiceType, row.participant.role)) continue;
         entries.push({
           participantId: row.participant.participantId,
           traineeName: row.participant.traineeName,
@@ -5731,6 +5750,13 @@ export function TeachingPracticeManager({
           feedbackModalParticipantId !== null
             ? (feedbackEntries.find((e) => e.participantId === feedbackModalParticipantId) ?? null)
             : null;
+        // Context locking: the switcher (and therefore previous/next) may
+        // only offer other participants from the same practiceType this
+        // modal was opened for - never lets switching silently hop from a
+        // LUNGE trainee to a private/group one or vice versa.
+        const switchableEntries = activeFeedbackEntry
+          ? feedbackEntries.filter((e) => e.lesson.practiceType === activeFeedbackEntry.lesson.practiceType)
+          : [];
         return (
           <Modal
             open={activeFeedbackEntry !== null}
@@ -5742,9 +5768,9 @@ export function TeachingPracticeManager({
                 key={activeFeedbackEntry.participantId}
                 ref={feedbackModalRef}
                 entry={activeFeedbackEntry}
-                switchOptions={feedbackEntries.map((e) => ({
+                switchOptions={switchableEntries.map((e) => ({
                   value: e.participantId,
-                  label: `${e.traineeName} · ${PRACTICE_TYPE_LABELS[e.lesson.practiceType]}`,
+                  label: e.traineeName,
                 }))}
                 onSave={handleSaveTeachingPracticeFeedback}
                 onClose={() => setFeedbackModalParticipantId(null)}
@@ -7808,7 +7834,9 @@ function LessonTableRow({
             />
           ) : (
             <td className="px-2 py-2">
-              {row.participant && canEditFeedback ? (
+              {row.participant &&
+              canEditFeedback &&
+              isFeedbackEligibleRole(lesson.practiceType, row.participant.role) ? (
                 <button
                   type="button"
                   onClick={() => onOpenFeedback(row.participant!.participantId)}

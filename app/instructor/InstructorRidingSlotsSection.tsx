@@ -37,6 +37,7 @@ import { getRidingSlotHorseListForInstructor } from "@/lib/actions/riding-slot-h
 import {
   getRidingSlotComplexPlanForInstructor,
   createRidingSlotComplexPlanAsInstructor,
+  type RidingSlotComplexPlanForEditing,
 } from "@/lib/actions/riding-slot-complex";
 // Existing, already-exported, read-only, no-permission-gate action (used
 // today by ContactsSection) - reused here as-is for the complex block
@@ -333,6 +334,140 @@ function StudentCompactRow({
         </div>
       )}
     </button>
+  );
+}
+
+// RIDING-COMPLEX-FEEDBACK-VIEW - one trainee button/card inside the "לפי
+// שיבוץ הרכיבה" hierarchy. `row` is looked up by stable trainee ID from the
+// SAME slotStudents roster StudentCompactRow above already uses (never a
+// second, independently-drifting fetch) - when no matching row exists (a
+// trainee outside this slot's own group/subgroup assignments, or since
+// deactivated), there is no feedback record UI to open for them, so the name
+// renders as plain, non-interactive text instead of a dead/misleading button.
+function ComplexFeedbackTraineeButton({
+  traineeName,
+  row,
+  onOpen,
+}: {
+  traineeName: string | null;
+  row: RidingSlotStudentRow | null;
+  onOpen: (row: RidingSlotStudentRow) => void;
+}) {
+  const name = traineeName ?? "לא נבחר/ה";
+  if (!row) {
+    return (
+      <span
+        className="rounded-full bg-muted px-3 py-1.5 text-sm text-muted-foreground"
+        title="אין רשומת הערכה זמינה עבור חניכ/ה זו ברכיבה זו"
+      >
+        {name}
+      </span>
+    );
+  }
+  return (
+    <button
+      type="button"
+      onClick={() => onOpen(row)}
+      className="rounded-full border border-border bg-card px-3 py-1.5 text-sm font-medium text-card-foreground hover:bg-muted"
+    >
+      {name}
+    </button>
+  );
+}
+
+// RIDING-COMPLEX-FEEDBACK-VIEW - read-only navigation into the SAME riding
+// feedback editor ("צפייה בחניכים"'s StudentEditor), organized by the live
+// complex plan (block -> station -> pair) instead of a flat/grouped trainee
+// list. Never a second feedback model, never a mutation control of its own -
+// see this file's own audit comment above the tab-switcher render for why
+// planning/publication concerns are deliberately absent here. Uses the LIVE
+// plan (getRidingSlotComplexPlanForInstructor), never the trainee publication
+// snapshot - instructors are allowed to see draft/live schedules regardless
+// of publish status, and this view exists to reflect the current working
+// schedule, not what's been published to trainees.
+function ComplexScheduleFeedbackView({
+  status,
+  plan,
+  slotStudents,
+  onOpenTrainee,
+}: {
+  status: "idle" | "loading" | "loaded" | "not-found" | "error";
+  plan: RidingSlotComplexPlanForEditing | null;
+  slotStudents: RidingSlotStudentRow[] | null;
+  onOpenTrainee: (row: RidingSlotStudentRow) => void;
+}) {
+  if (status === "idle" || status === "loading") {
+    return <p className="text-sm text-muted-foreground">טוען...</p>;
+  }
+  if (status === "error") {
+    return <p className="text-sm text-danger">שגיאה בטעינת תכנון הרכיבה. נסו לרענן.</p>;
+  }
+  if (status === "not-found" || !plan) {
+    return <p className="text-sm text-muted-foreground">אין עדיין תכנון רכיבה מורכבת</p>;
+  }
+
+  const blocks = plan.plan.blocks;
+  if (blocks.length === 0) {
+    return <p className="text-sm text-muted-foreground">אין עדיין טווחי שעות בתכנון</p>;
+  }
+
+  function findRow(traineeId: string | null): RidingSlotStudentRow | null {
+    if (!traineeId || !slotStudents) return null;
+    return slotStudents.find((s) => s.studentId === traineeId) ?? null;
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      {blocks.map((block) => (
+        <div key={block.id} className="rounded-xl border-2 border-border p-3">
+          <p className="mb-2 text-base font-bold text-card-foreground">
+            {block.startTime}–{block.endTime}
+          </p>
+          {block.stations.length === 0 ? (
+            <p className="text-sm text-muted-foreground">אין תחנות בטווח זה</p>
+          ) : (
+            <div className="flex flex-col gap-2">
+              {block.stations.map((station) => (
+                <div key={station.id} className="rounded-lg border border-border bg-card p-2.5">
+                  <p className="mb-1.5 text-sm font-semibold text-card-foreground">
+                    מאמן/ת: {station.instructor?.fullName ?? "לא הוגדר/ה מאמן/ת"} · מגרש:{" "}
+                    {station.arena ?? "לא הוגדר מגרש"}
+                  </p>
+                  {station.pairs.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">אין זוגות בתחנה זו</p>
+                  ) : (
+                    <div className="flex flex-col gap-1.5">
+                      {station.pairs.map((pair) => (
+                        <div key={pair.id} className="rounded-lg bg-muted/40 p-2">
+                          <p className="mb-1 text-xs text-muted-foreground">
+                            סוס: {pair.horseName ?? "לא הוגדר סוס"}
+                            {pair.note && <> · הערה: {pair.note}</>}
+                          </p>
+                          <div className="flex flex-wrap gap-1.5">
+                            <ComplexFeedbackTraineeButton
+                              traineeName={pair.trainee1Name}
+                              row={findRow(pair.trainee1Id)}
+                              onOpen={onOpenTrainee}
+                            />
+                            {pair.trainee2Id && (
+                              <ComplexFeedbackTraineeButton
+                                traineeName={pair.trainee2Name}
+                                row={findRow(pair.trainee2Id)}
+                                onOpen={onOpenTrainee}
+                              />
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -833,8 +968,31 @@ export function InstructorRidingSlotsSection({
   // Lets the Modal's X/backdrop-close reach into the currently-mounted
   // StudentEditor and trigger its own save-then-close, without lifting the
   // editable fields up here (which would create a second, easily-desynced
-  // copy of the same draft).
+  // copy of the same draft). Also reused by the new "לפי שיבוץ הרכיבה" tab's
+  // own "חזרה לשיבוץ הרכיבה" control (see the Modal render below) - the same
+  // save-safe departure path, not a second implementation of it.
   const studentEditorRef = useRef<StudentEditorHandle>(null);
+
+  // RIDING-COMPLEX-FEEDBACK-VIEW - which of the two "צפייה בחניכים" tabs is
+  // showing. Only ever meaningful while editingStudent is null (both tabs'
+  // own list/hierarchy content is hidden while a trainee editor is open - see
+  // the Modal render below), and is deliberately NOT reset by opening/closing
+  // a trainee editor, only by openStudents (a genuinely new riding session) -
+  // so returning from an editor lands back on whichever tab the instructor
+  // was actually browsing.
+  const [activeStudentsTab, setActiveStudentsTab] = useState<"list" | "schedule">("list");
+  // Live complex plan for the "לפי שיבוץ הרכיבה" tab - fetched lazily (only
+  // once the instructor actually opens that tab, never eagerly on every
+  // "צפייה בחניכים" open) and cached for the rest of this modal session (see
+  // the load effect below, gated on status === "idle"). Uses the exact same
+  // getRidingSlotComplexPlanForInstructor read RidingComplexPlanEditor
+  // itself uses - no new action, no new DTO.
+  const [complexPlanForFeedback, setComplexPlanForFeedback] = useState<RidingSlotComplexPlanForEditing | null>(
+    null
+  );
+  const [complexPlanForFeedbackStatus, setComplexPlanForFeedbackStatus] = useState<
+    "idle" | "loading" | "loaded" | "not-found" | "error"
+  >("idle");
 
   const [studentSearch, setStudentSearch] = useState("");
   const [historyStudentId, setHistoryStudentId] = useState<string | null>(null);
@@ -1003,6 +1161,13 @@ export function InstructorRidingSlotsSection({
     setSlotStudents(null);
     setStudentsError(null);
     setEditingStudent(null);
+    // RIDING-COMPLEX-FEEDBACK-VIEW - a genuinely new riding session always
+    // starts back on the existing "צפייה בחניכים" tab, and the complex plan
+    // (if any) is re-fetched fresh the next time "לפי שיבוץ הרכיבה" is opened
+    // for THIS session - never carries over a previous session's plan.
+    setActiveStudentsTab("list");
+    setComplexPlanForFeedback(null);
+    setComplexPlanForFeedbackStatus("idle");
     getRidingSlotStudentNotes(activity.ridingSlot.id)
       .then((rows) => setSlotStudents(rows))
       .catch(() => {
@@ -1010,6 +1175,45 @@ export function InstructorRidingSlotsSection({
         setStudentsError("שגיאה בטעינת רשימת החניכים. נסו לרענן.");
       });
   }
+
+  // RIDING-COMPLEX-FEEDBACK-VIEW - fetches the live complex plan exactly
+  // once per riding session, only when the instructor actually switches to
+  // "לפי שיבוץ הרכיבה" (status starts "idle" and this effect is the only
+  // thing that ever leaves that state) - never once per trainee/pair, never
+  // eagerly for every "צפייה בחניכים" open. Re-running only when
+  // activeStudentsTab or the status itself changes back to "idle" (via
+  // openStudents, i.e. a genuinely new session) means switching back and
+  // forth between the two tabs within the SAME session reuses the already-
+  // loaded result instead of refetching. Same cancelled-effect convention
+  // used throughout this app's other load effects (e.g.
+  // RidingComplexPlanEditor's own plan-load effect) - a response landing
+  // after the modal moved to a different riding session is safely discarded.
+  useEffect(() => {
+    if (activeStudentsTab !== "schedule" || complexPlanForFeedbackStatus !== "idle") return;
+    const ridingSlotId = openActivity?.ridingSlot?.id;
+    if (!ridingSlotId) return;
+    let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setComplexPlanForFeedbackStatus("loading");
+    getRidingSlotComplexPlanForInstructor(instructorId, ridingSlotId)
+      .then((result) => {
+        if (cancelled) return;
+        if (!result) {
+          setComplexPlanForFeedback(null);
+          setComplexPlanForFeedbackStatus("not-found");
+          return;
+        }
+        setComplexPlanForFeedback(result);
+        setComplexPlanForFeedbackStatus("loaded");
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setComplexPlanForFeedbackStatus("error");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeStudentsTab, complexPlanForFeedbackStatus, openActivity, instructorId]);
 
   function handleStudentSaved(updated: RidingSlotStudentRow) {
     setSlotStudents((prev) => (prev ? prev.map((s) => (s.studentId === updated.studentId ? updated : s)) : prev));
@@ -1085,6 +1289,14 @@ export function InstructorRidingSlotsSection({
   );
 
   const openAssignments = openActivity?.ridingSlot?.assignments ?? [];
+  // RIDING-COMPLEX-FEEDBACK-VIEW - "לפי שיבוץ הרכיבה" only ever appears for a
+  // riding slot already confirmed complex-mode via the same
+  // modeByRidingSlotId map every activity card's own buttons already read -
+  // never a second, independent mode check.
+  const openRidingSlotId = openActivity?.ridingSlot?.id ?? null;
+  const isComplexModeForOpenActivity = openRidingSlotId
+    ? modeByRidingSlotId[openRidingSlotId] === "complex"
+    : false;
 
   return (
     <div className="flex flex-col gap-4">
@@ -1462,38 +1674,99 @@ export function InstructorRidingSlotsSection({
         <div className="flex max-h-[70vh] flex-col overflow-y-auto ps-1">
           {studentsError && <p className="mb-2 text-sm text-danger">{studentsError}</p>}
           {editingStudent ? (
-            // Keyed by studentId so switching trainees remounts StudentEditor
-            // instead of reusing the same instance - without this, its
-            // useState-initialized fields (note, rating, ...) would keep the
-            // previous trainee's in-progress edits after the row prop changes,
-            // showing/leaking them under the newly-selected trainee.
-            <StudentEditor
-              key={editingStudent.studentId}
-              ref={studentEditorRef}
-              row={editingStudent}
-              ridingSlotId={openActivity!.ridingSlot!.id}
-              instructorId={instructorId}
-              canEdit={canEdit}
-              students={students}
-              switchOptions={(slotStudents ?? [])
-                .filter((s) => isSameSwitchScope(editingStudent, s))
-                .map((s) => ({
-                  studentId: s.studentId,
-                  label: formatTraineeTabLabel(s.studentName),
-                }))}
-              knownLessonTopics={knownLessonTopics}
-              knownHorseNames={knownHorseNames}
-              onBack={() => setEditingStudent(null)}
-              onSaved={handleStudentSaved}
-              onAutoSaved={handleStudentAutoSaved}
-              onSwitchTo={handleSwitchToStudent}
-              onSavedAndSwitchTo={handleStudentSavedAndSwitchTo}
-            />
-          ) : slotStudents === null ? (
-            <p className="text-sm text-muted-foreground">טוען...</p>
-          ) : slotStudents.length === 0 ? (
-            <p className="text-sm text-muted-foreground">אין חניכים רלוונטיים לרכיבה זו</p>
+            <>
+              {/* RIDING-COMPLEX-FEEDBACK-VIEW - only rendered when this
+                  editor was reached via "לפי שיבוץ הרכיבה" (activeStudentsTab
+                  survives opening/closing a trainee editor - see its own
+                  state comment above). Deliberately routes through the SAME
+                  requestClose() the modal's own X/backdrop-close already
+                  uses (save-then-navigate for an editor, direct navigate for
+                  a view-only instructor, stays open with the error shown on
+                  a failed save) - not a second, less-safe "just go back"
+                  implementation. StudentEditor itself and its own existing
+                  "› חזרה לרשימה" (discard, unchanged) are untouched either
+                  way. */}
+              {activeStudentsTab === "schedule" && (
+                <button
+                  type="button"
+                  onClick={() => studentEditorRef.current?.requestClose()}
+                  className="mb-2 self-start text-sm font-medium text-primary underline decoration-dotted"
+                >
+                  › חזרה לשיבוץ הרכיבה
+                </button>
+              )}
+              {/* Keyed by studentId so switching trainees remounts StudentEditor
+                  instead of reusing the same instance - without this, its
+                  useState-initialized fields (note, rating, ...) would keep the
+                  previous trainee's in-progress edits after the row prop changes,
+                  showing/leaking them under the newly-selected trainee. */}
+              <StudentEditor
+                key={editingStudent.studentId}
+                ref={studentEditorRef}
+                row={editingStudent}
+                ridingSlotId={openActivity!.ridingSlot!.id}
+                instructorId={instructorId}
+                canEdit={canEdit}
+                students={students}
+                switchOptions={(slotStudents ?? [])
+                  .filter((s) => isSameSwitchScope(editingStudent, s))
+                  .map((s) => ({
+                    studentId: s.studentId,
+                    label: formatTraineeTabLabel(s.studentName),
+                  }))}
+                knownLessonTopics={knownLessonTopics}
+                knownHorseNames={knownHorseNames}
+                onBack={() => setEditingStudent(null)}
+                onSaved={handleStudentSaved}
+                onAutoSaved={handleStudentAutoSaved}
+                onSwitchTo={handleSwitchToStudent}
+                onSavedAndSwitchTo={handleStudentSavedAndSwitchTo}
+              />
+            </>
           ) : (
+            <>
+              {isComplexModeForOpenActivity && (
+                <div role="tablist" aria-label="תצוגת חניכים" className="mb-3 flex gap-2 text-sm">
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={activeStudentsTab === "list"}
+                    onClick={() => setActiveStudentsTab("list")}
+                    className={`rounded-full px-3 py-1.5 font-medium ${
+                      activeStudentsTab === "list"
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-muted text-muted-foreground"
+                    }`}
+                  >
+                    צפייה בחניכים
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={activeStudentsTab === "schedule"}
+                    onClick={() => setActiveStudentsTab("schedule")}
+                    className={`rounded-full px-3 py-1.5 font-medium ${
+                      activeStudentsTab === "schedule"
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-muted text-muted-foreground"
+                    }`}
+                  >
+                    לפי שיבוץ הרכיבה
+                  </button>
+                </div>
+              )}
+              {activeStudentsTab === "schedule" && isComplexModeForOpenActivity ? (
+                <ComplexScheduleFeedbackView
+                  status={complexPlanForFeedbackStatus}
+                  plan={complexPlanForFeedback}
+                  slotStudents={slotStudents}
+                  onOpenTrainee={(row) => setEditingStudent(row)}
+                />
+              ) : slotStudents === null ? (
+                <p className="text-sm text-muted-foreground">טוען...</p>
+              ) : slotStudents.length === 0 ? (
+                <p className="text-sm text-muted-foreground">אין חניכים רלוונטיים לרכיבה זו</p>
+              ) : (
             <div className="flex max-w-full flex-col gap-3 overflow-x-hidden">
               {sortFlatSectionsForInstructor(
                 flattenGroupSections(groupByGroupAndSubgroup(slotStudents)),
@@ -1544,6 +1817,8 @@ export function InstructorRidingSlotsSection({
                 );
               })}
             </div>
+              )}
+            </>
           )}
         </div>
       </Modal>

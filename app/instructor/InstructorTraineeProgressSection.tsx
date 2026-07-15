@@ -17,6 +17,7 @@ import { RidingProgressFeedbackList } from "@/lib/components/RidingProgressFeedb
 import { LungeProgressFeedbackList } from "@/lib/components/LungeProgressFeedbackSection";
 import type { StudentRidingProgressFeedbackRow } from "@/lib/actions/student-riding-progress-feedback";
 import type { StudentLungeProgressFeedbackRow } from "@/lib/actions/student-lunge-progress-feedback";
+import { getHorseDisplayInfo } from "@/lib/horse-info";
 
 // Stage I2 - instructor/coach-facing "מעקב חניכים" screen for the two
 // newer trainee-progress journals (רכיבה, לונג׳ בלי רוכב). Deliberately
@@ -44,6 +45,14 @@ import type { StudentLungeProgressFeedbackRow } from "@/lib/actions/student-lung
 // app/instructor/page.tsx (active students only, id/fullName/groupName/
 // subgroupNumber) and threaded through InstructorClient.tsx to every other
 // instructor section - no new "list students" action needed for this stage.
+// `studentHorseInfo` is a separate, second read added alongside that same
+// Promise.all in app/instructor/page.tsx (id/hasPrivateHorse/
+// privateHorseName/assignedHorseName only) so the shared StudentOption
+// shape consumed by every other instructor tab stays untouched - this
+// section merges the two by id purely for its own group/horse browsing UI.
+
+const NO_GROUP_LABEL = "ללא קבוצה";
+const NO_SUBGROUP_LABEL = "ללא תת-קבוצה";
 
 interface TraineeProgressStudentOption {
   id: string;
@@ -52,30 +61,133 @@ interface TraineeProgressStudentOption {
   subgroupNumber: number | null;
 }
 
+interface TraineeProgressHorseInfoOption {
+  id: string;
+  hasPrivateHorse: boolean;
+  privateHorseName: string | null;
+  assignedHorseName: string | null;
+}
+
+interface MergedTraineeRow {
+  id: string;
+  fullName: string;
+  groupName: string | null;
+  subgroupNumber: number | null;
+  hasPrivateHorse: boolean;
+  privateHorseName: string | null;
+  assignedHorseName: string | null;
+}
+
+interface SubgroupBucket {
+  subgroupNumber: number | null;
+  trainees: MergedTraineeRow[];
+}
+
+interface GroupSection {
+  groupName: string | null;
+  subgroups: SubgroupBucket[];
+}
+
+// Deterministic ordering: no project-wide group-order constant exists yet
+// (checked - every other group/subgroup UI in the app either hardcodes א/ב
+// options or relies on plain string sort, same as here), so groups sort
+// alphabetically with no-group last, subgroups ascend numerically with
+// no-subgroup last, and trainees sort alphabetically by name within each
+// subgroup.
+function buildGroupSections(rows: MergedTraineeRow[]): GroupSection[] {
+  const sectionByGroup = new Map<string, GroupSection>();
+
+  for (const row of rows) {
+    const groupKey = row.groupName ?? "__none__";
+    let section = sectionByGroup.get(groupKey);
+    if (!section) {
+      section = { groupName: row.groupName, subgroups: [] };
+      sectionByGroup.set(groupKey, section);
+    }
+
+    const subKey = row.subgroupNumber ?? -1;
+    let bucket = section.subgroups.find((b) => (b.subgroupNumber ?? -1) === subKey);
+    if (!bucket) {
+      bucket = { subgroupNumber: row.subgroupNumber, trainees: [] };
+      section.subgroups.push(bucket);
+    }
+    bucket.trainees.push(row);
+  }
+
+  const sections = Array.from(sectionByGroup.values());
+  sections.sort((a, b) => {
+    if (a.groupName === null) return b.groupName === null ? 0 : 1;
+    if (b.groupName === null) return -1;
+    return a.groupName.localeCompare(b.groupName, "he");
+  });
+
+  for (const section of sections) {
+    section.subgroups.sort((a, b) => {
+      if (a.subgroupNumber == null) return b.subgroupNumber == null ? 0 : 1;
+      if (b.subgroupNumber == null) return -1;
+      return a.subgroupNumber - b.subgroupNumber;
+    });
+    for (const bucket of section.subgroups) {
+      bucket.trainees.sort((a, b) => a.fullName.localeCompare(b.fullName, "he"));
+    }
+  }
+
+  return sections;
+}
+
+// Priority: private horse name (when hasPrivateHorse and a name was
+// entered) -> assigned course horse name -> explicit "not set" placeholder.
+// Reuses the same shared badgeType priority as every other horse display in
+// the app (lib/horse-info.ts) so this only diverges in the "none" label
+// text, per this screen's own product spec.
+function horseSecondaryText(row: MergedTraineeRow): string {
+  const info = getHorseDisplayInfo(row);
+  return info.badgeType === "none" ? "לא הוגדר סוס" : info.horseNameDisplay;
+}
+
 export function InstructorTraineeProgressSection({
   instructorId,
   students,
+  studentHorseInfo,
 }: {
   instructorId: string;
   students: TraineeProgressStudentOption[];
+  studentHorseInfo: TraineeProgressHorseInfoOption[];
 }) {
   const [search, setSearch] = useState("");
-  const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [selectedStudentId, setSelectedStudentId] = useState<string | null>(null);
   const [, startTransition] = useTransition();
 
   const [ridingRows, setRidingRows] = useState<StudentRidingProgressFeedbackRow[] | null>(null);
   const [lungeRows, setLungeRows] = useState<StudentLungeProgressFeedbackRow[] | null>(null);
 
-  const filteredStudents = useMemo(() => {
+  const mergedTrainees = useMemo<MergedTraineeRow[]>(() => {
+    const horseById = new Map(studentHorseInfo.map((h) => [h.id, h]));
+    return students.map((s) => {
+      const horse = horseById.get(s.id);
+      return {
+        id: s.id,
+        fullName: s.fullName,
+        groupName: s.groupName,
+        subgroupNumber: s.subgroupNumber,
+        hasPrivateHorse: horse?.hasPrivateHorse ?? false,
+        privateHorseName: horse?.privateHorseName ?? null,
+        assignedHorseName: horse?.assignedHorseName ?? null,
+      };
+    });
+  }, [students, studentHorseInfo]);
+
+  const filteredTrainees = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return students;
-    return students.filter((s) => s.fullName.toLowerCase().includes(q));
-  }, [search, students]);
+    if (!q) return mergedTrainees;
+    return mergedTrainees.filter((t) => t.fullName.toLowerCase().includes(q));
+  }, [search, mergedTrainees]);
+
+  const sections = useMemo(() => buildGroupSections(filteredTrainees), [filteredTrainees]);
 
   const selectedStudent = useMemo(
-    () => students.find((s) => s.id === selectedStudentId) ?? null,
-    [students, selectedStudentId]
+    () => mergedTrainees.find((t) => t.id === selectedStudentId) ?? null,
+    [mergedTrainees, selectedStudentId]
   );
 
   // Own rows only (list...ForInstructor already filters to
@@ -133,7 +245,6 @@ export function InstructorTraineeProgressSection({
 
   function handleSelectStudent(studentId: string) {
     setSelectedStudentId(studentId);
-    setIsSearchOpen(false);
     setSearch("");
   }
 
@@ -147,82 +258,95 @@ export function InstructorTraineeProgressSection({
         </p>
       </div>
 
-      <div className="rounded-xl border border-border bg-card p-4">
-        {selectedStudent && !isSearchOpen && (
-          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-            <p className="text-sm text-card-foreground">
-              חניך/ה נבחר/ת: <span className="font-semibold">{selectedStudent.fullName}</span>
-            </p>
-            <button
-              type="button"
-              onClick={() => setIsSearchOpen(true)}
-              className="text-xs font-medium text-secondary-foreground underline hover:opacity-80"
-            >
-              החלפת חניך/ה
-            </button>
-          </div>
-        )}
-
-        {/* Same compact combobox convention as the admin trainee-progress
-            page - results popup only while the input is focused, onMouseDown
-            on each result to beat the input's own onBlur close so a tap
-            still registers. Touch targets sized for the instructor app
-            (py-3, text-base) rather than the admin page's tighter py-2/
-            text-sm. */}
-        <div className="relative">
-          <label className="flex flex-col gap-1 text-sm">
-            {selectedStudent ? "חיפוש/החלפת חניך/ה" : "חיפוש חניך/ה לפי שם"}
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => {
-                setSearch(e.target.value);
-                setIsSearchOpen(true);
-              }}
-              onFocus={() => setIsSearchOpen(true)}
-              onBlur={() => {
-                setTimeout(() => setIsSearchOpen(false), 150);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Escape") {
-                  setIsSearchOpen(false);
-                  e.currentTarget.blur();
-                }
-              }}
-              placeholder="הקלידו שם..."
-              className="w-full rounded-xl border border-border px-3 py-3 text-base"
-            />
-          </label>
-
-          {isSearchOpen && (
-            <div className="absolute inset-x-0 top-full z-20 mt-1 max-h-72 overflow-y-auto rounded-xl border border-border bg-card p-1 shadow-lg">
-              {filteredStudents.length === 0 ? (
-                <p className="p-2 text-sm text-muted-foreground">לא נמצאו חניכים לפי החיפוש</p>
-              ) : (
-                filteredStudents.map((s) => (
+      {selectedStudent ? (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border bg-card p-4">
+          <p className="text-sm text-card-foreground">
+            חניך/ה נבחר/ת: <span className="font-semibold">{selectedStudent.fullName}</span>
+          </p>
+          <button
+            type="button"
+            onClick={() => setSelectedStudentId(null)}
+            className="text-xs font-medium text-secondary-foreground underline hover:opacity-80"
+          >
+            החלפת חניך/ה
+          </button>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-3">
+          <div className="rounded-xl border border-border bg-card p-4">
+            <label className="flex flex-col gap-1 text-sm">
+              חיפוש חניך/ה לפי שם
+              <div className="relative">
+                <input
+                  type="text"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="הקלידו שם..."
+                  className="w-full rounded-xl border border-border py-3 pl-9 pr-3 text-base"
+                />
+                {search && (
                   <button
-                    key={s.id}
                     type="button"
-                    onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => handleSelectStudent(s.id)}
-                    className={`flex w-full flex-wrap items-center justify-between gap-2 rounded-lg px-3 py-3 text-right text-sm transition-colors ${
-                      selectedStudentId === s.id
-                        ? "bg-primary text-primary-foreground"
-                        : "text-card-foreground hover:bg-muted"
-                    }`}
+                    onClick={() => setSearch("")}
+                    aria-label="ניקוי חיפוש"
+                    className="absolute inset-y-0 left-2 flex items-center px-1 text-muted-foreground hover:text-card-foreground"
                   >
-                    <span>
-                      {s.fullName}
-                      {s.groupName ? ` · קבוצה ${s.groupName}` : ""}
-                      {s.subgroupNumber != null ? ` · תת-קבוצה ${s.subgroupNumber}` : ""}
-                    </span>
+                    ✕
                   </button>
-                ))
-              )}
+                )}
+              </div>
+            </label>
+          </div>
+
+          {mergedTrainees.length === 0 ? (
+            <p className="rounded-xl border border-border bg-card p-5 text-center text-sm text-muted-foreground">
+              לא נמצאו חניכים
+            </p>
+          ) : sections.length === 0 ? (
+            <p className="rounded-xl border border-border bg-card p-5 text-center text-sm text-muted-foreground">
+              לא נמצאו חניכים התואמים לחיפוש
+            </p>
+          ) : (
+            <div className="flex flex-col gap-3">
+              {sections.map((section) => (
+                <div
+                  key={section.groupName ?? "__none__"}
+                  className="rounded-2xl border-2 border-border bg-muted p-3"
+                >
+                  <h3 className="mb-2 px-1 text-base font-bold text-card-foreground">
+                    {section.groupName ? `קבוצה ${section.groupName}` : NO_GROUP_LABEL}
+                  </h3>
+                  <div className="flex flex-col gap-2">
+                    {section.subgroups.map((sub) => (
+                      <div
+                        key={sub.subgroupNumber ?? "__none__"}
+                        className="rounded-xl border border-border bg-card p-2"
+                      >
+                        <p className="mb-1.5 px-1 text-xs font-semibold text-muted-foreground">
+                          {sub.subgroupNumber != null ? `תת-קבוצה ${sub.subgroupNumber}` : NO_SUBGROUP_LABEL}
+                        </p>
+                        <div className="flex flex-col gap-1.5">
+                          {sub.trainees.map((row) => (
+                            <button
+                              key={row.id}
+                              type="button"
+                              onClick={() => handleSelectStudent(row.id)}
+                              className="flex w-full flex-col items-start gap-0.5 rounded-lg px-3 py-3 text-right transition-colors hover:bg-muted"
+                            >
+                              <span className="text-base font-bold text-card-foreground">{row.fullName}</span>
+                              <span className="text-sm text-muted-foreground">{horseSecondaryText(row)}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </div>
-      </div>
+      )}
 
       {selectedStudent && (
         <>

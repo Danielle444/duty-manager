@@ -4,7 +4,7 @@ import { InstructorClient } from "@/app/instructor/InstructorClient";
 export const dynamic = "force-dynamic";
 
 export default async function InstructorPage() {
-  const [students, dutyTypes, instructors] = await Promise.all([
+  const [students, dutyTypes, instructors, studentHorseInfo] = await Promise.all([
     prisma.student.findMany({
       where: { isActive: true },
       orderBy: { fullName: "asc" },
@@ -19,6 +19,14 @@ export default async function InstructorPage() {
       where: { isActive: true },
       orderBy: { fullName: "asc" },
       select: { id: true, fullName: true },
+    }),
+    // Separate from the `students` select above (kept as-is - it's threaded
+    // through InstructorClient to every instructor tab) so widening it for
+    // מעקב חניכים's horse display doesn't touch the shared StudentOption
+    // shape. Only InstructorTraineeProgressSection consumes this.
+    prisma.student.findMany({
+      where: { isActive: true },
+      select: { id: true, hasPrivateHorse: true, privateHorseName: true, assignedHorseName: true },
     }),
   ]);
 
@@ -43,7 +51,12 @@ export default async function InstructorPage() {
     // appear to float/detach from the true bottom edge as the bar
     // animates in/out. 100dvh tracks the real visible viewport instead.
     <div className="mx-auto flex min-h-dvh w-full max-w-lg flex-col bg-background sm:max-w-[640px] md:max-w-[768px] lg:max-w-[1024px] xl:max-w-[1280px]">
-      <InstructorClient students={students} dutyTypes={dutyTypes} instructors={instructors} />
+      <InstructorClient
+        students={students}
+        dutyTypes={dutyTypes}
+        instructors={instructors}
+        studentHorseInfo={studentHorseInfo}
+      />
     </div>
   );
 }

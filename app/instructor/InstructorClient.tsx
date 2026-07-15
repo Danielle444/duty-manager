@@ -130,6 +130,13 @@ interface StudentOption {
   subgroupNumber: number | null;
 }
 
+interface StudentHorseInfoOption {
+  id: string;
+  hasPrivateHorse: boolean;
+  privateHorseName: string | null;
+  assignedHorseName: string | null;
+}
+
 interface DutyTypeOption {
   id: string;
   name: string;
@@ -144,10 +151,12 @@ export function InstructorClient({
   students,
   dutyTypes,
   instructors,
+  studentHorseInfo,
 }: {
   students: StudentOption[];
   dutyTypes: DutyTypeOption[];
   instructors: InstructorOption[];
+  studentHorseInfo: StudentHorseInfoOption[];
 }) {
   const [session, setSession] = useState<StoredSession | null>(null);
   const [hydrated, setHydrated] = useState(false);
@@ -741,7 +750,11 @@ export function InstructorClient({
         )}
 
         {activeTab === "traineeProgress" && session.canEditRidingNotes && (
-          <InstructorTraineeProgressSection instructorId={session.id} students={students} />
+          <InstructorTraineeProgressSection
+            instructorId={session.id}
+            students={students}
+            studentHorseInfo={studentHorseInfo}
+          />
         )}
 
         {activeTab === "help" && <HelpContent role="instructor" />}

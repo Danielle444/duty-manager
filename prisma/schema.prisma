@@ -48,6 +48,13 @@ model Student {
   ridingSlotHorseListItems        RidingSlotHorseListItem[]
   ridingSlotHorsePublicationItems RidingSlotHorsePublicationItem[]
 
+  // RIDING-PAIRS P1 - complex riding session planning, schema-only in this
+  // stage. Two distinct relations to RidingSlotComplexPair (one per trainee
+  // slot), each needs its own explicit name/array field - see
+  // RidingSlotComplexPair.trainee1/trainee2.
+  ridingSlotComplexPairsAsTrainee1 RidingSlotComplexPair[] @relation("ComplexPairTrainee1")
+  ridingSlotComplexPairsAsTrainee2 RidingSlotComplexPair[] @relation("ComplexPairTrainee2")
+
   @@map("students")
 }
 
@@ -327,6 +334,14 @@ model Instructor {
   ridingSlotHorseListUpdates        RidingSlotHorseList[]        @relation("HorseListUpdatedByInstructor")
   ridingSlotHorsePublicationUpdates RidingSlotHorsePublication[] @relation("HorsePublicationUpdatedByInstructor")
 
+  // RIDING-PAIRS P1 - complex riding session planning (shared time blocks +
+  // trainee pairs), schema-only in this stage - no server action writes to
+  // these yet. Back-relation for RidingSlotComplexPlan.updatedByInstructor,
+  // plus this instructor's responsible-coach rows across complex blocks (same
+  // join-table shape as ridingSlotAssignmentInstructors above).
+  ridingSlotComplexPlanUpdates     RidingSlotComplexPlan[]            @relation("ComplexPlanUpdatedByInstructor")
+  ridingSlotComplexBlockInstructor RidingSlotComplexBlockInstructor[]
+
   @@map("instructors")
 }
 
@@ -432,6 +447,7 @@ model RidingSlot {
   notes         RidingLessonNote[]
   scheduleItems RidingSlotScheduleItem[]
   horseList     RidingSlotHorseList?
+  complexPlan   RidingSlotComplexPlan?
 
   @@map("riding_slots")
 }
@@ -682,6 +698,133 @@ model RidingSlotHorsePublicationItem {
 
   @@index([publicationId])
   @@map("riding_slot_horse_publication_items")
+}
+
+// RIDING-PAIRS P1 - complex riding session planning (shared time blocks with
+// multiple trainee pairs), for RidingSlots that need paired-trainee planning
+// instead of the simple horse-preparation list above. Presence of a row =
+// this RidingSlot runs in "complex" mode - same "presence of row = feature
+// active for this parent" convention as RidingSlot itself (attached to
+// ScheduleItem) and RidingSlotHorseList (attached to RidingSlot) above, so no
+// boolean flag is added to RidingSlot and the simple-list flow
+// (RidingSlotHorseList/RidingSlotHorseListItem) is completely untouched by
+// this model. Mutual exclusivity between simple and complex mode for one
+// RidingSlot is enforced by a later stage's server actions, not by this
+// schema. Schema-only in this stage - no server actions or UI read/write
+// this model yet.
+model RidingSlotComplexPlan {
+  id           String   @id @default(cuid())
+  ridingSlotId String   @unique
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Same dual-actor-identity convention as RidingSlotHorseList
+  // (updatedByInstructorId/updatedByAdminEmail/updatedByAdminName/updatedByName)
+  // - admin and instructor use two different auth systems in this app, and
+  // admin identity is never a stable FK-able relation elsewhere in this
+  // schema.
+  updatedByInstructorId String?
+  updatedByAdminEmail   String?
+  updatedByAdminName    String?
+  updatedByName         String
+
+  ridingSlot          RidingSlot               @relation(fields: [ridingSlotId], references: [id], onDelete: Cascade)
+  updatedByInstructor Instructor?              @relation("ComplexPlanUpdatedByInstructor", fields: [updatedByInstructorId], references: [id], onDelete: SetNull)
+  blocks              RidingSlotComplexBlock[]
+
+  @@map("riding_slot_complex_plans")
+}
+
+// One shared time block within a complex plan. start/end time, arena, and
+// the responsible coach(es) below are all shared by every trainee pair
+// inside this block (product requirement) - they live here once rather than
+// being repeated per pair. arena is free text (String?), matching
+// RidingSlotAssignment.arena's existing convention - no Arena model exists
+// in this schema. startTime/endTime are required "HH:MM" strings, matching
+// ScheduleItem/RidingSlotAssignment's own time-string convention elsewhere.
+// sortOrder is a plain explicit display order, set/maintained by a later
+// stage's server actions - never inferred from startTime.
+model RidingSlotComplexBlock {
+  id        String   @id @default(cuid())
+  planId    String
+  startTime String
+  endTime   String
+  arena     String?
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  plan        RidingSlotComplexPlan              @relation(fields: [planId], references: [id], onDelete: Cascade)
+  instructors RidingSlotComplexBlockInstructor[]
+  pairs       RidingSlotComplexPair[]
+
+  @@index([planId, sortOrder])
+  @@map("riding_slot_complex_blocks")
+}
+
+// Responsible coach(es) for one block - a block may have multiple
+// instructors. Same join-table multi-instructor pattern as
+// RidingSlotAssignmentInstructor (which plays the identical role for the
+// simple/legacy RidingSlotAssignment split), for consistency with the rest
+// of this app rather than a single-FK column. Coach is optional at the
+// block level (see RidingSlotComplexBlock.arena comment on the same
+// draft-friendly convention) - a block may have zero rows here.
+model RidingSlotComplexBlockInstructor {
+  id           String   @id @default(cuid())
+  blockId      String
+  instructorId String
+  createdAt    DateTime @default(now())
+
+  block      RidingSlotComplexBlock @relation(fields: [blockId], references: [id], onDelete: Cascade)
+  instructor Instructor             @relation(fields: [instructorId], references: [id], onDelete: Cascade)
+
+  @@unique([blockId, instructorId])
+  @@map("riding_slot_complex_block_instructors")
+}
+
+// One trainee pair within a block. trainee1Id/trainee2Id/horseName are all
+// nullable by deliberate design (not merely "not yet enforced") - a pair may
+// be saved as an in-progress draft (e.g. trainees picked before a horse is
+// assigned, or only one trainee picked so far). A later stage's server
+// actions are expected to require at least trainee1Id for a row to be worth
+// persisting at all, and to warn (never hard-block) on a missing trainee2Id
+// or horseName - see the RIDING-PAIRS audit report for the full save-time
+// validation rules; none of that completeness logic belongs in this schema.
+//
+// Both trainee FKs use onDelete: SetNull, deliberately symmetric: a later
+// Student deletion (already rare in this schema - Student.isActive is the
+// standing soft-delete convention, not hard deletion) must never destroy
+// this pair row as a side effect - it should only clear whichever trainee
+// slot referenced that student, preserving the other trainee, the horse, the
+// note, and this row's place in sortOrder. A Cascade on either trainee FK
+// was deliberately rejected: it would let deleting the OTHER slot's Student
+// silently destroy data that has nothing to do with the deleted trainee.
+//
+// horseName is free text (nullable String), same natural-key convention as
+// every other horse reference in this schema (RidingSlotHorseListItem.horseName,
+// HorseFeedingMeal.horseName, RidingLessonNote.sessionHorseName) - no Horse
+// model exists. No trainee-name/horse-name snapshot fields here on purpose:
+// this is a live/editable planning table (resolved live via the student
+// relation, same as RidingSlotHorseListItem.studentId), not an immutable
+// publication/history table like RidingSlotHorsePublicationItem - snapshotting
+// belongs to a future publication stage, if one is ever built, not here.
+model RidingSlotComplexPair {
+  id         String   @id @default(cuid())
+  blockId    String
+  trainee1Id String?
+  trainee2Id String?
+  horseName  String?
+  note       String?
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  block    RidingSlotComplexBlock @relation(fields: [blockId], references: [id], onDelete: Cascade)
+  trainee1 Student?               @relation("ComplexPairTrainee1", fields: [trainee1Id], references: [id], onDelete: SetNull)
+  trainee2 Student?               @relation("ComplexPairTrainee2", fields: [trainee2Id], references: [id], onDelete: SetNull)
+
+  @@index([blockId, sortOrder])
+  @@map("riding_slot_complex_pairs")
 }
 
 // Manager-entered riding progress feedback, separate from RidingLessonNote,

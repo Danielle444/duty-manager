@@ -15,7 +15,7 @@ export function RidingHistoryList({ rows }: { rows: RidingHistoryRow[] }) {
   if (rows.length === 0) {
     return (
       <p className="rounded-xl border border-border bg-card p-4 text-sm text-muted-foreground">
-        עדיין לא הוזנו הערות הדרכת מתקדמים לחניך/ה זה/זו.
+        אין עדיין משובי רכיבה להצגה
       </p>
     );
   }

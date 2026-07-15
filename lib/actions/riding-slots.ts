@@ -1078,6 +1078,29 @@ export interface StudentRidingHistoryResult {
   rows: RidingHistoryRow[];
 }
 
+// A RidingLessonNote row is created (empty) the moment an instructor opens
+// the editor for a student in a riding slot, so a plain "row exists" check
+// isn't enough to know a trainee's history/progress view has anything worth
+// showing - only user-entered content does. Kept in sync with the fields
+// upsertRidingLessonNoteAsInstructor actually accepts; trims defensively so
+// legacy/whitespace-only values (predating that action's own trimming)
+// don't count as meaningful either.
+function hasMeaningfulRidingLessonNote(n: {
+  note: string | null;
+  ratingHalfPoints: number | null;
+  lessonTopic: string | null;
+  sessionHorseName: string | null;
+  taughtStudents: unknown[];
+}): boolean {
+  return (
+    n.ratingHalfPoints != null ||
+    Boolean(n.note?.trim()) ||
+    Boolean(n.lessonTopic?.trim()) ||
+    Boolean(n.sessionHorseName?.trim()) ||
+    n.taughtStudents.length > 0
+  );
+}
+
 // Read-only, reused by both the admin and instructor history views (neither
 // creates or mutates anything). One row per RidingLessonNote the student
 // has - never per ScheduleItem, so a merged/multi-row riding slot still
@@ -1091,7 +1114,20 @@ async function buildStudentRidingHistory(studentId: string): Promise<StudentRidi
   if (!student) return null;
 
   const notes = await prisma.ridingLessonNote.findMany({
-    where: { studentId },
+    where: {
+      studentId,
+      // DB-level pre-filter so empty notes (created just by opening the
+      // editor) aren't transferred at all - hasMeaningfulRidingLessonNote
+      // below still re-checks with trimming, since this OR can't express
+      // "non-blank after trim" for the text fields.
+      OR: [
+        { ratingHalfPoints: { not: null } },
+        { note: { not: null } },
+        { lessonTopic: { not: null } },
+        { sessionHorseName: { not: null } },
+        { taughtStudents: { some: {} } },
+      ],
+    },
     include: {
       taughtStudents: { include: { student: { select: { id: true, fullName: true } } } },
       ridingSlot: {
@@ -1106,6 +1142,7 @@ async function buildStudentRidingHistory(studentId: string): Promise<StudentRidi
 
   const rows: RidingHistoryRow[] = [];
   for (const n of notes) {
+    if (!hasMeaningfulRidingLessonNote(n)) continue;
     const scheduleItems = n.ridingSlot.scheduleItems.map((link) => link.scheduleItem);
     if (scheduleItems.length === 0) continue;
     scheduleItems.sort((a, b) => a.startTime.localeCompare(b.startTime));

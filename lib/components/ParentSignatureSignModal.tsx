@@ -1,15 +1,36 @@
 "use client";
 
-import { useRef, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { Modal } from "@/lib/components/Modal";
 import { Button } from "@/lib/components/Button";
 import { SignatureCanvas, type SignatureCanvasHandle } from "@/lib/components/SignatureCanvas";
 import { getFormContent, CURRENT_FORM_VERSION, FORM_TYPE_SHORT_LABEL } from "@/lib/parent-signatures/form-definitions";
+import { CURRENT_TEACHING_PRACTICE_COURSE_CYCLE } from "@/lib/parent-signatures/course-cycle";
 import type { ParentSignatureFormTypeValue } from "@/lib/parent-signatures/types";
+import {
+  buildDraftKey,
+  clearDraft,
+  loadDraft,
+  saveDraft,
+  type ParentSignatureDraftFields,
+} from "@/lib/parent-signatures/draft-storage";
 import type {
   ParentSignatureSubmitInput,
   ParentSignatureSubmitResult,
 } from "@/lib/actions/parent-signatures";
+
+const DRAFT_SAVE_DEBOUNCE_MS = 1000;
+
+function isEmptyDraft(fields: ParentSignatureDraftFields): boolean {
+  return (
+    !fields.address &&
+    !fields.parentEmail &&
+    !fields.medicalNotes &&
+    fields.photoConsent === null &&
+    !fields.signerName &&
+    !fields.signerRole
+  );
+}
 
 interface ChildPrefill {
   childId: string;
@@ -54,7 +75,86 @@ export function ParentSignatureSignModal({
   const [isPending, startTransition] = useTransition();
   const signatureRef = useRef<SignatureCanvasHandle>(null);
 
-  function resetAndClose() {
+  // Draft key is scoped to courseCycle+childId+formType+formVersion so a
+  // draft is never offered for the wrong child/form/cycle - see
+  // draft-storage.ts. formVersion comes from CURRENT_FORM_VERSION (not
+  // content.formVersion) so the key is still well-defined even before the
+  // `!content` guard below.
+  const draftKey = buildDraftKey({
+    courseCycle: CURRENT_TEACHING_PRACTICE_COURSE_CYCLE,
+    childId: child.childId,
+    formType,
+    formVersion: CURRENT_FORM_VERSION[formType],
+  });
+
+  const [pendingDraft, setPendingDraft] = useState<ParentSignatureDraftFields | null>(null);
+  const [draftStatus, setDraftStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const previousDraftKeyRef = useRef<string | null>(null);
+  // Consumed by the very next autosave-effect run after a target
+  // change/restore/discard so that programmatic field resets never
+  // themselves trigger a save (only actual user edits do).
+  const skipNextAutosaveRef = useRef(true);
+
+  // Fires on first open and whenever the signing target (child/form/version/
+  // cycle) changes while the modal stays mounted - clears in-memory fields
+  // first (never carrying a previous target's values into the new one),
+  // then checks only the new target's own draft key and offers it via the
+  // recovery banner rather than silently restoring it.
+  useEffect(() => {
+    if (!open) return;
+    if (previousDraftKeyRef.current === draftKey) return;
+    previousDraftKeyRef.current = draftKey;
+    skipNextAutosaveRef.current = true;
+    setAddress("");
+    setParentEmail("");
+    setMedicalNotes("");
+    setPhotoConsent(null);
+    setSignerName("");
+    setSignerRole("");
+    setAcknowledged(false);
+    setHasSignature(false);
+    signatureRef.current?.clear();
+    setError(null);
+    setDraftStatus("idle");
+    setPendingDraft(loadDraft(draftKey));
+  }, [open, draftKey]);
+
+  // Debounced autosave of the non-signature fields only. Paused while a
+  // recovery banner is showing (pendingDraft !== null) so an empty/partial
+  // in-memory state can never overwrite an unresolved saved draft.
+  useEffect(() => {
+    if (!open || pendingDraft !== null) return;
+    if (skipNextAutosaveRef.current) {
+      skipNextAutosaveRef.current = false;
+      return;
+    }
+    setDraftStatus("saving");
+    const timer = setTimeout(() => {
+      const ok = saveDraft(draftKey, { address, parentEmail, medicalNotes, photoConsent, signerName, signerRole });
+      setDraftStatus(ok ? "saved" : "error");
+    }, DRAFT_SAVE_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [address, parentEmail, medicalNotes, photoConsent, signerName, signerRole, open, pendingDraft, draftKey]);
+
+  function handleRestoreDraft() {
+    if (!pendingDraft) return;
+    setAddress(pendingDraft.address);
+    setParentEmail(pendingDraft.parentEmail);
+    setMedicalNotes(pendingDraft.medicalNotes);
+    setPhotoConsent(pendingDraft.photoConsent);
+    setSignerName(pendingDraft.signerName);
+    setSignerRole(pendingDraft.signerRole);
+    // Signature and acknowledgment are never restored - the parent must
+    // draw the signature and re-check the box again before this can submit.
+    setPendingDraft(null);
+  }
+
+  function handleDiscardDraft() {
+    clearDraft(draftKey);
+    setPendingDraft(null);
+  }
+
+  function resetFieldState() {
     setAddress("");
     setParentEmail("");
     setMedicalNotes("");
@@ -64,7 +164,30 @@ export function ParentSignatureSignModal({
     setAcknowledged(false);
     setHasSignature(false);
     setError(null);
+    setPendingDraft(null);
+    setDraftStatus("idle");
     signatureRef.current?.clear();
+  }
+
+  // Cancel / backdrop / X close - never clears the saved draft. Flushes the
+  // latest safe (non-signature) field values first so a debounce timer that
+  // hasn't fired yet isn't simply lost when its effect is torn down. Never
+  // overwrites a draft the parent hasn't yet chosen to restore or discard.
+  function closeWithoutSubmitting() {
+    if (pendingDraft === null) {
+      const fields: ParentSignatureDraftFields = {
+        address,
+        parentEmail,
+        medicalNotes,
+        photoConsent,
+        signerName,
+        signerRole,
+      };
+      if (!isEmptyDraft(fields)) {
+        saveDraft(draftKey, fields);
+      }
+    }
+    resetFieldState();
     onClose();
   }
 
@@ -102,14 +225,30 @@ export function ParentSignatureSignModal({
         setError(result.error ?? "אירעה שגיאה בשמירת החתימה");
         return;
       }
-      resetAndClose();
+      clearDraft(draftKey);
+      resetFieldState();
+      onClose();
       onSigned();
     });
   }
 
   return (
-    <Modal open={open} title={FORM_TYPE_SHORT_LABEL[formType]} onClose={resetAndClose} size="wide">
+    <Modal open={open} title={FORM_TYPE_SHORT_LABEL[formType]} onClose={closeWithoutSubmitting} size="wide">
       <div className="flex max-h-[75vh] flex-col gap-4 overflow-y-auto pr-1 text-sm">
+        {pendingDraft && (
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-warning bg-warning-muted p-3">
+            <span className="font-semibold text-warning">נמצאה טיוטה שלא הושלמה</span>
+            <div className="flex gap-2">
+              <Button type="button" variant="secondary" onClick={handleDiscardDraft}>
+                מחיקת הטיוטה / התחלה מחדש
+              </Button>
+              <Button type="button" onClick={handleRestoreDraft}>
+                שחזור הטיוטה
+              </Button>
+            </div>
+          </div>
+        )}
+
         <div className="rounded-xl border border-border bg-muted/40 p-3">
           <p className="font-bold text-card-foreground">
             {child.childName}
@@ -204,6 +343,17 @@ export function ParentSignatureSignModal({
           </label>
         </div>
 
+        {draftStatus !== "idle" && (
+          <p
+            className={`text-xs ${draftStatus === "error" ? "text-danger" : "text-muted-foreground"}`}
+            aria-live="polite"
+          >
+            {draftStatus === "saving" && "שומר..."}
+            {draftStatus === "saved" && "נשמר אוטומטית"}
+            {draftStatus === "error" && "לא ניתן לשמור טיוטה"}
+          </p>
+        )}
+
         {content.consentStatements.map((statement) =>
           statement.responseType === "YES_NO" ? (
             <div key={statement.key} className="rounded-xl border border-border p-3">
@@ -269,7 +419,7 @@ export function ParentSignatureSignModal({
         {error && <p className="text-danger">{error}</p>}
 
         <div className="flex justify-end gap-2 border-t border-border pt-3">
-          <Button type="button" variant="secondary" onClick={resetAndClose}>
+          <Button type="button" variant="secondary" onClick={closeWithoutSubmitting}>
             ביטול
           </Button>
           <Button type="button" onClick={handleSubmit} disabled={!canSubmit}>

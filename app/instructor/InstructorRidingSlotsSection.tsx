@@ -993,6 +993,19 @@ export function InstructorRidingSlotsSection({
   const [complexPlanForFeedbackStatus, setComplexPlanForFeedbackStatus] = useState<
     "idle" | "loading" | "loaded" | "not-found" | "error"
   >("idle");
+  // Tracks the ridingSlotId a fetch has already been started for (or null,
+  // before the tab has ever been opened this session) - the load effect
+  // below gates on THIS ref, never on complexPlanForFeedbackStatus itself.
+  // Gating on the status state was the original bug: the effect set that
+  // same state to "loading" inside its own body, which is a dependency of
+  // the same effect, so React reran the effect immediately, tore down the
+  // first run's `cancelled` closure before the fetch resolved, and the
+  // rerun's own idle-only guard then refused to start a replacement fetch -
+  // the in-flight request's result arrived but was permanently discarded by
+  // its own now-stale `cancelled` flag. A ref sidesteps this entirely: it is
+  // never a dependency, so setting it (or the status state) can never
+  // retrigger this same effect.
+  const complexPlanFetchStartedForRef = useRef<string | null>(null);
 
   const [studentSearch, setStudentSearch] = useState("");
   const [historyStudentId, setHistoryStudentId] = useState<string | null>(null);
@@ -1168,6 +1181,7 @@ export function InstructorRidingSlotsSection({
     setActiveStudentsTab("list");
     setComplexPlanForFeedback(null);
     setComplexPlanForFeedbackStatus("idle");
+    complexPlanFetchStartedForRef.current = null;
     getRidingSlotStudentNotes(activity.ridingSlot.id)
       .then((rows) => setSlotStudents(rows))
       .catch(() => {
@@ -1178,22 +1192,26 @@ export function InstructorRidingSlotsSection({
 
   // RIDING-COMPLEX-FEEDBACK-VIEW - fetches the live complex plan exactly
   // once per riding session, only when the instructor actually switches to
-  // "לפי שיבוץ הרכיבה" (status starts "idle" and this effect is the only
-  // thing that ever leaves that state) - never once per trainee/pair, never
-  // eagerly for every "צפייה בחניכים" open. Re-running only when
-  // activeStudentsTab or the status itself changes back to "idle" (via
-  // openStudents, i.e. a genuinely new session) means switching back and
-  // forth between the two tabs within the SAME session reuses the already-
-  // loaded result instead of refetching. Same cancelled-effect convention
-  // used throughout this app's other load effects (e.g.
-  // RidingComplexPlanEditor's own plan-load effect) - a response landing
-  // after the modal moved to a different riding session is safely discarded.
+  // "לפי שיבוץ הרכיבה" - never once per trainee/pair, never eagerly for every
+  // "צפייה בחניכים" open. Gated on complexPlanFetchStartedForRef (see that
+  // ref's own comment for why this must be a ref, not the status state
+  // itself) rather than complexPlanForFeedbackStatus, and that ref is
+  // deliberately NOT a dependency either - only activeStudentsTab/
+  // openActivity/instructorId are, so setting state inside this effect can
+  // never retrigger it. Switching back and forth between the two tabs within
+  // the SAME session reuses the already-loaded (or already-failed) result
+  // instead of refetching - only openStudents (a genuinely new session)
+  // resets the ref. Same cancelled-effect convention used throughout this
+  // app's other load effects (e.g. RidingComplexPlanEditor's own plan-load
+  // effect) - a response landing after the modal moved to a different riding
+  // session is safely discarded.
   useEffect(() => {
-    if (activeStudentsTab !== "schedule" || complexPlanForFeedbackStatus !== "idle") return;
+    if (activeStudentsTab !== "schedule") return;
     const ridingSlotId = openActivity?.ridingSlot?.id;
     if (!ridingSlotId) return;
+    if (complexPlanFetchStartedForRef.current === ridingSlotId) return;
+    complexPlanFetchStartedForRef.current = ridingSlotId;
     let cancelled = false;
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setComplexPlanForFeedbackStatus("loading");
     getRidingSlotComplexPlanForInstructor(instructorId, ridingSlotId)
       .then((result) => {
@@ -1213,7 +1231,11 @@ export function InstructorRidingSlotsSection({
     return () => {
       cancelled = true;
     };
-  }, [activeStudentsTab, complexPlanForFeedbackStatus, openActivity, instructorId]);
+    // complexPlanFetchStartedForRef is a ref (never a dependency by React's
+    // own rules) and complexPlanForFeedbackStatus is only ever written here,
+    // never read - including it as a dependency was the original bug (see
+    // this effect's own comment above).
+  }, [activeStudentsTab, openActivity, instructorId]);
 
   function handleStudentSaved(updated: RidingSlotStudentRow) {
     setSlotStudents((prev) => (prev ? prev.map((s) => (s.studentId === updated.studentId ? updated : s)) : prev));

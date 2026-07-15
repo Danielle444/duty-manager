@@ -40,6 +40,7 @@ model Student {
   ridingProgressFeedback       StudentRidingProgressFeedback[]
   lungeProgressFeedback        StudentLungeProgressFeedback[]
   presentationProgressFeedback StudentPresentationProgressFeedback[]
+  generalNotes                 StudentGeneralNote[]
 
   teachingPracticeTrackMemberships TeachingPracticeTrackTrainee[]
   teachingPracticeParticipations   TeachingPracticeParticipant[]
@@ -310,6 +311,14 @@ model Instructor {
   lungeProgressFeedbackUpdated        StudentLungeProgressFeedback[]        @relation("LungeProgressFeedbackUpdatedBy")
   presentationProgressFeedbackCreated StudentPresentationProgressFeedback[] @relation("PresentationProgressFeedbackCreatedBy")
   presentationProgressFeedbackUpdated StudentPresentationProgressFeedback[] @relation("PresentationProgressFeedbackUpdatedBy")
+
+  // Stage N1 - general trainee notes (StudentGeneralNote). Admin-only in
+  // this stage (see lib/actions/student-general-notes.ts) - these back-
+  // relation fields exist purely because the FK's @relation name needs a
+  // matching array field on both sides, not because any instructor action
+  // writes to this model yet. No instructor permission is gated on this.
+  generalNotesCreated StudentGeneralNote[] @relation("GeneralNoteCreatedBy")
+  generalNotesUpdated StudentGeneralNote[] @relation("GeneralNoteUpdatedBy")
 
   // Stage H2 - horse-preparation-list/publication "last updated by" back-
   // relations. Two distinct relations to this same model (one per FK field
@@ -816,6 +825,42 @@ model StudentPresentationProgressFeedback {
   @@index([studentId])
   @@index([createdByInstructorId])
   @@map("student_presentation_progress_feedback")
+}
+
+// Stage N1 - chronological general notes about a trainee, not tied to any
+// specific session or feedback type (unlike StudentRidingProgressFeedback/
+// StudentLungeProgressFeedback/StudentPresentationProgressFeedback above,
+// which are all rating/score journals for one specific topic). Deliberately
+// its own model rather than a nullable field on Student - a single
+// overwriteable field would lose history on every edit, and every
+// comparable trainee-progress feature in this app is already a table, not a
+// field. Admin-only in this stage (see lib/actions/student-general-notes.ts)
+// - createdByInstructorId/updatedByInstructorId exist now (same
+// instructor-ownership shape as the three models above) so a later
+// instructor-access stage needs no schema change, but nothing writes to
+// them yet.
+model StudentGeneralNote {
+  id            String   @id @default(cuid())
+  studentId     String
+  content       String
+  createdByName String?
+  updatedByName String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  // Same instructor/coach ownership convention as
+  // StudentRidingProgressFeedback above - see that model's own comment.
+  createdByInstructorId String?
+  updatedByInstructorId String?
+
+  student             Student     @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  createdByInstructor Instructor? @relation("GeneralNoteCreatedBy", fields: [createdByInstructorId], references: [id], onDelete: SetNull)
+  updatedByInstructor Instructor? @relation("GeneralNoteUpdatedBy", fields: [updatedByInstructorId], references: [id], onDelete: SetNull)
+
+  @@index([studentId])
+  @@index([createdByInstructorId])
+  @@index([updatedByInstructorId])
+  @@map("student_general_notes")
 }
 
 enum MessageTaskType {

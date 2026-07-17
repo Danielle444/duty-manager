@@ -44,6 +44,7 @@ import {
   getLocalDateKey,
   parseDateKey,
 } from "@/lib/dates";
+import { useVersionGate } from "@/lib/version-gate/useVersionGate";
 
 const STORAGE_KEY = "duty-manager-instructor-v2";
 
@@ -241,6 +242,13 @@ export function InstructorClient({
     return () => clearInterval(interval);
   }, []);
 
+  // Client version AWARENESS only (Stage 0B-1). Detects when this open bundle
+  // is older than the currently-served one and offers a guarded full reload.
+  // It is NOT authorization, blocks no Server Action, and never touches
+  // identity/auth/localStorage. Excluded from /admin by construction (this hook
+  // is mounted only in the instructor and trainee shells).
+  const versionGate = useVersionGate();
+
   useEffect(() => {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (raw) {
@@ -367,6 +375,34 @@ export function InstructorClient({
   }
 
   if (!hydrated) return null;
+
+  // On a confirmed compatibility-epoch mismatch, stop rendering the normal
+  // application surface and show the approved update screen with a guarded full
+  // reload. Fail-open ("ok") renders the app unchanged. This never clears
+  // identity/session state and never blocks any Server Action.
+  if (versionGate.status !== "ok") {
+    const isReloadFailed = versionGate.status === "reload-failed";
+    return (
+      <div className="flex flex-1 flex-col items-center justify-center gap-6 px-4 py-10 text-center">
+        <Logo width={220} className="h-auto w-full max-w-[220px]" />
+        <div className="w-full rounded-2xl border border-border bg-card p-6 shadow-sm">
+          <p className="mb-2 text-lg font-bold text-card-foreground">
+            {isReloadFailed
+              ? "לא הצלחנו לטעון את הגרסה החדשה."
+              : "גרסה חדשה של המערכת זמינה."}
+          </p>
+          <p className="mb-4 text-base text-muted-foreground">
+            {isReloadFailed
+              ? "יש לסגור את המערכת ולפתוח אותה מחדש."
+              : "יש לרענן את העמוד כדי להמשיך."}
+          </p>
+          <Button onClick={() => versionGate.reload()} className="!py-3 !text-base">
+            {isReloadFailed ? "ניסיון נוסף" : "רענון המערכת"}
+          </Button>
+        </div>
+      </div>
+    );
+  }
 
   if (!session) {
     return (

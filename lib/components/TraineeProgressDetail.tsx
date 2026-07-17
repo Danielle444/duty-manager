@@ -1192,6 +1192,7 @@ export function TraineeProgressDetail({
             onChanged={refreshRidingProgress}
             canAdd={canAddRidingFeedback}
             isRowEditable={isOwnRow}
+            isRowDeletable={() => capabilities.isAdmin}
             actions={{
               create: dataSource.createRidingProgress ?? (async () => ({ success: false, error: "אין הרשאה" })),
               update: dataSource.updateRidingProgress ?? (async () => ({ success: false, error: "אין הרשאה" })),
@@ -1253,6 +1254,7 @@ export function TraineeProgressDetail({
             onChanged={refreshLungeProgress}
             canAdd={canAddRidingFeedback}
             isRowEditable={isOwnRow}
+            isRowDeletable={() => capabilities.isAdmin}
             actions={{
               create: dataSource.createLungeProgress ?? (async () => ({ success: false, error: "אין הרשאה" })),
               update: dataSource.updateLungeProgress ?? (async () => ({ success: false, error: "אין הרשאה" })),
@@ -1279,6 +1281,7 @@ export function TraineeProgressDetail({
             onChanged={refreshPresentationProgress}
             canAdd={canAddRidingFeedback}
             isRowEditable={isOwnRow}
+            isRowDeletable={() => capabilities.isAdmin}
             actions={{
               create:
                 dataSource.createPresentationProgress ?? (async () => ({ success: false, error: "אין הרשאה" })),

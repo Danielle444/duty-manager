@@ -221,6 +221,7 @@ export function LungeProgressFeedbackList({
   actions,
   canAdd = true,
   isRowEditable = () => true,
+  isRowDeletable = () => true,
 }: {
   studentId: string;
   rows: StudentLungeProgressFeedbackRow[];
@@ -228,6 +229,13 @@ export function LungeProgressFeedbackList({
   actions: LungeProgressFeedbackActions;
   canAdd?: boolean;
   isRowEditable?: (row: StudentLungeProgressFeedbackRow) => boolean;
+  // Gates delete exposure (display-card button + edit-form onDelete)
+  // independently of isRowEditable - see RidingProgressFeedbackList's own
+  // comment. Defaults to the unrestricted admin behavior; the instructor
+  // call site passes () => capabilities.isAdmin, which is false in the
+  // instructor context, so instructor delete controls stay hidden while
+  // admin behavior is preserved.
+  isRowDeletable?: (row: StudentLungeProgressFeedbackRow) => boolean;
 }) {
   const [isAdding, setIsAdding] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
@@ -345,7 +353,7 @@ export function LungeProgressFeedbackList({
                 setEditingId(null);
                 setEditError(null);
               }}
-              onDelete={() => handleDelete(row.id)}
+              onDelete={isRowDeletable(row) ? () => handleDelete(row.id) : undefined}
               isDeleting={deletingId === row.id}
               deleteError={deleteError?.id === row.id ? deleteError.message : null}
             />
@@ -381,26 +389,30 @@ export function LungeProgressFeedbackList({
                 {row.updatedByName && `עודכן על ידי: ${row.updatedByName} · `}
                 עודכן בתאריך: {formatHebrewDateTime(new Date(row.updatedAt))}
               </p>
-              {isRowEditable(row) && (
+              {(isRowEditable(row) || isRowDeletable(row)) && (
                 <div className="mt-1 flex flex-wrap items-center gap-3">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setEditingId(row.id);
-                      setEditError(null);
-                    }}
-                    className="text-xs font-medium text-secondary-foreground underline hover:opacity-80"
-                  >
-                    עריכה
-                  </button>
-                  <button
-                    type="button"
-                    disabled={deletingId === row.id}
-                    onClick={() => handleDelete(row.id)}
-                    className="text-xs font-medium text-danger underline hover:opacity-80 disabled:opacity-50"
-                  >
-                    {deletingId === row.id ? "מוחק..." : "מחיקה"}
-                  </button>
+                  {isRowEditable(row) && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingId(row.id);
+                        setEditError(null);
+                      }}
+                      className="text-xs font-medium text-secondary-foreground underline hover:opacity-80"
+                    >
+                      עריכה
+                    </button>
+                  )}
+                  {isRowDeletable(row) && (
+                    <button
+                      type="button"
+                      disabled={deletingId === row.id}
+                      onClick={() => handleDelete(row.id)}
+                      className="text-xs font-medium text-danger underline hover:opacity-80 disabled:opacity-50"
+                    >
+                      {deletingId === row.id ? "מוחק..." : "מחיקה"}
+                    </button>
+                  )}
                 </div>
               )}
               {deleteError?.id === row.id && (

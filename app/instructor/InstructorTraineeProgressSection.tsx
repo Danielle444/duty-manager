@@ -5,19 +5,16 @@ import {
   listStudentRidingProgressFeedbackForInstructorView,
   createStudentRidingProgressFeedbackAsInstructor,
   updateStudentRidingProgressFeedbackAsInstructor,
-  deleteStudentRidingProgressFeedbackAsInstructor,
 } from "@/lib/actions/student-riding-progress-feedback-instructor";
 import {
   listStudentLungeProgressFeedbackForInstructorView,
   createStudentLungeProgressFeedbackAsInstructor,
   updateStudentLungeProgressFeedbackAsInstructor,
-  deleteStudentLungeProgressFeedbackAsInstructor,
 } from "@/lib/actions/student-lunge-progress-feedback-instructor";
 import {
   listStudentPresentationProgressFeedbackForInstructorView,
   createStudentPresentationProgressFeedbackAsInstructor,
   updateStudentPresentationProgressFeedbackAsInstructor,
-  deleteStudentPresentationProgressFeedbackAsInstructor,
 } from "@/lib/actions/student-presentation-progress-feedback-instructor";
 import { getStudentRidingHistoryForInstructorTraineeProgress } from "@/lib/actions/riding-slots";
 import {
@@ -236,7 +233,8 @@ export function InstructorTraineeProgressSection({
       createRidingProgress: (studentId, input) =>
         createStudentRidingProgressFeedbackAsInstructor(instructorId, studentId, input),
       updateRidingProgress: (id, input) => updateStudentRidingProgressFeedbackAsInstructor(instructorId, id, input),
-      deleteRidingProgress: (id) => deleteStudentRidingProgressFeedbackAsInstructor(instructorId, id),
+      // No deleteRidingProgress - progress-feedback deletion stays
+      // manager-only for this stage (see this stage's implementation report).
 
       getRidingHistory: async (studentId) => {
         const result = await getStudentRidingHistoryForInstructorTraineeProgress(instructorId, studentId);
@@ -254,7 +252,8 @@ export function InstructorTraineeProgressSection({
       createLungeProgress: (studentId, input) =>
         createStudentLungeProgressFeedbackAsInstructor(instructorId, studentId, input),
       updateLungeProgress: (id, input) => updateStudentLungeProgressFeedbackAsInstructor(instructorId, id, input),
-      deleteLungeProgress: (id) => deleteStudentLungeProgressFeedbackAsInstructor(instructorId, id),
+      // No deleteLungeProgress - progress-feedback deletion stays
+      // manager-only for this stage (see this stage's implementation report).
 
       listPresentationProgress: (studentId) =>
         listStudentPresentationProgressFeedbackForInstructorView(instructorId, studentId),
@@ -262,7 +261,8 @@ export function InstructorTraineeProgressSection({
         createStudentPresentationProgressFeedbackAsInstructor(instructorId, studentId, input),
       updatePresentationProgress: (id, input) =>
         updateStudentPresentationProgressFeedbackAsInstructor(instructorId, id, input),
-      deletePresentationProgress: (id) => deleteStudentPresentationProgressFeedbackAsInstructor(instructorId, id),
+      // No deletePresentationProgress - progress-feedback deletion stays
+      // manager-only for this stage (see this stage's implementation report).
     }),
     [instructorId]
   );

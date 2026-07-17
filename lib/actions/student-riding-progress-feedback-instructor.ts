@@ -247,23 +247,3 @@ export async function updateStudentRidingProgressFeedbackAsInstructor(
 
   return { success: true };
 }
-
-// Hard delete, same as the admin action - no soft-delete flag on this
-// model, no cascade concerns beyond this one row.
-export async function deleteStudentRidingProgressFeedbackAsInstructor(
-  instructorId: string,
-  id: string
-): Promise<ActionResult> {
-  const instructor = await requireInstructorWithRidingNotesPermission(instructorId);
-  if (!instructor) return { success: false, error: "אין הרשאה למחוק משוב רכיבה" };
-
-  const existing = await prisma.studentRidingProgressFeedback.findUnique({ where: { id } });
-  if (!existing) return { success: false, error: "הרשומה לא נמצאה" };
-  if (existing.createdByInstructorId !== instructor.id) {
-    return { success: false, error: "ניתן למחוק רק משובים שהוזנו על ידך" };
-  }
-
-  await prisma.studentRidingProgressFeedback.delete({ where: { id } });
-
-  return { success: true };
-}

@@ -291,22 +291,3 @@ export async function updateStudentPresentationProgressFeedbackAsInstructor(
 
   return { success: true };
 }
-
-// Hard delete, same as the admin action.
-export async function deleteStudentPresentationProgressFeedbackAsInstructor(
-  instructorId: string,
-  id: string
-): Promise<ActionResult> {
-  const instructor = await requireInstructorWithRidingNotesPermission(instructorId);
-  if (!instructor) return { success: false, error: "אין הרשאה למחוק משוב פרזנטציה" };
-
-  const existing = await prisma.studentPresentationProgressFeedback.findUnique({ where: { id } });
-  if (!existing) return { success: false, error: "הרשומה לא נמצאה" };
-  if (existing.createdByInstructorId !== instructor.id) {
-    return { success: false, error: "ניתן למחוק רק משובים שהוזנו על ידך" };
-  }
-
-  await prisma.studentPresentationProgressFeedback.delete({ where: { id } });
-
-  return { success: true };
-}

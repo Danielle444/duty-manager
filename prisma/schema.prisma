@@ -61,6 +61,14 @@ model Student {
   ridingSlotComplexPublicationPairsAsTrainee1 RidingSlotComplexPublicationPair[] @relation("ComplexPublicationPairTrainee1")
   ridingSlotComplexPublicationPairsAsTrainee2 RidingSlotComplexPublicationPair[] @relation("ComplexPublicationPairTrainee2")
 
+  // COURSE-DATA GH1B - effective-dated trainee history back-relations only.
+  // The existing Student.groupName/subgroupNumber/assignedHorseName/
+  // hasPrivateHorse/privateHorseName columns are UNCHANGED and remain
+  // compatibility-only sources (GRP-3/GRP-6 dated membership, TUX-7 horse
+  // fields). These new tables carry the queryable-from-cutover dated history.
+  groupMemberships TraineeGroupMembership[]
+  horseAssignments TraineeHorseAssignment[]
+
   @@map("students")
 }
 
@@ -1824,4 +1832,55 @@ model TeachingPracticeInstructorDayNote {
   @@unique([instructorId, date, practiceType])
   @@index([instructorId, date])
   @@map("teaching_practice_instructor_day_notes")
+}
+
+// COURSE-DATA GH1B - effective-dated trainee group-membership history.
+//
+// Half-open dated intervals (effectiveFrom inclusive, effectiveTo exclusive;
+// null effectiveTo = open-ended) resolved by lib/trainee-history primitives.
+// This is additive history alongside the still-authoritative-during-migration
+// Student.groupName/subgroupNumber columns (GRP-3 close-and-open history;
+// GRP-6 backfill effectiveFrom = cutover, effectiveTo = null, no invented
+// pre-cutover history). onDelete: Restrict protects history from silent loss;
+// no cascade. @@unique([studentId, effectiveFrom]) also provides the
+// studentId+effectiveFrom index, so no separate @@index is declared.
+model TraineeGroupMembership {
+  id             String    @id @default(cuid())
+  studentId      String
+  groupName      String?
+  subgroupNumber Int?
+  effectiveFrom  DateTime  @db.Date
+  effectiveTo    DateTime? @db.Date
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  student Student @relation(fields: [studentId], references: [id], onDelete: Restrict)
+
+  @@unique([studentId, effectiveFrom])
+  @@map("trainee_group_memberships")
+}
+
+// COURSE-DATA GH1B - effective-dated trainee horse-assignment history.
+//
+// Same half-open dated-interval model as TraineeGroupMembership. Additive
+// history alongside the still-authoritative-during-migration Student horse
+// columns (TUX-7: assignedHorseName/hasPrivateHorse/privateHorseName stay on
+// Student first release; this table records their dated history from cutover).
+// Nullable fields preserve exact current values. onDelete: Restrict; no
+// cascade. @@unique([studentId, effectiveFrom]) provides the index.
+model TraineeHorseAssignment {
+  id                String    @id @default(cuid())
+  studentId         String
+  assignedHorseName String?
+  hasPrivateHorse   Boolean   @default(false)
+  privateHorseName  String?
+  effectiveFrom     DateTime  @db.Date
+  effectiveTo       DateTime? @db.Date
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  student Student @relation(fields: [studentId], references: [id], onDelete: Restrict)
+
+  @@unique([studentId, effectiveFrom])
+  @@map("trainee_horse_assignments")
 }

@@ -109,6 +109,10 @@ async function main() {
   await prisma.weeklySchedule.deleteMany();
   await prisma.courseDayPlan.deleteMany();
   await prisma.availabilityRangePreset.deleteMany();
+  // COURSE-DATA GH1B - trainee history rows reference students with an
+  // onDelete: Restrict FK, so they must be cleared before students.
+  await prisma.traineeGroupMembership.deleteMany();
+  await prisma.traineeHorseAssignment.deleteMany();
   await prisma.student.deleteMany();
   await prisma.dutyType.deleteMany();
   await prisma.courseSettings.deleteMany();

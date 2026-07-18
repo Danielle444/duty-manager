@@ -10,20 +10,14 @@
  *
  * NO runtime side effects at import time, and NO Prisma / next-cookies import:
  * every impure capability (session actor, offering resolver, enrollment DAL,
- * clock) is passed in via {@link StudentContactsDeps}. The only import beyond
- * the erased EnrollmentRosterResult type is the PURE audience-gate predicate.
+ * clock) is passed in via {@link StudentContactsDeps}. The only runtime import is
+ * the PURE audience-gate predicate; StudentContactRow and EnrollmentRosterResult
+ * are erased `import type`s (the former's single source of truth is ./contacts),
+ * so the type-only edge back to ./contacts creates no runtime circular import.
  */
 import { mayAccessStudentContactDirectory } from "@/lib/auth/contact-directory-access";
 import type { EnrollmentRosterResult } from "@/lib/course/current-enrollments";
-
-export interface StudentContactRow {
-  id: string;
-  fullName: string;
-  lastName: string;
-  groupName: string | null;
-  subgroupNumber: number | null;
-  phone: string | null;
-}
+import type { StudentContactRow } from "./contacts";
 
 /**
  * Structural, PII-free failure raised when the enrollment-backed roster cannot

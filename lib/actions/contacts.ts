@@ -5,16 +5,21 @@ import { getCurrentInstructor, getCurrentTrainee } from "@/lib/auth/actor";
 import { mayAccessInstructorContactDirectory } from "@/lib/auth/contact-directory-access";
 import { resolveCurrentCourseOffering } from "@/lib/course/current-offering";
 import { getCurrentCourseEnrollmentRoster } from "@/lib/course/current-enrollments";
-import {
-  loadStudentContactsWithDeps,
-  type StudentContactRow,
-} from "./contacts-student-directory";
+import { loadStudentContactsWithDeps } from "./contacts-student-directory";
 
-// The StudentContactRow contract now lives with the pure orchestration so the
-// mapping and its consumers share one definition; it is type-re-exported here so
-// every existing `import { ..., type StudentContactRow } from "@/lib/actions/
-// contacts"` site keeps working unchanged.
-export type { StudentContactRow };
+// StudentContactRow is declared directly in this module (as it was before W5B1)
+// and is the single source of truth for the public contract. It is a type-only
+// export, erased at compile time, so the file-level "use server" server-actions
+// loader never emits a runtime reference to it. The pure orchestration module
+// consumes it via a type-only `import type`, so there is no runtime cycle.
+export interface StudentContactRow {
+  id: string;
+  fullName: string;
+  lastName: string;
+  groupName: string | null;
+  subgroupNumber: number | null;
+  phone: string | null;
+}
 
 // Audience-gated (Stage 0A3) + enrollment-backed (Multi-Course W5B1): the
 // STUDENT contact directory carries trainee PII (names + phone numbers), so it

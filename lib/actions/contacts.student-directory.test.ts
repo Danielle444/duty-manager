@@ -26,9 +26,12 @@ import { fileURLToPath } from "node:url";
 import {
   loadStudentContactsWithDeps,
   type StudentContactsDeps,
-  type StudentContactRow,
 } from "./contacts-student-directory";
-import { getStudentContacts, getInstructorContacts } from "./contacts";
+import {
+  getStudentContacts,
+  getInstructorContacts,
+  type StudentContactRow,
+} from "./contacts";
 import type {
   EnrolledTraineeView,
   EnrollmentRosterResult,

@@ -43,6 +43,12 @@ async function computeTeachingPracticeTraineeSuggestionsForGroupInternal(
 
   const tracks = await prisma.teachingPracticeTrack.findMany({
     where: { groupName, isActive: true },
+    orderBy: [
+      { practiceType: "asc" },
+      { weekday: "asc" },
+      { defaultStartTime: "asc" },
+      { id: "asc" },
+    ],
     select: {
       id: true,
       practiceType: true,
@@ -58,6 +64,11 @@ async function computeTeachingPracticeTraineeSuggestionsForGroupInternal(
   const trackTraineeRows = trackIds.length
     ? await prisma.teachingPracticeTrackTrainee.findMany({
         where: { trackId: { in: trackIds } },
+        orderBy: [
+          { trackId: "asc" },
+          { rotationOrder: "asc" },
+          { id: "asc" },
+        ],
         select: {
           trackId: true,
           traineeId: true,
@@ -69,6 +80,10 @@ async function computeTeachingPracticeTraineeSuggestionsForGroupInternal(
 
   const activeGroupTrainees = await prisma.student.findMany({
     where: { groupName, isActive: true },
+    orderBy: [
+      { fullName: "asc" },
+      { id: "asc" },
+    ],
     select: { id: true, fullName: true, groupName: true, isActive: true },
   });
 
@@ -89,6 +104,13 @@ async function computeTeachingPracticeTraineeSuggestionsForGroupInternal(
   const participantRows = traineeIds.length
     ? await prisma.teachingPracticeParticipant.findMany({
         where: { traineeId: { in: traineeIds } },
+        orderBy: [
+          { lesson: { date: "asc" } },
+          { lesson: { startTime: "asc" } },
+          { lesson: { trackId: "asc" } },
+          { lessonId: "asc" },
+          { id: "asc" },
+        ],
         select: {
           traineeId: true,
           role: true,
@@ -161,6 +183,12 @@ async function computeTeachingPracticeTraineeScheduleForGroupInternal(
 
   const tracks = await prisma.teachingPracticeTrack.findMany({
     where: { groupName, isActive: true },
+    orderBy: [
+      { practiceType: "asc" },
+      { weekday: "asc" },
+      { defaultStartTime: "asc" },
+      { id: "asc" },
+    ],
     select: {
       id: true,
       practiceType: true,
@@ -176,12 +204,21 @@ async function computeTeachingPracticeTraineeScheduleForGroupInternal(
   const trackTraineeRows = trackIds.length
     ? await prisma.teachingPracticeTrackTrainee.findMany({
         where: { trackId: { in: trackIds } },
+        orderBy: [
+          { trackId: "asc" },
+          { rotationOrder: "asc" },
+          { id: "asc" },
+        ],
         select: { trackId: true, traineeId: true, rotationOrder: true },
       })
     : [];
 
   const activeGroupTrainees = await prisma.student.findMany({
     where: { groupName, isActive: true },
+    orderBy: [
+      { fullName: "asc" },
+      { id: "asc" },
+    ],
     select: { id: true, fullName: true, groupName: true, isActive: true },
   });
 

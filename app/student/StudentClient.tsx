@@ -550,7 +550,7 @@ export function StudentClient() {
         <p className="bg-warning-muted px-4 py-2 text-center text-xs text-warning">{refreshError}</p>
       )}
 
-      <main className="flex-1 px-4 py-4 pb-28">
+      <main className="flex-1 px-4 py-4 pb-[calc(6rem+env(safe-area-inset-bottom))]">
         {activeTab === "today" && (
           <div className="flex flex-col gap-4">
             <div className="rounded-2xl border border-border bg-card p-5 shadow-sm">

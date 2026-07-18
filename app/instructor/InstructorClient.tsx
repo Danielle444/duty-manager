@@ -58,21 +58,24 @@ function instructorMessagesLastSeenKey(instructorId: string): string {
   return `duty-manager-instructor-messages-last-seen-${instructorId}`;
 }
 
-// Instructor has its own 6 main bottom tabs (independent of the student
+// Instructor has its own 5 main bottom tabs (independent of the student
 // MAIN_TABS, which stays untouched) plus a "more" menu for lower-frequency
 // sections. "riding" ("רכיבות") was promoted from "more" to a main tab since
 // instructors use it often enough that burying it under "עוד" was
-// inconvenient - it's used here, never redefined or duplicated.
+// inconvenient - it's used here, never redefined or duplicated. "horses"
+// ("סוסים") was moved from the main bar into the "more" menu (kept to <=5
+// main tabs incl. "more") - the horses screen itself is unchanged and is
+// still opened via activeTab === "horses".
 const INSTRUCTOR_MAIN_TABS: { id: MainTabId; label: string }[] = [
   { id: "today", label: "היום" },
   { id: "schedule", label: 'לו"ז' },
   { id: "duties", label: "תורנויות" },
-  { id: "horses", label: "סוסים" },
   { id: "riding", label: "רכיבות" },
   { id: "more", label: "עוד" },
 ];
 
 const INSTRUCTOR_MORE_ITEMS: { id: MainTabId; label: string }[] = [
+  { id: "horses", label: "סוסים" },
   { id: "profile", label: "פרופיל" },
   { id: "attendance", label: "נוכחות" },
   { id: "messages", label: "הודעות ומשימות" },
@@ -602,7 +605,7 @@ export function InstructorClient({
         <p className="bg-warning-muted px-4 py-2 text-center text-xs text-warning">{refreshError}</p>
       )}
 
-      <main className="flex-1 px-4 py-4 pb-28">
+      <main className="flex-1 px-4 py-4 pb-[calc(6rem+env(safe-area-inset-bottom))]">
         {activeTab === "today" && (
           <div className="flex flex-col gap-4">
             <div className="rounded-2xl border border-border bg-card p-5 shadow-sm">

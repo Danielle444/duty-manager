@@ -2,49 +2,44 @@
 
 import { prisma } from "@/lib/prisma";
 import { getCurrentInstructor, getCurrentTrainee } from "@/lib/auth/actor";
+import { mayAccessInstructorContactDirectory } from "@/lib/auth/contact-directory-access";
+import { resolveCurrentCourseOffering } from "@/lib/course/current-offering";
+import { getCurrentCourseEnrollmentRoster } from "@/lib/course/current-enrollments";
 import {
-  mayAccessStudentContactDirectory,
-  mayAccessInstructorContactDirectory,
-} from "@/lib/auth/contact-directory-access";
+  loadStudentContactsWithDeps,
+  type StudentContactRow,
+} from "./contacts-student-directory";
 
-export interface StudentContactRow {
-  id: string;
-  fullName: string;
-  lastName: string;
-  groupName: string | null;
-  subgroupNumber: number | null;
-  phone: string | null;
-}
+// The StudentContactRow contract now lives with the pure orchestration so the
+// mapping and its consumers share one definition; it is type-re-exported here so
+// every existing `import { ..., type StudentContactRow } from "@/lib/actions/
+// contacts"` site keeps working unchanged.
+export type { StudentContactRow };
 
-// Audience-gated (Stage 0A3): the STUDENT contact directory carries trainee
-// PII (names + phone numbers), so it is served ONLY to an authenticated
-// instructor derived server-side from the signed session via
-// getCurrentInstructor(). A missing/invalid/wrong-audience/inactive session
-// yields a null actor (see actor-core deriveInstructorActor), and a trainee
-// cookie can never satisfy this gate, so no anonymous or trainee caller
-// receives any student data. The no-arg signature is unchanged (no
+// Audience-gated (Stage 0A3) + enrollment-backed (Multi-Course W5B1): the
+// STUDENT contact directory carries trainee PII (names + phone numbers), so it
+// is served ONLY to an authenticated instructor derived server-side from the
+// signed session via getCurrentInstructor(). A missing/invalid/wrong-audience/
+// inactive session yields a null actor (see actor-core deriveInstructorActor),
+// and a trainee cookie can never satisfy this gate, so no anonymous or trainee
+// caller receives any student data. The no-arg signature is unchanged (no
 // client-supplied id is trusted or even accepted), so callers need no edits,
 // and the ordering + StudentContactRow[] output shape are preserved unchanged.
-// While only one CourseOffering is active the directory stays global; no
-// per-offering scoping is added in this stage.
+//
+// W5B1 repoints ONLY this one read path from the legacy global Student
+// compatibility roster to the enrollment-backed current-course DAL: resolve the
+// singleton CourseOffering, load its ACTIVE enrollment roster at one captured
+// asOf, and map it to the same StudentContactRow[] contract in the same reviewed
+// W5B0 ordering. Structural failures (resolver ambiguity, membership anomalies,
+// malformed subgroup, duplicate id, DAL failure) fail loudly and never fall back
+// to prisma.student.findMany.
 export async function getStudentContacts(): Promise<StudentContactRow[]> {
-  const instructor = await getCurrentInstructor();
-  if (!mayAccessStudentContactDirectory(instructor?.id)) {
-    return [];
-  }
-  const students = await prisma.student.findMany({
-    where: { isActive: true },
-    orderBy: [{ groupName: "asc" }, { subgroupNumber: "asc" }, { lastName: "asc" }],
-    select: {
-      id: true,
-      fullName: true,
-      lastName: true,
-      groupName: true,
-      subgroupNumber: true,
-      phone: true,
-    },
+  return loadStudentContactsWithDeps({
+    getCurrentInstructor,
+    resolveCurrentCourseOffering,
+    getCurrentCourseEnrollmentRoster,
+    now: () => new Date(),
   });
-  return students;
 }
 
 export interface InstructorContactRow {

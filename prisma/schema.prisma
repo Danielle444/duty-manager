@@ -69,6 +69,17 @@ model Student {
   groupMemberships TraineeGroupMembership[]
   horseAssignments TraineeHorseAssignment[]
 
+  // MULTI-COURSE W0 - additive multi-course foundation back-relation only.
+  // Student stays ONE global person, never duplicated per offering (locked
+  // product decisions 1-3): a Student may hold several simultaneous
+  // CourseEnrollments across different CourseOfferings. Student.isActive/
+  // groupName/subgroupNumber and the horse fields above remain UNTOUCHED
+  // compatibility-only fields (decisions 10-11) - per-enrollment active/
+  // inactive status now lives on CourseEnrollment.status and offering-scoped
+  // group membership on GroupMembership, not here. No existing reader/writer
+  // uses this relation in this stage (decision 13).
+  courseEnrollments CourseEnrollment[]
+
   @@map("students")
 }
 
@@ -1883,4 +1894,205 @@ model TraineeHorseAssignment {
 
   @@unique([studentId, effectiveFrom])
   @@map("trainee_horse_assignments")
+}
+
+// =============================================================================
+// MULTI-COURSE W0 - additive multi-course foundation spine (schema-only).
+//
+// Purely additive hierarchy: ActivityYear -> CourseOffering -> CourseEnrollment,
+// with offering-scoped groups (CourseGroup) and effective-dated, enrollment-
+// scoped group membership (GroupMembership). Schema/design only in this stage:
+// no operational model is connected to CourseOffering yet (decision 12), no
+// existing reader or writer changes (decision 13), no seed rows and no
+// backfill (this stage creates structure only). Student.isActive/groupName/
+// subgroupNumber, the Student horse fields, TraineeGroupMembership, and
+// TraineeHorseAssignment all remain UNTOUCHED - this spine sits alongside them.
+//
+// Deletion behaviour throughout this block is deliberately onDelete: Restrict
+// (never Cascade) for every ownership/history edge, so deleting a course
+// structure can never silently erase enrollment or membership history - the
+// same protective convention TraineeGroupMembership/TraineeHorseAssignment
+// already establish. Hard deletion of these rows is expected to be rare;
+// lifecycle/status fields (not row deletion) are the intended retirement path.
+// =============================================================================
+
+// Lifecycle/status of a CourseOffering. Enum (not a bare isActive boolean) to
+// match this schema's status-enum precedent (WeeklyFeedbackStatus,
+// TeachingPracticeSignedFormStatus) and to leave room for more lifecycle
+// states without a column change. The exact value set is a design default for
+// this stage, not a locked product decision - it can be extended by a later
+// additive migration.
+enum CourseOfferingStatus {
+  PLANNED
+  ACTIVE
+  ARCHIVED
+}
+
+// Active/inactive status per CourseEnrollment (locked decision 9). Modelled as
+// an enum rather than reusing the Student.isActive boolean convention so
+// enrollment status is unambiguously distinct from the global Student.isActive
+// compatibility flag, and so additional per-enrollment states can be added
+// later without a column change.
+enum CourseEnrollmentStatus {
+  ACTIVE
+  INACTIVE
+}
+
+// One activity/calendar year container - the top of the multi-course
+// hierarchy. Holds several CourseOfferings (e.g. a Level 1 and a Level 2
+// offering in the same year - decision: offerings differ by
+// CourseOffering.level, see below). start/endDate are OPTIONAL (@db.Date, same
+// date-only convention as CourseSettings) - a year may be created as a
+// container before its exact calendar bounds are fixed; required-ness, if
+// wanted, is an action-layer concern (this schema's pervasive "validated in
+// the action layer, not the schema" convention). name is @unique as a
+// low-risk identity guard against duplicate year containers.
+model ActivityYear {
+  id        String    @id @default(cuid())
+  name      String    @unique
+  startDate DateTime? @db.Date
+  endDate   DateTime? @db.Date
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  offerings CourseOffering[]
+
+  @@map("activity_years")
+}
+
+// One course offering within an ActivityYear (e.g. "Level 1" or "Level 2").
+// level is a plain Int (1, 2, ...) rather than an enum so Level 3+ never needs
+// a schema change and no course level is hardcoded here - the "must support
+// Level 1 and Level 2 in the same ActivityYear" requirement is satisfied by
+// two rows under one activityYearId with level 1 and 2. start/endDate are
+// OPTIONAL @db.Date for the same planned-before-dated reason as ActivityYear
+// above; status carries the lifecycle. onDelete: Restrict on activityYear so
+// deleting a year never cascades away its offerings (and their enrollments/
+// history) silently.
+model CourseOffering {
+  id             String               @id @default(cuid())
+  activityYearId String
+  name           String
+  level          Int
+  startDate      DateTime?            @db.Date
+  endDate        DateTime?            @db.Date
+  status         CourseOfferingStatus @default(PLANNED)
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+
+  activityYear ActivityYear       @relation(fields: [activityYearId], references: [id], onDelete: Restrict)
+  enrollments  CourseEnrollment[]
+  groups       CourseGroup[]
+
+  @@index([activityYearId])
+  @@map("course_offerings")
+}
+
+// A Student's enrollment into one CourseOffering. The Student is never
+// duplicated between offerings (decisions 1-3); one Student can hold several
+// simultaneous enrollments (decision 2), each with its own active/inactive
+// status (decision 9) and optional start/end dates. isPrimary marks the
+// default-context enrollment. @@unique([studentId, courseOfferingId]) prevents
+// a Student being enrolled twice into the same offering. There is deliberately
+// NO unique constraint touching isPrimary - a normal unique index cannot
+// express "exactly one primary per student" without also wrongly forbidding
+// multiple isPrimary=false rows (Postgres treats each such row as colliding),
+// so exactly-one-primary is an action-layer invariant, not a schema one.
+// onDelete: Restrict on BOTH sides: enrollment ownership must not be erased by
+// deleting a Student or an offering (Student.isActive is the standing soft-
+// delete convention; hard Student deletion is rare and, with this FK, blocked
+// while enrollments exist - a deliberate protection, not an oversight).
+model CourseEnrollment {
+  id               String                 @id @default(cuid())
+  studentId        String
+  courseOfferingId String
+  status           CourseEnrollmentStatus @default(ACTIVE)
+  startDate        DateTime?              @db.Date
+  endDate          DateTime?              @db.Date
+  isPrimary        Boolean                @default(false)
+  createdAt        DateTime               @default(now())
+  updatedAt        DateTime               @updatedAt
+
+  student        Student           @relation(fields: [studentId], references: [id], onDelete: Restrict)
+  courseOffering CourseOffering    @relation(fields: [courseOfferingId], references: [id], onDelete: Restrict)
+  memberships    GroupMembership[]
+
+  @@unique([studentId, courseOfferingId])
+  @@index([courseOfferingId])
+  @@map("course_enrollments")
+}
+
+// An offering-scoped group, with optional one-level nesting into subgroups
+// (decision 6: groups are offering-scoped). Self-reference via parentGroupId
+// gives top-level groups (parentGroupId null) and subgroups (parentGroupId set)
+// - the "maximum depth 2" rule is an action-layer invariant (a subgroup may
+// not itself be given children), not something a self-relation can express in
+// schema. name is free text - א/ב are never hardcoded here (decision on
+// CourseGroup). GroupMembership targets a CourseGroup by stable id (a real FK),
+// giving stable group identity rather than free-text targeting.
+//
+// @@unique([courseOfferingId, parentGroupId, name]) gives unique group
+// identity within one offering scoped by parent - so two subgroups named "1"
+// under different parents are allowed (correct), while a duplicate name under
+// the same parent is not. Postgres treats each NULL as distinct, so this
+// composite constraint alone does NOT prevent two top-level groups
+// (parentGroupId null) sharing a name within one offering - same NULL-distinct
+// behaviour documented on RidingSlotHorseListItem/TeachingPracticeTrackChild
+// elsewhere. That top-level gap is closed by a hand-written partial unique
+// index in this model's migration (course_groups_offering_top_level_name_unique:
+// UNIQUE(courseOfferingId, name) WHERE parentGroupId IS NULL), since
+// schema.prisma has no syntax for a partial index - same pattern as
+// teaching_practice_signed_forms/teaching_practice_track_children. Together the
+// composite unique (subgroups) and the partial unique (top-level) cover both
+// naming invariants at the DB level.
+//
+// onDelete: Restrict on both edges - deleting an offering or a parent group
+// never cascades away child groups or their membership history.
+model CourseGroup {
+  id               String   @id @default(cuid())
+  courseOfferingId String
+  parentGroupId    String?
+  name             String
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  courseOffering CourseOffering    @relation(fields: [courseOfferingId], references: [id], onDelete: Restrict)
+  parentGroup    CourseGroup?      @relation("CourseGroupHierarchy", fields: [parentGroupId], references: [id], onDelete: Restrict)
+  childGroups    CourseGroup[]     @relation("CourseGroupHierarchy")
+  memberships    GroupMembership[]
+
+  @@unique([courseOfferingId, parentGroupId, name])
+  @@index([courseOfferingId])
+  @@index([parentGroupId])
+  @@map("course_groups")
+}
+
+// Effective-dated, enrollment-scoped group membership (decision 7: membership
+// belongs to CourseEnrollment; decision 8: a trainee may have different groups
+// in different offerings, which follows automatically since the enrollment is
+// offering-scoped). Half-open dated interval - effectiveFrom inclusive,
+// effectiveTo exclusive, null effectiveTo = open-ended - identical model to
+// TraineeGroupMembership, supporting historical group movement.
+// @@unique([courseEnrollmentId, effectiveFrom]) prevents duplicate same-date
+// memberships for one enrollment and also serves as the (courseEnrollmentId,
+// effectiveFrom) lookup index, so no separate @@index is declared for it (same
+// note as TraineeGroupMembership); @@index([courseGroupId]) covers reverse
+// "who is in this group" lookups. onDelete: Restrict on both edges so neither
+// deleting an enrollment nor deleting a group silently erases membership
+// history.
+model GroupMembership {
+  id                 String    @id @default(cuid())
+  courseEnrollmentId String
+  courseGroupId      String
+  effectiveFrom      DateTime  @db.Date
+  effectiveTo        DateTime? @db.Date
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  courseEnrollment CourseEnrollment @relation(fields: [courseEnrollmentId], references: [id], onDelete: Restrict)
+  courseGroup      CourseGroup      @relation(fields: [courseGroupId], references: [id], onDelete: Restrict)
+
+  @@unique([courseEnrollmentId, effectiveFrom])
+  @@index([courseGroupId])
+  @@map("group_memberships")
 }

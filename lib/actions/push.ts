@@ -2,6 +2,8 @@
 
 import webpush, { WebPushError } from "web-push";
 import { prisma } from "@/lib/prisma";
+import { getCurrentTrainee } from "@/lib/auth/actor";
+import { authorizeSelfActingClientId } from "@/lib/auth/self-actor-authorization";
 import type { ActionResult } from "@/lib/actions/students";
 
 const vapidPublicKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
@@ -18,21 +20,31 @@ export interface PushSubscriptionInput {
   keys: { p256dh: string; auth: string };
 }
 
-// Students have no NextAuth session in this app, so ownership is scoped by
-// studentId exactly like every other student-facing action (see
-// getStudentMessages, markMessageRead) - never trusted beyond storing/
-// deleting rows for that one studentId. endpoint is unique, so re-subscribing
-// (e.g. the browser rotated it) just updates the existing row in place.
+// Trainee identity is server-derived from the signed session via
+// getCurrentTrainee(). The public signature is unchanged (the caller still
+// passes studentId), but that value is NOT trusted as authority: it is only
+// compared against the authenticated actor id, and the subscription row is
+// stored against the SERVER-derived actor id. A missing/invalid/wrong-audience/
+// inactive session (actor === null) and a mismatched client-supplied id both
+// return the same generic failure without exposing internal details. endpoint
+// is unique, so re-subscribing (e.g. the browser rotated it) just updates the
+// existing row in place - the pre-existing upsert-by-endpoint behavior is
+// preserved.
 export async function subscribeStudentToPush(
   studentId: string,
   subscription: PushSubscriptionInput,
   userAgent: string | null
 ): Promise<ActionResult> {
+  const actor = await getCurrentTrainee();
+  const authorization = authorizeSelfActingClientId(actor?.id, studentId);
+  if (!authorization.authorized) {
+    return { success: false, error: "אירעה שגיאה בהפעלת ההתראות" };
+  }
   await prisma.pushSubscription.upsert({
     where: { endpoint: subscription.endpoint },
     create: {
       recipientRole: "STUDENT",
-      studentId,
+      studentId: authorization.actorId,
       endpoint: subscription.endpoint,
       p256dh: subscription.keys.p256dh,
       auth: subscription.keys.auth,
@@ -40,7 +52,7 @@ export async function subscribeStudentToPush(
     },
     update: {
       recipientRole: "STUDENT",
-      studentId,
+      studentId: authorization.actorId,
       p256dh: subscription.keys.p256dh,
       auth: subscription.keys.auth,
       userAgent,

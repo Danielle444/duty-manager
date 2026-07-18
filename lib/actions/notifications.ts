@@ -1,7 +1,8 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
-import { getCurrentTrainee } from "@/lib/auth/actor";
+import { getCurrentInstructor, getCurrentTrainee } from "@/lib/auth/actor";
+import { authorizeSelfActingClientId } from "@/lib/auth/self-actor-authorization";
 import type { ActionResult } from "@/lib/actions/students";
 import type { AttendanceStatusValue } from "@/lib/actions/attendance";
 import type { CourseMaterialVisibilityValue } from "@/lib/actions/materials";
@@ -99,20 +100,39 @@ export async function markNotificationReadAsStudent(
   return { success: true };
 }
 
+// Instructor identity is server-derived from the signed session via
+// getCurrentInstructor(). The public signature is unchanged (the caller still
+// passes instructorId), but that value is NOT trusted as authority: it is only
+// compared against the authenticated actor id, and every ownership filter/write
+// below uses the SERVER-derived actor id. A missing/invalid/wrong-audience/
+// inactive session (actor === null) and a mismatched client-supplied id both
+// collapse to the same generic "not found" failure, so the response never
+// reveals whether the notification exists or whom it belongs to. Ownership is
+// verified atomically in a single ownership-scoped findFirst before any write,
+// and first-read semantics are preserved (an already-read row keeps its
+// original timestamp).
 export async function markNotificationReadAsInstructor(
   notificationId: string,
   instructorId: string
 ): Promise<ActionResult> {
-  const notification = await prisma.notification.findUnique({ where: { id: notificationId } });
-  if (
-    !notification ||
-    notification.recipientRole !== "INSTRUCTOR" ||
-    notification.instructorId !== instructorId
-  ) {
+  const actor = await getCurrentInstructor();
+  const authorization = authorizeSelfActingClientId(actor?.id, instructorId);
+  if (!authorization.authorized) {
+    return { success: false, error: "העדכון לא נמצא" };
+  }
+  const notification = await prisma.notification.findFirst({
+    where: {
+      id: notificationId,
+      recipientRole: "INSTRUCTOR",
+      instructorId: authorization.actorId,
+    },
+    select: { id: true, readAt: true },
+  });
+  if (!notification) {
     return { success: false, error: "העדכון לא נמצא" };
   }
   if (!notification.readAt) {
-    await prisma.notification.update({ where: { id: notificationId }, data: { readAt: new Date() } });
+    await prisma.notification.update({ where: { id: notification.id }, data: { readAt: new Date() } });
   }
   return { success: true };
 }

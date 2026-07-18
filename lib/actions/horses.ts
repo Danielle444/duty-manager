@@ -4,6 +4,9 @@ import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
 import { requireAdmin } from "@/lib/auth/require-admin";
 import type { ActionResult } from "@/lib/actions/students";
+import { writeTraineeHorseAssignment } from "@/lib/trainee-history/horse-write-service";
+import { israelDateKeyFromInstant } from "@/lib/trainee-history/israel-date";
+import type { PublicErrorCode, WritePolicy } from "@/lib/trainee-history/apply-plan";
 
 export interface HorseAssignmentRow {
   id: string;
@@ -45,20 +48,60 @@ export interface HorseInfoUpdate {
   assignedHorseName: string | null;
 }
 
+// Map an effective-dated write failure code to a clear, user-facing Hebrew
+// message. Never surfaces internal DB/transaction details; unmapped codes fall
+// back to a generic failure message.
+function horseWriteErrorMessage(code: PublicErrorCode): string {
+  switch (code) {
+    case "TRAINEE_NOT_FOUND":
+      return "חניך/ה לא נמצא/ה";
+    case "TRAINEE_INACTIVE":
+      return "חניך/ה אינו/ה פעיל/ה";
+    case "INVALID_HORSE_STATE":
+      return "מצב סוס לא תקין";
+    case "DUPLICATE_EFFECTIVE_FROM":
+      return "כבר קיים שינוי חלוקת סוסים בתאריך זה";
+    default:
+      return "עדכון חלוקת הסוסים נכשל";
+  }
+}
+
 export async function updateStudentHorseInfo(
   studentId: string,
   data: HorseInfoUpdate
 ): Promise<ActionResult> {
   await requireAdmin();
 
-  await prisma.student.update({
-    where: { id: studentId },
-    data: {
+  // Trusted explicit server instant; the pure service derives Israel-local
+  // today from it (no hidden clock inside the service).
+  const now = new Date();
+  // No future-date input on this action: the change takes effect on today's
+  // Israel-local calendar day, and cutover is that same day (via the single
+  // GH2A1 date helper) so effectiveFrom == cutover passes the cutover gate.
+  const today = israelDateKeyFromInstant(now);
+
+  const policy: WritePolicy = {
+    actorKind: "admin",
+    allowFutureEffectiveDates: false,
+    allowedDomain: "horse",
+    cutover: today,
+  };
+
+  const outcome = await writeTraineeHorseAssignment(
+    {
+      studentId,
+      effectiveFrom: today,
+      assignedHorseName: data.assignedHorseName,
       hasPrivateHorse: data.hasPrivateHorse,
-      privateHorseName: data.privateHorseName?.trim() || null,
-      assignedHorseName: data.assignedHorseName?.trim() || null,
+      privateHorseName: data.privateHorseName,
     },
-  });
+    policy,
+    now
+  );
+
+  if (!outcome.ok) {
+    return { success: false, error: horseWriteErrorMessage(outcome.code) };
+  }
 
   revalidatePath("/admin/horses");
   return { success: true };

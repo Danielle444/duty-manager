@@ -1969,6 +1969,15 @@ model ActivityYear {
 // above; status carries the lifecycle. onDelete: Restrict on activityYear so
 // deleting a year never cascades away its offerings (and their enrollments/
 // history) silently.
+//
+// @@unique([activityYearId, name]) makes the offering's human-facing name its
+// STABLE identity within one ActivityYear. `level` is deliberately NOT part of
+// any unique key: an ActivityYear may hold more than one offering at the same
+// level, so level must never be treated as the offering's identity. The
+// "Level 1 and Level 2 in the same year" requirement is satisfied by two rows
+// with DISTINCT names, so this constraint never conflicts with it. Seed/
+// backfill idempotency reuses an offering by (activityYearId, name), never by
+// (activityYearId, level).
 model CourseOffering {
   id             String               @id @default(cuid())
   activityYearId String
@@ -1984,6 +1993,7 @@ model CourseOffering {
   enrollments  CourseEnrollment[]
   groups       CourseGroup[]
 
+  @@unique([activityYearId, name])
   @@index([activityYearId])
   @@map("course_offerings")
 }

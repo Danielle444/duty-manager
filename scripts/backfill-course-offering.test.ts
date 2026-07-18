@@ -16,10 +16,13 @@ import {
   buildGroupPlan,
   reconcile,
   resolveEffectiveFrom,
+  resolveOfferingReuse,
   toDateKeyUTC,
   identifyDbTarget,
   PRODUCTION_PROJECT_REF,
   type RawStudent,
+  type OfferingCandidate,
+  type ExpectedOffering,
 } from "./backfill-course-offering.plan";
 
 function student(over: Partial<RawStudent> & { id: string }): RawStudent {
@@ -203,4 +206,101 @@ test("identifyDbTarget: missing/blank URL is handled safely", () => {
   const none = identifyDbTarget(undefined);
   assert.equal(none.isProduction, false);
   assert.equal(none.host, "<no DATABASE_URL set>");
+});
+
+// --- Seed CourseOffering reuse / idempotency (MULTI-COURSE W2A) --------------
+
+const YEAR = "year-2026-id";
+const SEED_NAME = "קורס מדריכים ומאמנים – רמה 1";
+
+function offeringCandidate(over: Partial<OfferingCandidate> & { id: string }): OfferingCandidate {
+  return {
+    activityYearId: YEAR,
+    name: SEED_NAME,
+    level: 1,
+    startDate: new Date("2026-03-01T00:00:00.000Z"),
+    endDate: new Date("2026-09-01T00:00:00.000Z"),
+    ...over,
+  };
+}
+
+const EXPECTED: ExpectedOffering = {
+  activityYearId: YEAR,
+  name: SEED_NAME,
+  level: 1,
+  startKey: "2026-03-01",
+  endKey: "2026-09-01",
+};
+
+test("resolveOfferingReuse: no matching row => CREATE (query is by year+name)", () => {
+  // The runner queries by (activityYearId, name); a same-year, same-level but
+  // DIFFERENTLY-named offering is simply never returned, so candidates is empty.
+  assert.deepEqual(resolveOfferingReuse([], EXPECTED), { action: "create" });
+});
+
+test("resolveOfferingReuse: same year+level but different name is NOT reused", () => {
+  // Defensive guard: even if a differently-named row were passed in, identity is
+  // (year, name) - level alone must never cause reuse of a different offering.
+  const decision = resolveOfferingReuse(
+    [offeringCandidate({ id: "other", name: "קורס אחר – רמה 1", level: 1 })],
+    EXPECTED,
+  );
+  assert.notEqual(decision.action, "reuse");
+});
+
+test("resolveOfferingReuse: exact year+name (level ok) is REUSED, no warnings", () => {
+  const decision = resolveOfferingReuse([offeringCandidate({ id: "off-1" })], EXPECTED);
+  assert.equal(decision.action, "reuse");
+  assert.equal(decision.action === "reuse" && decision.offeringId, "off-1");
+  assert.deepEqual(decision.action === "reuse" && decision.warnings, []);
+});
+
+test("resolveOfferingReuse: same name but conflicting level STOPS (conflict)", () => {
+  const decision = resolveOfferingReuse(
+    [offeringCandidate({ id: "off-lvl2", level: 2 })],
+    EXPECTED,
+  );
+  assert.equal(decision.action, "stop");
+  assert.match(decision.action === "stop" ? decision.reason : "", /CONFLICT/);
+  assert.match(decision.action === "stop" ? decision.reason : "", /level/);
+});
+
+test("resolveOfferingReuse: multiple matching rows STOP instead of picking one", () => {
+  const decision = resolveOfferingReuse(
+    [offeringCandidate({ id: "dup-a" }), offeringCandidate({ id: "dup-b" })],
+    EXPECTED,
+  );
+  assert.equal(decision.action, "stop");
+  assert.match(decision.action === "stop" ? decision.reason : "", /AMBIGUOUS/);
+  // Both ids reported; neither silently selected.
+  assert.match(decision.action === "stop" ? decision.reason : "", /dup-a/);
+  assert.match(decision.action === "stop" ? decision.reason : "", /dup-b/);
+});
+
+test("resolveOfferingReuse: date drift is REPORTED (warning), never overwritten", () => {
+  const decision = resolveOfferingReuse(
+    [
+      offeringCandidate({
+        id: "off-drift",
+        startDate: new Date("2026-03-15T00:00:00.000Z"),
+        endDate: null,
+      }),
+    ],
+    EXPECTED,
+  );
+  assert.equal(decision.action, "reuse");
+  assert.equal(decision.action === "reuse" && decision.offeringId, "off-drift");
+  const warnings = decision.action === "reuse" ? decision.warnings : [];
+  assert.equal(warnings.length, 2);
+  assert.match(warnings.join(" | "), /startDate 2026-03-15 differs from expected 2026-03-01/);
+  assert.match(warnings.join(" | "), /endDate <null> differs from expected 2026-09-01/);
+});
+
+test("resolveOfferingReuse: rerun is idempotent (reuse same id, deterministic)", () => {
+  const candidates = [offeringCandidate({ id: "off-1" })];
+  const first = resolveOfferingReuse(candidates, EXPECTED);
+  const second = resolveOfferingReuse(candidates, EXPECTED);
+  assert.deepEqual(first, second);
+  assert.equal(first.action, "reuse");
+  assert.equal(first.action === "reuse" && first.offeringId, "off-1");
 });

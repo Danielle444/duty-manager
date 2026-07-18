@@ -48,6 +48,7 @@ import {
   buildGroupPlan,
   reconcile,
   resolveEffectiveFrom,
+  resolveOfferingReuse,
   toDateKeyUTC,
   identifyDbTarget,
   type RawStudent,
@@ -208,6 +209,8 @@ async function main(): Promise<void> {
         offeringLevel: args.offeringLevel,
         offeringStart,
         offeringEnd,
+        startKey,
+        endKey,
         effectiveFrom,
         students,
         groupPlan,
@@ -217,6 +220,8 @@ async function main(): Promise<void> {
         activityYearName: args.activityYearName,
         offeringName,
         offeringLevel: args.offeringLevel,
+        startKey,
+        endKey,
         effectiveFrom,
         students,
         groupPlan,
@@ -242,6 +247,8 @@ async function dryRun(
     activityYearName: string;
     offeringName: string;
     offeringLevel: number;
+    startKey: string;
+    endKey: string;
     effectiveFrom: Date;
     students: RawStudent[];
     groupPlan: GroupPlan;
@@ -255,23 +262,37 @@ async function dryRun(
   });
   console.log(`ActivityYear "${ctx.activityYearName}": ${year ? "REUSE (exists)" : "CREATE"}`);
 
+  // Stable identity is (activityYearId, name); NEVER (activityYearId, level).
+  // Query by the unique tuple and let the pure resolver decide create/reuse/stop.
   let offering: { id: string; name: string } | null = null;
   if (year) {
-    offering = await prisma.courseOffering.findFirst({
-      where: { activityYearId: year.id, level: ctx.offeringLevel },
-      select: { id: true, name: true },
+    const candidates = await prisma.courseOffering.findMany({
+      where: { activityYearId: year.id, name: ctx.offeringName },
+      select: { id: true, activityYearId: true, name: true, level: true, startDate: true, endDate: true },
     });
+    const decision = resolveOfferingReuse(candidates, {
+      activityYearId: year.id,
+      name: ctx.offeringName,
+      level: ctx.offeringLevel,
+      startKey: ctx.startKey,
+      endKey: ctx.endKey,
+    });
+    if (decision.action === "stop") {
+      console.error(`STOP: ${decision.reason}`);
+      process.exitCode = 1;
+      console.log("--- DRY-RUN halted: offering identity conflict (no writes) ---");
+      return;
+    }
+    if (decision.action === "reuse") {
+      const found = candidates.find((c) => c.id === decision.offeringId);
+      offering = found ? { id: found.id, name: found.name } : null;
+      for (const w of decision.warnings) console.log(`  NOTE: ${w}`);
+    }
   }
   if (offering) {
-    console.log(`CourseOffering level ${ctx.offeringLevel}: REUSE (exists, name="${offering.name}")`);
-    if (offering.name !== ctx.offeringName) {
-      console.log(
-        `  NOTE: existing offering name "${offering.name}" differs from requested ` +
-          `"${ctx.offeringName}" - name is left UNCHANGED on reuse (reported only).`,
-      );
-    }
+    console.log(`CourseOffering (name="${offering.name}"): REUSE (exact activityYearId+name match, level ${ctx.offeringLevel} verified)`);
   } else {
-    console.log(`CourseOffering level ${ctx.offeringLevel}: CREATE (name="${ctx.offeringName}")`);
+    console.log(`CourseOffering (name="${ctx.offeringName}"): CREATE (level ${ctx.offeringLevel})`);
   }
 
   // CourseGroups: existence is only meaningful once the offering exists.
@@ -375,6 +396,8 @@ async function applyBackfill(
     offeringLevel: number;
     offeringStart: Date;
     offeringEnd: Date;
+    startKey: string;
+    endKey: string;
     effectiveFrom: Date;
     students: RawStudent[];
     groupPlan: GroupPlan;
@@ -393,14 +416,30 @@ async function applyBackfill(
         yearCreated = true;
       }
 
-      // CourseOffering by (activityYearId, level) - no unique constraint exists,
-      // so match by findFirst. Name is only set on create, never overwritten.
-      let offering = await tx.courseOffering.findFirst({
-        where: { activityYearId: year.id, level: ctx.offeringLevel },
+      // CourseOffering stable identity is (activityYearId, name), enforced by
+      // @@unique([activityYearId, name]). NEVER match by (activityYearId, level):
+      // a year may hold >1 offering at the same level. Query the unique tuple and
+      // let the pure resolver decide create/reuse/stop; on any conflict it throws
+      // and this transaction rolls back (year create included) with no writes.
+      const candidates = await tx.courseOffering.findMany({
+        where: { activityYearId: year.id, name: ctx.offeringName },
+        select: { id: true, activityYearId: true, name: true, level: true, startDate: true, endDate: true },
       });
+      const decision = resolveOfferingReuse(candidates, {
+        activityYearId: year.id,
+        name: ctx.offeringName,
+        level: ctx.offeringLevel,
+        startKey: ctx.startKey,
+        endKey: ctx.endKey,
+      });
+      if (decision.action === "stop") {
+        throw new Error(decision.reason);
+      }
+      let offering: { id: string; name: string };
       let offeringCreated = false;
-      if (!offering) {
-        offering = await tx.courseOffering.create({
+      const offeringWarnings = decision.action === "reuse" ? decision.warnings : [];
+      if (decision.action === "create") {
+        const created = await tx.courseOffering.create({
           data: {
             activityYearId: year.id,
             name: ctx.offeringName,
@@ -409,8 +448,16 @@ async function applyBackfill(
             endDate: ctx.offeringEnd,
             status: "ACTIVE",
           },
+          select: { id: true, name: true },
         });
+        offering = created;
         offeringCreated = true;
+      } else {
+        const found = candidates.find((c) => c.id === decision.offeringId);
+        if (!found) throw new Error("internal: resolved offering id not present in candidates");
+        // Identity (year, name, level) verified by the resolver; nothing on the
+        // existing row is overwritten - date drift is reported, not repaired.
+        offering = { id: found.id, name: found.name };
       }
 
       // CourseGroups: top-level first, then subgroups (need parent ids).
@@ -457,6 +504,7 @@ async function applyBackfill(
         yearCreated,
         offering,
         offeringCreated,
+        offeringWarnings,
         topIdByName,
         subIdByKey,
         topCreated,
@@ -473,11 +521,8 @@ async function applyBackfill(
     `CourseOffering level ${ctx.offeringLevel}: ${spine.offeringCreated ? "CREATED" : "reused"} ` +
       `(name="${spine.offering.name}")`,
   );
-  if (!spine.offeringCreated && spine.offering.name !== ctx.offeringName) {
-    console.log(
-      `  NOTE: existing offering name "${spine.offering.name}" differs from requested ` +
-        `"${ctx.offeringName}" - left UNCHANGED (reported only).`,
-    );
+  for (const w of spine.offeringWarnings) {
+    console.log(`  NOTE: ${w}`);
   }
   console.log(`CourseGroup top-level: created=${spine.topCreated}, reused=${spine.topReused}`);
   console.log(`CourseGroup subgroups: created=${spine.subCreated}, reused=${spine.subReused}`);

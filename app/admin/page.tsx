@@ -45,7 +45,7 @@ export default async function AdminDashboardPage() {
       href: "/admin/students",
     });
   }
-  if (data.studentsWithoutHorse > 0) {
+  if (data.studentsWithoutHorse !== null && data.studentsWithoutHorse > 0) {
     attentionItems.push({
       key: "no-horse",
       label: `${data.studentsWithoutHorse} חניכים ללא שיבוץ סוס`,

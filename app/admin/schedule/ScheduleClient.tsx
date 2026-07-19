@@ -20,6 +20,7 @@ import {
   weekKey,
 } from "@/lib/dates";
 import { subgroupKey } from "@/lib/subgroup-identity";
+import { resolveGridGroupByStudent } from "@/app/admin/schedule/historical-grid-group";
 import type { GenerateMode } from "@/lib/scheduler";
 import { ScheduleGrid } from "@/app/admin/schedule/ScheduleGrid";
 import { ScheduleDiagnosticsPanel } from "@/app/admin/schedule/ScheduleDiagnosticsPanel";
@@ -220,13 +221,20 @@ export function ScheduleClient({
   // matches student name, duty type name, group, or subgroup number. Applied
   // in both list and grid view; never replaces the dropdowns.
   const normalizedSearchQuery = searchQuery.trim().toLowerCase();
-  function matchesSearchQuery(a: { studentId: string; studentName: string; dutyTypeName: string }) {
+  // W6D3-HOTFIX: search matches the assignment's HISTORICAL group (resolved at
+  // its own duty date, carried on the DTO), not the current Student mirror — so
+  // searching "א"/"1" surfaces a past duty by the group it was in then.
+  function matchesSearchQuery(a: {
+    studentName: string;
+    dutyTypeName: string;
+    groupName: string | null;
+    subgroupNumber: number | null;
+  }) {
     if (!normalizedSearchQuery) return true;
     if (a.studentName.toLowerCase().includes(normalizedSearchQuery)) return true;
     if (a.dutyTypeName.toLowerCase().includes(normalizedSearchQuery)) return true;
-    const student = studentById.get(a.studentId);
-    if (student?.groupName?.toLowerCase().includes(normalizedSearchQuery)) return true;
-    if (student?.subgroupNumber != null && String(student.subgroupNumber).includes(normalizedSearchQuery)) {
+    if (a.groupName?.toLowerCase().includes(normalizedSearchQuery)) return true;
+    if (a.subgroupNumber != null && String(a.subgroupNumber).includes(normalizedSearchQuery)) {
       return true;
     }
     return false;
@@ -345,6 +353,16 @@ export function ScheduleClient({
   const gridRange = resolveRange();
   const gridRangeStartKey = gridRange ? dateKey(gridRange.startDate) : null;
   const gridRangeEndKey = gridRange ? dateKey(gridRange.endDate) : null;
+
+  // W6D3-HOTFIX: each grid row's group must be the group the trainee was in during
+  // the VIEWED range — resolved from that student's earliest historical assignment
+  // in range (the DTO carries the per-date historical group from the server) —
+  // never the current Student mirror. A student with no in-range assignment is
+  // absent from the map → the grid shows null/"–" (fail closed, no mirror fallback).
+  const historicalGroupByStudent = useMemo(
+    () => resolveGridGroupByStudent(assignments, gridRangeStartKey, gridRangeEndKey),
+    [assignments, gridRangeStartKey, gridRangeEndKey]
+  );
 
   const [availabilityMap, setAvailabilityMap] = useState<Map<string, boolean>>(new Map());
 
@@ -644,13 +662,18 @@ export function ScheduleClient({
           refreshKey={diagnosticsRefreshKey}
         />
         <ScheduleGrid
-          students={students.map((s) => ({
-            id: s.id,
-            fullName: s.fullName ?? "",
-            lastName: s.lastName,
-            groupName: s.groupName ?? null,
-            subgroupNumber: s.subgroupNumber ?? null,
-          }))}
+          students={students.map((s) => {
+            // Historical group for the viewed range (never the current mirror);
+            // absent → null/"–" (no fallback).
+            const hist = historicalGroupByStudent.get(s.id) ?? null;
+            return {
+              id: s.id,
+              fullName: s.fullName ?? "",
+              lastName: s.lastName,
+              groupName: hist ? hist.groupName : null,
+              subgroupNumber: hist ? hist.subgroupNumber : null,
+            };
+          })}
           assignments={assignments}
           dutyTypeIds={dutyTypes.map((d) => d.id)}
           startDate={gridRange?.startDate ?? null}

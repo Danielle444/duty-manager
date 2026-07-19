@@ -110,12 +110,24 @@ test("isDuplicateIdentityNumberError: rejects non-P2002 / non-errors", () => {
 interface TxStore {
   students: { id: string }[];
   enrollments: { id: string; studentId: string; courseOfferingId: string; status: string; isPrimary: boolean; startDate: Date }[];
+  horses: {
+    id: string;
+    studentId: string;
+    courseEnrollmentId: string;
+    hasPrivateHorse: boolean;
+    privateHorseName: string | null;
+    assignedHorseName: string | null;
+    effectiveFrom: Date;
+    effectiveTo: null;
+  }[];
   memberships: { id: string; courseEnrollmentId: string; courseGroupId: string; effectiveFrom: Date; effectiveTo: null }[];
 }
 
 function newStore(): TxStore {
-  return { students: [], enrollments: [], memberships: [] };
+  return { students: [], enrollments: [], horses: [], memberships: [] };
 }
+
+type FailStep = "student" | "enrollment" | "horse" | "membership";
 
 /**
  * A fake TraineeTxClient that appends to `store` and can be told to throw at a
@@ -124,7 +136,7 @@ function newStore(): TxStore {
 function fakeTx(
   store: TxStore,
   order: string[],
-  failAt?: "student" | "enrollment" | "membership",
+  failAt?: FailStep,
 ): TraineeTxClient {
   let n = 0;
   const id = (p: string) => `${p}-${(n += 1)}`;
@@ -144,6 +156,15 @@ function fakeTx(
         if (failAt === "enrollment") throw new Error("enrollment create failed");
         const row = { id: id("e"), ...data };
         store.enrollments.push(row);
+        return { id: row.id };
+      },
+    },
+    traineeHorseAssignment: {
+      create: async ({ data }) => {
+        order.push("horse");
+        if (failAt === "horse") throw new Error("horse create failed");
+        const row = { id: id("h"), ...data };
+        store.horses.push(row);
         return { id: row.id };
       },
     },
@@ -175,13 +196,15 @@ const PLAN: AtomicTraineePlan = {
   effectiveDate: new Date("2026-07-19T00:00:00.000Z"),
 };
 
-test("runTraineeCreateInTx: creates student -> enrollment -> membership in order with correct data", async () => {
+test("runTraineeCreateInTx: creates student -> enrollment -> horse -> membership in order with correct data", async () => {
   const store = newStore();
   const order: string[] = [];
   await runTraineeCreateInTx(fakeTx(store, order), PLAN);
-  assert.deepEqual(order, ["student", "enrollment", "membership"]);
+  // Horse create happens AFTER Student and CourseEnrollment, BEFORE membership.
+  assert.deepEqual(order, ["student", "enrollment", "horse", "membership"]);
   assert.equal(store.students.length, 1);
   assert.equal(store.enrollments.length, 1);
+  assert.equal(store.horses.length, 1);
   assert.equal(store.memberships.length, 1);
 
   const enr = store.enrollments[0];
@@ -191,11 +214,50 @@ test("runTraineeCreateInTx: creates student -> enrollment -> membership in order
   assert.equal(enr.isPrimary, true);
   assert.equal(enr.startDate.toISOString(), "2026-07-19T00:00:00.000Z");
 
+  // Canonical-empty initial horse interval, linked to the just-created rows.
+  const horse = store.horses[0];
+  assert.equal(horse.studentId, store.students[0].id);
+  assert.equal(horse.courseEnrollmentId, enr.id);
+  assert.equal(horse.hasPrivateHorse, false);
+  assert.equal(horse.privateHorseName, null);
+  assert.equal(horse.assignedHorseName, null);
+  assert.equal(horse.effectiveFrom.toISOString(), "2026-07-19T00:00:00.000Z");
+  assert.equal(horse.effectiveTo, null);
+  // Exactly false/null/null - no other horse shape leaks through.
+  assert.deepEqual(
+    { hasPrivateHorse: horse.hasPrivateHorse, privateHorseName: horse.privateHorseName, assignedHorseName: horse.assignedHorseName },
+    { hasPrivateHorse: false, privateHorseName: null, assignedHorseName: null },
+  );
+
   const mem = store.memberships[0];
   assert.equal(mem.courseEnrollmentId, enr.id);
   assert.equal(mem.courseGroupId, "sub-א-2");
   assert.equal(mem.effectiveFrom.toISOString(), "2026-07-19T00:00:00.000Z");
   assert.equal(mem.effectiveTo, null);
+
+  // enrollment.startDate == GroupMembership.effectiveFrom == horse.effectiveFrom.
+  assert.equal(enr.startDate.getTime(), mem.effectiveFrom.getTime());
+  assert.equal(enr.startDate.getTime(), horse.effectiveFrom.getTime());
+  assert.equal(horse.effectiveFrom.getTime(), PLAN.effectiveDate.getTime());
+});
+
+test("runTraineeCreateInTx: writes exactly the four models - no TraineeGroupMembership access", async () => {
+  const store = newStore();
+  const order: string[] = [];
+  const accessed = new Set<string>();
+  const base = fakeTx(store, order) as unknown as Record<string, unknown>;
+  const spy = new Proxy(base, {
+    get(target, prop) {
+      if (typeof prop === "string") accessed.add(prop);
+      return target[prop as string];
+    },
+  }) as unknown as TraineeTxClient;
+  await runTraineeCreateInTx(spy, PLAN);
+  assert.equal(accessed.has("traineeGroupMembership"), false);
+  assert.deepEqual(
+    [...accessed].sort(),
+    ["courseEnrollment", "groupMembership", "student", "traineeHorseAssignment"],
+  );
 });
 
 /**
@@ -205,13 +267,14 @@ test("runTraineeCreateInTx: creates student -> enrollment -> membership in order
  */
 async function atomic(
   committed: TxStore,
-  failAt: "student" | "enrollment" | "membership" | undefined,
+  failAt: FailStep | undefined,
   order: string[],
 ): Promise<void> {
   const scratch = newStore();
   await runTraineeCreateInTx(fakeTx(scratch, order, failAt), PLAN);
   committed.students.push(...scratch.students);
   committed.enrollments.push(...scratch.enrollments);
+  committed.horses.push(...scratch.horses);
   committed.memberships.push(...scratch.memberships);
 }
 
@@ -223,12 +286,23 @@ test("rollback: failure at Student.create leaves nothing committed", async () =>
   assert.deepEqual(committed, newStore()); // no student, no enrollment, no membership
 });
 
+test("rollback: failure at horse create leaves nothing committed and no membership is attempted", async () => {
+  const committed = newStore();
+  const order: string[] = [];
+  await assert.rejects(atomic(committed, "horse", order), /horse create failed/);
+  // membership is NEVER reached once the horse create throws.
+  assert.deepEqual(order, ["student", "enrollment", "horse"]);
+  assert.equal(order.includes("membership"), false);
+  // Student, enrollment, and (attempted) horse rolled back - nothing committed.
+  assert.deepEqual(committed, newStore());
+});
+
 test("rollback: failure after enrollment create leaves nothing committed", async () => {
   const committed = newStore();
   const order: string[] = [];
   await assert.rejects(atomic(committed, "membership", order), /membership create failed/);
-  assert.deepEqual(order, ["student", "enrollment", "membership"]);
-  // Student and enrollment were written to scratch but the throw prevents commit.
+  assert.deepEqual(order, ["student", "enrollment", "horse", "membership"]);
+  // Student, enrollment, and horse were written to scratch but the throw prevents commit.
   assert.deepEqual(committed, newStore());
 });
 

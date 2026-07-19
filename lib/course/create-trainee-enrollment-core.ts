@@ -21,6 +21,13 @@
  * does not resolve to a CourseGroup in the current offering, FAILS before any
  * write - an enrollment is never created without its initial GroupMembership in
  * this stage.
+ *
+ * W8A-4B INITIAL-HISTORY INVARIANT (this stage): every newly created ACTIVE
+ * CourseEnrollment also receives ONE linked, canonical-empty
+ * TraineeHorseAssignment interval inside the SAME transaction, so a brand-new
+ * trainee is distinguishable from an enrollment whose horse history is missing.
+ * This stage establishes that invariant for NEW trainees only; it does not touch
+ * any existing horse writer or runtime reader.
  */
 import {
   israelDateKeyFromInstant,
@@ -127,12 +134,13 @@ export function resolveInitialEffectiveDate(
 /**
  * Detect a Prisma unique-constraint violation (P2002) that corresponds to the
  * Student.identityNumber constraint, WITHOUT importing Prisma. The atomic
- * transaction creates a brand-new Student, a brand-new CourseEnrollment, and a
- * brand-new GroupMembership; of every unique constraint they touch, only
- * Student.identityNumber can collide (the enrollment/membership uniques are
- * keyed on the just-created ids, and no CourseGroup is created), so a P2002
- * whose target cannot be read is still safely attributed to identityNumber.
- * Never inspects or echoes the offending value.
+ * transaction creates a brand-new Student, a brand-new CourseEnrollment, a
+ * brand-new TraineeHorseAssignment, and a brand-new GroupMembership; of every
+ * unique constraint they touch, only Student.identityNumber can collide (the
+ * enrollment/membership uniques and the horse [studentId, effectiveFrom] unique
+ * are all keyed on the just-created ids, and no CourseGroup is created), so a
+ * P2002 whose target cannot be read is still safely attributed to
+ * identityNumber. Never inspects or echoes the offending value.
  */
 export function isDuplicateIdentityNumberError(err: unknown): boolean {
   if (typeof err !== "object" || err === null) {
@@ -151,6 +159,22 @@ export function isDuplicateIdentityNumberError(err: unknown): boolean {
   }
   return true;
 }
+
+// --- canonical empty horse state (pure) -------------------------------------
+
+/**
+ * The single canonical "no horse yet" value - normalize-horse's state 4 (no
+ * ranch horse, no private horse). Kept as a local PURE literal so this core
+ * stays free of any runtime horse-writer dependency (section C): it is exactly
+ * the three cache fields, with the exact literal types the transaction client
+ * requires. Any future divergence from the writer's empty state is a deliberate,
+ * reviewable edit here rather than an implicit import of writer behaviour.
+ */
+export const EMPTY_INITIAL_HORSE = {
+  hasPrivateHorse: false,
+  privateHorseName: null,
+  assignedHorseName: null,
+} as const;
 
 // --- atomic write plan + transaction body -----------------------------------
 
@@ -181,7 +205,7 @@ export interface AtomicTraineePlan {
 
 /**
  * The narrow structural view of a Prisma transaction client this stage needs -
- * only the three create calls, in dependency order. Real Prisma
+ * only the four create calls, in dependency order. Real Prisma
  * `Prisma.TransactionClient` satisfies this structurally; tests pass a plain
  * fake to observe ordering and rollback without a database.
  */
@@ -198,6 +222,19 @@ export interface TraineeTxClient {
       };
     }): Promise<{ id: string }>;
   };
+  traineeHorseAssignment: {
+    create(args: {
+      data: {
+        studentId: string;
+        courseEnrollmentId: string;
+        hasPrivateHorse: false;
+        privateHorseName: null;
+        assignedHorseName: null;
+        effectiveFrom: Date;
+        effectiveTo: null;
+      };
+    }): Promise<{ id: string }>;
+  };
   groupMembership: {
     create(args: {
       data: {
@@ -211,11 +248,17 @@ export interface TraineeTxClient {
 }
 
 /**
- * The transaction body: Student -> CourseEnrollment -> GroupMembership, in that
- * fixed order (each step depends on the previous id). Run inside a single Prisma
- * interactive transaction by the caller, so any thrown step aborts the whole
- * transaction and leaves NO Student, NO CourseEnrollment, and NO GroupMembership
- * behind. Writes ONLY these three rows - never TraineeGroupMembership.
+ * The transaction body: Student -> CourseEnrollment -> TraineeHorseAssignment ->
+ * GroupMembership, in that fixed order (each write after Student depends on a
+ * previously created id). Run inside a single Prisma interactive transaction by
+ * the caller, so any thrown step aborts the whole transaction and leaves NO
+ * Student, NO CourseEnrollment, NO TraineeHorseAssignment, and NO GroupMembership
+ * behind. Writes ONLY these four rows - never TraineeGroupMembership.
+ *
+ * The horse row is the canonical-empty opening interval (W8A-4B): same
+ * `plan.effectiveDate` as the enrollment and membership, so enrollment.startDate,
+ * membership.effectiveFrom, and the horse effectiveFrom never disagree, and the
+ * enrollment's horse caches stay aligned with an empty state by construction.
  */
 export async function runTraineeCreateInTx(
   tx: TraineeTxClient,
@@ -229,6 +272,17 @@ export async function runTraineeCreateInTx(
       status: "ACTIVE",
       isPrimary: true,
       startDate: plan.effectiveDate,
+    },
+  });
+  await tx.traineeHorseAssignment.create({
+    data: {
+      studentId: student.id,
+      courseEnrollmentId: enrollment.id,
+      hasPrivateHorse: EMPTY_INITIAL_HORSE.hasPrivateHorse,
+      privateHorseName: EMPTY_INITIAL_HORSE.privateHorseName,
+      assignedHorseName: EMPTY_INITIAL_HORSE.assignedHorseName,
+      effectiveFrom: plan.effectiveDate,
+      effectiveTo: null,
     },
   });
   await tx.groupMembership.create({
@@ -291,7 +345,8 @@ export interface CreateTraineeDeps {
  *   4. pre-check identityNumber uniqueness (preserves the pre-W6B UX message);
  *   5. compute the single effectiveDate;
  *   6. perform the all-or-nothing create (Student + ACTIVE isPrimary enrollment
- *      + initial subgroup membership). A concurrent duplicate that slips past
+ *      + canonical-empty initial horse interval + initial subgroup membership).
+ *      A concurrent duplicate that slips past
  *      the pre-check is caught via the DB unique constraint and mapped to the
  *      same friendly message; any other error propagates unchanged.
  *

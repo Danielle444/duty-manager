@@ -4,7 +4,13 @@ import { FormEvent, useMemo, useState, useTransition } from "react";
 import Link from "next/link";
 import { Button } from "@/lib/components/Button";
 import { Modal } from "@/lib/components/Modal";
-import { createStudent, setStudentActive, updateStudent } from "@/lib/actions/students";
+import {
+  changeTraineeGroup,
+  createStudent,
+  setStudentActive,
+  updateStudent,
+} from "@/lib/actions/students";
+import type { GroupChangeOption } from "@/lib/course/group-change-options";
 import { validateCreateTraineeForm } from "@/lib/course/create-trainee-form";
 import { setStudentAvailabilityScheme } from "@/lib/actions/availability";
 import { maskIdentityNumber } from "@/lib/format";
@@ -117,10 +123,14 @@ export function StudentsClient({
   students,
   presets,
   courseRange,
+  groupChangeOptions,
+  groupChangeDisabledMessage,
 }: {
   students: StudentRow[];
   presets: PresetOption[];
   courseRange: CourseRange | null;
+  groupChangeOptions: GroupChangeOption[];
+  groupChangeDisabledMessage: string | null;
 }) {
   const [isPending, startTransition] = useTransition();
   const [modalStudent, setModalStudent] = useState<StudentRow | "new" | null>(null);
@@ -142,11 +152,46 @@ export function StudentsClient({
   const [activeFilter, setActiveFilter] = useState<ActiveFilter>("all");
   const [sortMode, setSortMode] = useState<SortMode>("group-subgroup");
 
-  const hasNoGroup = useMemo(() => students.some((s) => s.groupName === null), [students]);
-  const { numbers: subgroupNumbers, hasNone: hasNoSubgroup } = useMemo(
-    () => subgroupOptionsFor(students, groupFilter),
-    [students, groupFilter]
+  // W6D3: local, optimistic group overrides applied after a successful group
+  // change so the moved trainee's row reflects the new group immediately (the
+  // server revalidate converges the canonical value shortly after).
+  const [groupOverrides, setGroupOverrides] = useState<
+    Record<string, { groupName: string; subgroupNumber: number }>
+  >({});
+  const [selectedGroupId, setSelectedGroupId] = useState("");
+  const [groupChangePending, startGroupChangeTransition] = useTransition();
+  const [groupChangeMessage, setGroupChangeMessage] = useState<string | null>(null);
+  const [groupChangeError, setGroupChangeError] = useState<string | null>(null);
+
+  const effectiveStudents = useMemo(
+    () =>
+      students.map((s) => {
+        const override = groupOverrides[s.id];
+        return override
+          ? { ...s, groupName: override.groupName, subgroupNumber: override.subgroupNumber }
+          : s;
+      }),
+    [students, groupOverrides]
   );
+
+  const hasNoGroup = useMemo(
+    () => effectiveStudents.some((s) => s.groupName === null),
+    [effectiveStudents]
+  );
+  const { numbers: subgroupNumbers, hasNone: hasNoSubgroup } = useMemo(
+    () => subgroupOptionsFor(effectiveStudents, groupFilter),
+    [effectiveStudents, groupFilter]
+  );
+
+  // Preselect the trainee's current matching leaf group, when one of the
+  // server-provided options matches their current group + subgroup.
+  function matchingOptionId(groupName: string | null, subgroupNumber: number | null): string {
+    if (groupName === null || subgroupNumber === null) return "";
+    const match = groupChangeOptions.find(
+      (o) => o.parentName === groupName && o.subgroupNumber === subgroupNumber
+    );
+    return match ? match.courseGroupId : "";
+  }
 
   // Changing the group can leave a previously-picked subgroup no longer
   // meaningful (e.g. "תת-קבוצה 3" picked while on "קבוצה א", then switching
@@ -154,7 +199,7 @@ export function StudentsClient({
   // הקבוצות" rather than silently filtering against a stale, invisible value.
   function handleGroupFilterChange(next: GroupFilter) {
     setGroupFilter(next);
-    const nextOptions = subgroupOptionsFor(students, next);
+    const nextOptions = subgroupOptionsFor(effectiveStudents, next);
     const stillValid =
       subgroupFilter === "all" ||
       (subgroupFilter === "none" && nextOptions.hasNone) ||
@@ -164,7 +209,7 @@ export function StudentsClient({
 
   const filteredStudents = useMemo(() => {
     const q = search.trim().toLowerCase();
-    const matches = students.filter((s) => {
+    const matches = effectiveStudents.filter((s) => {
       if (activeFilter === "active" && !s.isActive) return false;
       if (activeFilter === "inactive" && s.isActive) return false;
       if (!matchesGroupFilter(s, groupFilter)) return false;
@@ -174,7 +219,7 @@ export function StudentsClient({
     });
     // Sort a copy - never mutate the original loaded `students` array.
     return [...matches].sort(comparatorForSortMode(sortMode));
-  }, [students, search, groupFilter, subgroupFilter, activeFilter, sortMode]);
+  }, [effectiveStudents, search, groupFilter, subgroupFilter, activeFilter, sortMode]);
 
   function openModal(student: StudentRow | "new") {
     setError(null);
@@ -183,7 +228,34 @@ export function StudentsClient({
     setAvailabilityMode("whole-course");
     setAvailabilityStart(courseRange?.startDate ?? "");
     setAvailabilityEnd(courseRange?.endDate ?? "");
+    setGroupChangeMessage(null);
+    setGroupChangeError(null);
+    setSelectedGroupId(
+      student === "new" ? "" : matchingOptionId(student.groupName, student.subgroupNumber)
+    );
     setModalStudent(student);
+  }
+
+  function handleSaveGroupChange() {
+    if (modalStudent === "new" || modalStudent === null) return;
+    const option = groupChangeOptions.find((o) => o.courseGroupId === selectedGroupId);
+    if (!option) return;
+    const studentId = modalStudent.id;
+    setGroupChangeMessage(null);
+    setGroupChangeError(null);
+    startGroupChangeTransition(async () => {
+      const result = await changeTraineeGroup(studentId, selectedGroupId);
+      if (!result.success) {
+        setGroupChangeError(result.error ?? "אירעה שגיאה");
+        return;
+      }
+      // Reflect the new group on the row immediately (server revalidate follows).
+      setGroupOverrides((prev) => ({
+        ...prev,
+        [studentId]: { groupName: option.parentName, subgroupNumber: option.subgroupNumber },
+      }));
+      setGroupChangeMessage("הקבוצה עודכנה בהצלחה");
+    });
   }
 
   function handleSubmit(e: FormEvent<HTMLFormElement>) {
@@ -424,27 +496,33 @@ export function StudentsClient({
               required
             />
           </label>
-          <label className="flex flex-col gap-1 text-sm">
-            {modalStudent === "new" ? "קבוצה" : "קבוצה (אופציונלי)"}
-            <input
-              name="groupName"
-              defaultValue={modalStudent !== "new" ? modalStudent?.groupName ?? "" : ""}
-              placeholder="א / ב"
-              className="rounded-lg border border-border px-3 py-2 text-sm"
-              required={modalStudent === "new"}
-            />
-          </label>
-          <label className="flex flex-col gap-1 text-sm">
-            {modalStudent === "new" ? "מס קבוצה" : "מס קבוצה (אופציונלי)"}
-            <input
-              name="subgroupNumber"
-              type="number"
-              min={1}
-              defaultValue={modalStudent !== "new" ? modalStudent?.subgroupNumber ?? "" : ""}
-              className="rounded-lg border border-border px-3 py-2 text-sm"
-              required={modalStudent === "new"}
-            />
-          </label>
+          {/* W6D3: the free-text group/subgroup inputs are for CREATION only.
+              An existing trainee's group is changed via the dedicated
+              "שינוי קבוצה בקורס הנוכחי" control below, which writes the
+              authoritative GroupMembership - editing no longer writes group. */}
+          {modalStudent === "new" && (
+            <>
+              <label className="flex flex-col gap-1 text-sm">
+                קבוצה
+                <input
+                  name="groupName"
+                  placeholder="א / ב"
+                  className="rounded-lg border border-border px-3 py-2 text-sm"
+                  required
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-sm">
+                מס קבוצה
+                <input
+                  name="subgroupNumber"
+                  type="number"
+                  min={1}
+                  className="rounded-lg border border-border px-3 py-2 text-sm"
+                  required
+                />
+              </label>
+            </>
+          )}
           <label className="flex flex-col gap-1 text-sm">
             טלפון (אופציונלי)
             <input
@@ -467,6 +545,52 @@ export function StudentsClient({
             </Button>
           </div>
         </form>
+
+        {modalStudent !== null && modalStudent !== "new" && (
+          <div className="mt-5 flex flex-col gap-3 border-t border-border pt-4">
+            <h3 className="text-sm font-bold text-card-foreground">שינוי קבוצה בקורס הנוכחי</h3>
+            {groupChangeDisabledMessage ? (
+              <p className="text-xs text-danger">{groupChangeDisabledMessage}</p>
+            ) : groupChangeOptions.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                לא הוגדרו קבוצות זמינות בקורס הנוכחי
+              </p>
+            ) : (
+              <>
+                <select
+                  value={selectedGroupId}
+                  onChange={(e) => {
+                    setSelectedGroupId(e.target.value);
+                    setGroupChangeMessage(null);
+                    setGroupChangeError(null);
+                  }}
+                  className="rounded-lg border border-border px-3 py-2 text-sm"
+                >
+                  <option value="">בחר/י קבוצה</option>
+                  {groupChangeOptions.map((o) => (
+                    <option key={o.courseGroupId} value={o.courseGroupId}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+                {groupChangeError && <p className="text-sm text-danger">{groupChangeError}</p>}
+                {groupChangeMessage && (
+                  <p className="text-sm text-success">{groupChangeMessage}</p>
+                )}
+                <div className="flex justify-end">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    disabled={groupChangePending || !selectedGroupId}
+                    onClick={handleSaveGroupChange}
+                  >
+                    {groupChangePending ? "שומר..." : "שמור שינוי קבוצה"}
+                  </Button>
+                </div>
+              </>
+            )}
+          </div>
+        )}
 
         {modalStudent !== null && modalStudent !== "new" && (
           <div className="mt-5 flex flex-col gap-3 border-t border-border pt-4">

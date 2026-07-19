@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useTransition } from "react";
+import { useEffect, useState, useTransition, type Dispatch, type SetStateAction } from "react";
 import { Button } from "@/lib/components/Button";
 import { Modal } from "@/lib/components/Modal";
 import { RidingHistoryList } from "@/lib/components/RidingHistoryList";
@@ -20,8 +20,6 @@ import { RidingComplexPlanEditor } from "@/lib/components/RidingComplexPlanEdito
 import {
   getInstructorRidingSlots,
   getStudentRidingHistoryForInstructor,
-  getKnownRidingLessonTopics,
-  getKnownRidingHorseNames,
   type WeeklyRidingDay,
   type WeeklyRidingActivity,
   type StudentRidingHistoryResult,
@@ -38,21 +36,11 @@ import {
 // prisma.instructor.findMany({ where: { isActive: true } }). No server
 // action was added or modified for this.
 import { getInstructorContacts } from "@/lib/actions/contacts";
-import {
-  RidingStudentsModalController,
-  type RidingStudentsModalControllerHandle,
-} from "./RidingStudentsModalController";
+import type { InstructorSlotMode, RidingStudentOption } from "./instructor-riding-shared-types";
 
 type ViewMode = "day" | "week";
 type ScopeMode = "mine" | "all";
 type BrowseMode = "slot" | "student";
-
-export interface RidingStudentOption {
-  id: string;
-  fullName: string;
-  groupName: string | null;
-  subgroupNumber: number | null;
-}
 
 function isAssignedToInstructor(activity: WeeklyRidingActivity, instructorId: string): boolean {
   return activity.ridingSlot?.assignments.some((a) => a.instructorIds.includes(instructorId)) ?? false;
@@ -68,8 +56,6 @@ function isAssignedToInstructor(activity: WeeklyRidingActivity, instructorId: st
 // exclusive by construction (P2's server-side guard). Both underlying reads
 // already return null for an inactive instructor (isActive re-checked
 // server-side on every call) - no extra handling needed here for that case.
-export type InstructorSlotMode = "none" | "simple" | "complex" | "error";
-
 async function detectInstructorRidingSlotMode(instructorId: string, ridingSlotId: string): Promise<InstructorSlotMode> {
   const complexPlan = await getRidingSlotComplexPlanForInstructor(instructorId, ridingSlotId);
   if (complexPlan) return "complex";
@@ -138,10 +124,23 @@ export function InstructorRidingSlotsSection({
   instructorId,
   canEdit,
   students,
+  modeByRidingSlotId,
+  setModeByRidingSlotId,
+  onOpenRidingStudents,
 }: {
   instructorId: string;
   canEdit: boolean;
   students: RidingStudentOption[];
+  // Per-RidingSlot mode map + its setter are owned by InstructorClient (so the
+  // single shared RidingStudentsModalController can read the same live modes);
+  // detection/refresh/choose/delete below still run here and write through this
+  // setter, exactly as when the state was local.
+  modeByRidingSlotId: Record<string, InstructorSlotMode>;
+  setModeByRidingSlotId: Dispatch<SetStateAction<Record<string, InstructorSlotMode>>>;
+  // Opens the single shared riding-students popup (owned by InstructorClient).
+  // Both existing entry paths call this; knownMode is the same
+  // modeByRidingSlotId[slotId] snapshot the inline openStudents read before.
+  onOpenRidingStudents: (activity: WeeklyRidingActivity, knownMode?: InstructorSlotMode) => void;
 }) {
   const [browseMode, setBrowseMode] = useState<BrowseMode>("slot");
   const [viewMode, setViewMode] = useState<ViewMode>("day");
@@ -149,13 +148,6 @@ export function InstructorRidingSlotsSection({
   const [selectedDate, setSelectedDate] = useState(() => getLocalDateKey());
   const [days, setDays] = useState<WeeklyRidingDay[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-
-  // Imperative handle to the single riding-students "צפייה בחניכים" popup,
-  // now owned by RidingStudentsModalController. Both existing entry paths (a
-  // riding card click and the "צפייה בחניכים" button) open it through this
-  // ref; the controller alone holds the popup's own state/effects and the
-  // StudentEditor save-on-close orchestration.
-  const ridingStudentsModalRef = useRef<RidingStudentsModalControllerHandle>(null);
 
   const [studentSearch, setStudentSearch] = useState("");
   const [historyStudentId, setHistoryStudentId] = useState<string | null>(null);
@@ -174,7 +166,6 @@ export function InstructorRidingSlotsSection({
   // every visible card can show its own choice/label without a single
   // section-wide mode state.
   const [complexActivity, setComplexActivity] = useState<WeeklyRidingActivity | null>(null);
-  const [modeByRidingSlotId, setModeByRidingSlotId] = useState<Record<string, InstructorSlotMode>>({});
   const [creatingComplexForId, setCreatingComplexForId] = useState<string | null>(null);
   const [isCreatingComplex, startCreateComplexTransition] = useTransition();
   const [chooseError, setChooseError] = useState<{ ridingSlotId: string; message: string } | null>(null);
@@ -195,24 +186,6 @@ export function InstructorRidingSlotsSection({
       cancelled = true;
     };
   }, []);
-
-  // Loaded once at the section level (not per student row) and passed down
-  // to StudentEditor - same "load once, reuse" convention as
-  // HorseFeedingSection's loadKnownValues. Only editors ever open the form
-  // that uses these, so there's nothing to fetch for a view-only instructor.
-  const [knownLessonTopics, setKnownLessonTopics] = useState<string[]>([]);
-  const [knownHorseNames, setKnownHorseNames] = useState<string[]>([]);
-
-  function loadKnownValues() {
-    if (!canEdit) return;
-    getKnownRidingLessonTopics().then(setKnownLessonTopics);
-    getKnownRidingHorseNames().then(setKnownHorseNames);
-  }
-
-  useEffect(() => {
-    loadKnownValues();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canEdit]);
 
   const rangeKeys = viewMode === "day" ? [selectedDate] : getWeekDateKeys(selectedDate);
   const rangeStart = rangeKeys[0] ?? selectedDate;
@@ -242,7 +215,10 @@ export function InstructorRidingSlotsSection({
     return () => {
       cancelled = true;
     };
-  }, [rangeStart, rangeEnd]);
+    // setModeByRidingSlotId is InstructorClient's stable useState dispatcher
+    // (lifted in Stage B1) - referentially stable, so listing it never re-runs
+    // this effect; it is present only to satisfy exhaustive-deps.
+  }, [rangeStart, rangeEnd, setModeByRidingSlotId]);
 
   // Batch-detects mode for every visible RidingSlot once `days` loads -
   // keyed on the full (unfiltered) days list rather than the scopeMode-
@@ -277,7 +253,9 @@ export function InstructorRidingSlotsSection({
     return () => {
       cancelled = true;
     };
-  }, [days, instructorId]);
+    // setModeByRidingSlotId: stable dispatcher lifted to InstructorClient (see
+    // the range-reset effect above) - listed only to satisfy exhaustive-deps.
+  }, [days, instructorId, setModeByRidingSlotId]);
 
   function refreshModeFor(ridingSlotId: string) {
     detectInstructorRidingSlotMode(instructorId, ridingSlotId)
@@ -550,7 +528,7 @@ export function InstructorRidingSlotsSection({
                       onClick={
                         activity.ridingSlot
                           ? () =>
-                              ridingStudentsModalRef.current?.open(
+                              onOpenRidingStudents(
                                 activity,
                                 modeByRidingSlotId[activity.ridingSlot!.id]
                               )
@@ -604,7 +582,7 @@ export function InstructorRidingSlotsSection({
                                 // card's own onClick above, which would
                                 // otherwise call openStudents twice for one tap.
                                 e.stopPropagation();
-                                ridingStudentsModalRef.current?.open(
+                                onOpenRidingStudents(
                                   activity,
                                   modeByRidingSlotId[activity.ridingSlot!.id]
                                 );
@@ -715,17 +693,6 @@ export function InstructorRidingSlotsSection({
           ))}
         </div>
       )}
-
-      <RidingStudentsModalController
-        ref={ridingStudentsModalRef}
-        instructorId={instructorId}
-        canEdit={canEdit}
-        students={students}
-        knownLessonTopics={knownLessonTopics}
-        knownHorseNames={knownHorseNames}
-        modeByRidingSlotId={modeByRidingSlotId}
-        onReloadKnownValues={loadKnownValues}
-      />
         </>
       )}
 

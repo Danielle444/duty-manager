@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useState, useTransition } from "react";
+import { FormEvent, useEffect, useRef, useState, useTransition } from "react";
 import { Button } from "@/lib/components/Button";
 import { Logo } from "@/lib/components/Logo";
 import { WeekDayPicker, type WeekOption } from "@/lib/components/WeekDayPicker";
@@ -26,6 +26,11 @@ import { InstructorMessagesSection } from "@/app/instructor/InstructorMessagesSe
 import { InstructorRidingHorsePublicationsSection } from "@/app/instructor/InstructorRidingHorsePublicationsSection";
 import { InstructorAttendanceSection } from "@/app/instructor/InstructorAttendanceSection";
 import { InstructorRidingSlotsSection } from "@/app/instructor/InstructorRidingSlotsSection";
+import {
+  RidingStudentsModalController,
+  type RidingStudentsModalControllerHandle,
+} from "@/app/instructor/RidingStudentsModalController";
+import type { InstructorSlotMode } from "@/app/instructor/instructor-riding-shared-types";
 import { InstructorTeachingPracticeSection } from "@/app/instructor/InstructorTeachingPracticeSection";
 import { InstructorChildSignaturesSection } from "@/app/instructor/InstructorChildSignaturesSection";
 import { InstructorTraineeProgressSection } from "@/app/instructor/InstructorTraineeProgressSection";
@@ -39,6 +44,7 @@ import {
   hasUnreadNotificationsForInstructor,
 } from "@/lib/actions/notifications";
 import { getMessageTasksForInstructorView } from "@/lib/actions/messages";
+import { getKnownRidingLessonTopics, getKnownRidingHorseNames } from "@/lib/actions/riding-slots";
 import {
   formatHebrewDate,
   formatHebrewWeekday,
@@ -186,6 +192,32 @@ export function InstructorClient({
   const [selectedWeekId, setSelectedWeekId] = useState<string | null>(null);
   const [dayFilter, setDayFilter] = useState<string | "all">("all");
   const [ridingSummary, setRidingSummary] = useState<InstructorRidingAssignmentSummary | null>(null);
+
+  // Single shared riding-students popup + the inputs it needs, lifted here from
+  // InstructorRidingSlotsSection (Stage B1) so exactly one controller is
+  // mounted, independent of the active tab, ready for a later stage to open it
+  // from today/schedule/riding. The riding section still owns days + mode
+  // detection and writes modes through setModeByRidingSlotId; this only holds
+  // the shared containers.
+  const ridingStudentsModalRef = useRef<RidingStudentsModalControllerHandle>(null);
+  const [modeByRidingSlotId, setModeByRidingSlotId] = useState<Record<string, InstructorSlotMode>>({});
+  const [knownLessonTopics, setKnownLessonTopics] = useState<string[]>([]);
+  const [knownHorseNames, setKnownHorseNames] = useState<string[]>([]);
+
+  // Same load/guard as the riding section's previous loadKnownValues; gated on
+  // the riding tab being active so the query timing matches the section's prior
+  // mount-driven load (not eagerly on page load, not for non-riding tabs).
+  function loadKnownRidingValues() {
+    if (!session?.canEditRidingNotes) return;
+    getKnownRidingLessonTopics().then(setKnownLessonTopics);
+    getKnownRidingHorseNames().then(setKnownHorseNames);
+  }
+
+  useEffect(() => {
+    if (activeTab !== "riding") return;
+    loadKnownRidingValues();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, session?.canEditRidingNotes]);
 
   // Drives the "עוד" tab / "עדכונים" menu-row dot (a real unread count).
   const [hasUnreadNotifications, setHasUnreadNotifications] = useState(false);
@@ -813,6 +845,11 @@ export function InstructorClient({
             instructorId={session.id}
             canEdit={session.canEditRidingNotes}
             students={students}
+            modeByRidingSlotId={modeByRidingSlotId}
+            setModeByRidingSlotId={setModeByRidingSlotId}
+            onOpenRidingStudents={(activity, knownMode) =>
+              ridingStudentsModalRef.current?.open(activity, knownMode)
+            }
           />
         )}
 
@@ -866,6 +903,21 @@ export function InstructorClient({
           />
         )}
       </main>
+
+      {/* Single shared riding-students popup - mounted once here, independent
+          of the active tab, so a later stage can open it from today/schedule
+          as well as the riding tab. Opened today only via onOpenRidingStudents
+          passed to InstructorRidingSlotsSection; no schedule-card opener yet. */}
+      <RidingStudentsModalController
+        ref={ridingStudentsModalRef}
+        instructorId={session.id}
+        canEdit={session.canEditRidingNotes}
+        students={students}
+        knownLessonTopics={knownLessonTopics}
+        knownHorseNames={knownHorseNames}
+        modeByRidingSlotId={modeByRidingSlotId}
+        onReloadKnownValues={loadKnownRidingValues}
+      />
 
       <BottomTabs
         active={bottomActiveTab}

@@ -30,10 +30,10 @@ import {
   type RidingSlotComplexPlanForEditing,
 } from "@/lib/actions/riding-slot-complex";
 import { resolveInitialStudentsTab } from "./instructor-riding-initial-tab-core";
-// Types owned by InstructorRidingSlotsSection (the section owns modeByRidingSlotId
-// and the students prop). Imported type-only so there is no runtime dependency
-// back onto the section - the section imports this controller as a value.
-import type { InstructorSlotMode, RidingStudentOption } from "./InstructorRidingSlotsSection";
+// Narrow shared types, no longer imported back from the child section now that
+// InstructorClient (a parent) owns this controller - see
+// instructor-riding-shared-types.ts.
+import type { InstructorSlotMode, RidingStudentOption } from "./instructor-riding-shared-types";
 
 // 1.0-5.0 in 0.5 steps, shown as ratingHalfPoints/2.
 const RATING_OPTIONS = [2, 3, 4, 5, 6, 7, 8, 9, 10];

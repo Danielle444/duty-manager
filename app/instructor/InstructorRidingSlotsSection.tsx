@@ -46,6 +46,7 @@ import {
 // prisma.instructor.findMany({ where: { isActive: true } }). No server
 // action was added or modified for this.
 import { getInstructorContacts } from "@/lib/actions/contacts";
+import { resolveInitialStudentsTab } from "./instructor-riding-initial-tab-core";
 
 type ViewMode = "day" | "week";
 type ScopeMode = "mine" | "all";
@@ -1205,11 +1206,16 @@ export function InstructorRidingSlotsSection({
     setSlotStudents(null);
     setStudentsError(null);
     setEditingStudent(null);
-    // RIDING-COMPLEX-FEEDBACK-VIEW - a genuinely new riding session always
-    // starts back on the existing "צפייה בחניכים" tab, and the complex plan
-    // (if any) is re-fetched fresh the next time "לפי שיבוץ הרכיבה" is opened
-    // for THIS session - never carries over a previous session's plan.
-    setActiveStudentsTab("list");
+    // RIDING-COMPLEX-FEEDBACK-VIEW - a genuinely new riding session opens
+    // directly on "לפי שיבוץ הרכיבה" when this slot is already complex-mode,
+    // otherwise on the existing flat "צפייה בחניכים" trainee list. The initial
+    // tab is decided purely from the same modeByRidingSlotId entry every card
+    // already reads (undefined while still detecting -> "list"), via the pure
+    // resolveInitialStudentsTab helper - no new read, no new state, no server
+    // action. The complex plan (if any) is still re-fetched fresh the next
+    // time "לפי שיבוץ הרכיבה" is shown for THIS session - never carries over a
+    // previous session's plan.
+    setActiveStudentsTab(resolveInitialStudentsTab(modeByRidingSlotId[activity.ridingSlot.id]));
     setComplexPlanForFeedback(null);
     setComplexPlanForFeedbackStatus("idle");
     complexPlanFetchStartedForRef.current = null;

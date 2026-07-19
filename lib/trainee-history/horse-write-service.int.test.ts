@@ -33,6 +33,19 @@
  * missing/multiple/wrong-linked current history); full rollback on a cache-write
  * failure; and no module-level cross-request state under concurrency.
  *
+ * W8A-6 COVERAGE (child): instructor policy writes all three horse fields via the
+ * same service; instructor future date fails closed.
+ *
+ * W8A-7 COVERAGE (child, DB-gated): trainee policy renames a private horse
+ * (privateHorseName-only), maintaining dated history + both caches; empty-to-null
+ * private name; assignedHorseName / hasPrivateHorse changes denied by the field
+ * policy; stale forbidden-field pass-through fails closed. Plus ALWAYS-RUN, non-DB
+ * source-level checks of the updateOwnPrivateHorseName action contract (public
+ * signature, retained Student prechecks + exact Hebrew messages, no direct
+ * prisma.student.update, trainee WritePolicy, name normalization, forbidden-field
+ * pass-through, server-resolved offering) that import neither the action nor
+ * Prisma, preserving this parent process's no-database guarantee.
+ *
  * Run intentionally with (do NOT run during standard validation):
  *   TRAINEE_HISTORY_DB_TEST_URL=postgres://... \
  *     npx tsx --test lib/trainee-history/horse-write-service.int.test.ts
@@ -41,6 +54,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -111,11 +125,18 @@ const adminPolicy = { actorKind: "admin", allowFutureEffectiveDates: false, allo
 // and NO field-level restriction (its prior capability was all three horse
 // fields). No allowedHorseFields key => no field restriction, like admin.
 const instructorPolicy = { actorKind: "instructor", allowFutureEffectiveDates: false, allowedDomain: "horse", cutover: TODAY };
+// W8A-7: the trainee action reuses this SAME service with a trainee policy that
+// HARD-restricts the changeable field set to privateHorseName only. It carries an
+// allowedHorseFields list (mandatory for trainees); hasPrivateHorse and
+// assignedHorseName are NOT in it, so any change to them fails closed.
+const traineePolicy = { actorKind: "trainee", allowFutureEffectiveDates: false, allowedDomain: "horse", allowedHorseFields: ["privateHorseName"], cutover: TODAY };
 const FUTURE = "2026-07-25";
 
 const EMPTY = { hasPrivateHorse: false, privateHorseName: null, assignedHorseName: null };
 const BELLA = { hasPrivateHorse: false, privateHorseName: null, assignedHorseName: "Bella" };
 const STAR = { hasPrivateHorse: true, privateHorseName: "Star", assignedHorseName: null };
+const COMET = { hasPrivateHorse: true, privateHorseName: "Comet", assignedHorseName: null };
+const STAR_NONAME = { hasPrivateHorse: true, privateHorseName: null, assignedHorseName: null };
 
 function d(key) { return new Date(key + "T00:00:00.000Z"); }
 function assertTrue(cond, msg) { if (!cond) throw new Error("ASSERT FAILED: " + msg); }
@@ -506,6 +527,100 @@ try {
     sameHorse(st.enr, EMPTY, "T19 enrollment cache unchanged");
   }
 
+  // ---- T20 (W8A-7): trainee policy changes ONLY privateHorseName via SAME
+  // service. Seeded as a private-horse trainee (STAR); the trainee renames the
+  // private horse and passes hasPrivateHorse/assignedHorseName through unchanged.
+  // Proves the trainee path maintains dated history linked to the resolved
+  // enrollment plus BOTH caches, identically to admin/instructor.
+  {
+    const off = await makeOffering();
+    const sid = await makeStudent(STAR, true);
+    const eid = await makeEnrollment(sid, off, "ACTIVE", STAR);
+    await seedHistory(sid, eid, "2026-07-01", null, STAR);
+
+    const res = await write({ studentId: sid, courseOfferingId: off, effectiveFrom: TODAY, hasPrivateHorse: STAR.hasPrivateHorse, privateHorseName: COMET.privateHorseName, assignedHorseName: STAR.assignedHorseName }, traineePolicy, NOW);
+    assertTrue(res.ok === true && res.resolvedTodayChanged === true, "T20 trainee rename ok");
+    const st = await fetchState(sid, eid);
+    assertTrue(st.rows.length === 2, "T20 later-append (seeded row closed + new row)");
+    const cur = st.rows[st.rows.length - 1];
+    assertTrue(cur.courseEnrollmentId === eid, "T20 trainee inserted row linked to resolved enrollment");
+    sameHorse(cur, COMET, "T20 trainee history value");
+    sameHorse(st.stu, COMET, "T20 trainee student cache updated");
+    sameHorse(st.enr, COMET, "T20 trainee enrollment cache updated");
+    sameHorse(st.stu, st.enr, "T20 trainee caches identical");
+  }
+
+  // ---- T21 (W8A-7): trainee empty-to-null private name (action sends null after
+  // trim) keeps hasPrivateHorse true, clears the name only. Canonical state 3. ---
+  {
+    const off = await makeOffering();
+    const sid = await makeStudent(STAR, true);
+    const eid = await makeEnrollment(sid, off, "ACTIVE", STAR);
+    await seedHistory(sid, eid, "2026-07-01", null, STAR);
+
+    const res = await write({ studentId: sid, courseOfferingId: off, effectiveFrom: TODAY, hasPrivateHorse: STAR.hasPrivateHorse, privateHorseName: null, assignedHorseName: STAR.assignedHorseName }, traineePolicy, NOW);
+    assertTrue(res.ok === true, "T21 trainee clear-name ok");
+    const st = await fetchState(sid, eid);
+    sameHorse(st.rows[st.rows.length - 1], STAR_NONAME, "T21 trainee history value (name cleared, still private)");
+    sameHorse(st.stu, STAR_NONAME, "T21 trainee student cache");
+    sameHorse(st.enr, STAR_NONAME, "T21 trainee enrollment cache");
+  }
+
+  // ---- T22 (W8A-7): trainee attempt to change assignedHorseName is denied by the
+  // field policy (single canonical field change), zero writes. ------------------
+  {
+    const off = await makeOffering();
+    const sid = await makeStudent(BELLA, true);
+    const eid = await makeEnrollment(sid, off, "ACTIVE", BELLA);
+    await seedHistory(sid, eid, "2026-07-01", null, BELLA);
+
+    const res = await write({ studentId: sid, courseOfferingId: off, effectiveFrom: TODAY, hasPrivateHorse: false, privateHorseName: null, assignedHorseName: "Rocky" }, traineePolicy, NOW);
+    assertTrue(res.ok === false && res.code === "UNAUTHORIZED_ACTOR", "T22 assignedHorseName change -> UNAUTHORIZED_ACTOR");
+    const st = await fetchState(sid, eid);
+    assertTrue(st.rows.length === 1, "T22 no history row written");
+    sameHorse(st.rows[0], BELLA, "T22 history unchanged");
+    sameHorse(st.stu, BELLA, "T22 student cache unchanged");
+    sameHorse(st.enr, BELLA, "T22 enrollment cache unchanged");
+  }
+
+  // ---- T23 (W8A-7): trainee attempt to turn OFF hasPrivateHorse is denied by the
+  // field policy (single canonical field change), zero writes. ------------------
+  {
+    const off = await makeOffering();
+    const sid = await makeStudent(STAR_NONAME, true);
+    const eid = await makeEnrollment(sid, off, "ACTIVE", STAR_NONAME);
+    await seedHistory(sid, eid, "2026-07-01", null, STAR_NONAME);
+
+    const res = await write({ studentId: sid, courseOfferingId: off, effectiveFrom: TODAY, hasPrivateHorse: false, privateHorseName: null, assignedHorseName: null }, traineePolicy, NOW);
+    assertTrue(res.ok === false && res.code === "UNAUTHORIZED_ACTOR", "T23 hasPrivateHorse change -> UNAUTHORIZED_ACTOR");
+    const st = await fetchState(sid, eid);
+    assertTrue(st.rows.length === 1, "T23 no history row written");
+    sameHorse(st.rows[0], STAR_NONAME, "T23 history unchanged");
+    sameHorse(st.stu, STAR_NONAME, "T23 student cache unchanged");
+    sameHorse(st.enr, STAR_NONAME, "T23 enrollment cache unchanged");
+  }
+
+  // ---- T24 (W8A-7): STALE pass-through fails closed. The action passes the two
+  // forbidden fields as it read them from Student pre-lock; if the locked cache
+  // diverged (here the trainee became a ranch horse), the field policy denies the
+  // otherwise privateHorseName-only write. Zero writes. ------------------------
+  {
+    const off = await makeOffering();
+    const sid = await makeStudent(BELLA, true);
+    const eid = await makeEnrollment(sid, off, "ACTIVE", BELLA);
+    await seedHistory(sid, eid, "2026-07-01", null, BELLA);
+
+    // Requested: canonical private-horse rename with STALE hasPrivateHorse=true /
+    // assignedHorseName=null pass-through (locked cache is the ranch horse BELLA).
+    const res = await write({ studentId: sid, courseOfferingId: off, effectiveFrom: TODAY, hasPrivateHorse: true, privateHorseName: "Comet", assignedHorseName: null }, traineePolicy, NOW);
+    assertTrue(res.ok === false && res.code === "UNAUTHORIZED_ACTOR", "T24 stale pass-through -> UNAUTHORIZED_ACTOR");
+    const st = await fetchState(sid, eid);
+    assertTrue(st.rows.length === 1, "T24 no history row written");
+    sameHorse(st.rows[0], BELLA, "T24 history unchanged");
+    sameHorse(st.stu, BELLA, "T24 student cache unchanged");
+    sameHorse(st.enr, BELLA, "T24 enrollment cache unchanged");
+  }
+
   process.stdout.write("CHILD_RESULT_OK\n");
 } finally {
   await cleanupAll();
@@ -568,4 +683,98 @@ test("integration/horse: enrollment-scoped isolated child-process lifecycle", { 
     typeof result.stdout === "string" && result.stdout.includes("CHILD_RESULT_OK"),
     `child did not report success; stdout:\n${redact(String(result.stdout ?? ""))}`,
   );
+});
+
+// ============================================================================
+// W8A-7 ACTION SOURCE-LEVEL CHECKS (non-DB, ALWAYS RUN)
+// ----------------------------------------------------------------------------
+// These pin the action-level contract of updateOwnPrivateHorseName by reading
+// lib/actions/horses.ts as TEXT. They deliberately do NOT import the action (or
+// @/lib/prisma) so this parent process still contacts no database and holds no
+// Prisma singleton — the same isolation guarantee the child-process harness
+// relies on. Assertions are scoped to the function body slice so admin/instructor
+// writer code cannot satisfy them by accident.
+// ============================================================================
+
+const horsesActionSource = readFileSync(
+  path.join(repoRoot, "lib", "actions", "horses.ts"),
+  "utf8",
+);
+
+// Slice from the trainee action to end-of-file (it is the last exported function).
+const traineeActionStart = horsesActionSource.indexOf(
+  "export async function updateOwnPrivateHorseName",
+);
+const traineeActionSource =
+  traineeActionStart === -1 ? "" : horsesActionSource.slice(traineeActionStart);
+
+test("action/trainee: public signature is unchanged (studentId, privateHorseName) => ActionResult", () => {
+  assert.ok(traineeActionStart !== -1, "updateOwnPrivateHorseName not found in horses.ts");
+  assert.match(
+    traineeActionSource,
+    /export async function updateOwnPrivateHorseName\(\s*studentId: string,\s*privateHorseName: string\s*\): Promise<ActionResult>/,
+    "trainee action signature changed",
+  );
+  // No smuggled offering/effective-date/client params.
+  const header = traineeActionSource.slice(0, traineeActionSource.indexOf(") {") + 3);
+  assert.ok(!/courseOfferingId\s*:/.test(header), "signature must not accept courseOfferingId");
+  assert.ok(!/effective\w*\s*:/i.test(header), "signature must not accept an effective-date param");
+});
+
+test("action/trainee: existing Student prechecks and exact Hebrew messages retained", () => {
+  assert.match(traineeActionSource, /if \(!student \|\| !student\.isActive\)/, "missing/inactive precheck removed");
+  assert.ok(traineeActionSource.includes("חניך/ה לא נמצא/ה"), "missing/inactive message changed");
+  assert.match(traineeActionSource, /if \(!student\.hasPrivateHorse\)/, "hasPrivateHorse precheck removed");
+  assert.ok(traineeActionSource.includes("לא סומן/ה כבעל/ת סוס פרטי"), "hasPrivateHorse message changed");
+});
+
+test("action/trainee: no direct prisma.student.update remains in the trainee writer", () => {
+  assert.ok(
+    !/prisma\.student\.update/.test(traineeActionSource),
+    "updateOwnPrivateHorseName must not write Student directly",
+  );
+  // Belt and suspenders: the whole action module no longer writes Student directly
+  // (admin + instructor + trainee all go through the service now).
+  assert.ok(
+    !/prisma\.student\.update/.test(horsesActionSource),
+    "no horse action may write Student directly",
+  );
+});
+
+test("action/trainee: trainee WritePolicy restricts changes to privateHorseName only", () => {
+  assert.match(traineeActionSource, /actorKind:\s*"trainee"/, "policy must use the trainee actor kind");
+  assert.match(traineeActionSource, /allowFutureEffectiveDates:\s*false/, "trainee policy must forbid future dates");
+  assert.match(traineeActionSource, /allowedDomain:\s*"horse"/, "trainee policy must be horse-domain");
+  assert.match(
+    traineeActionSource,
+    /allowedHorseFields:\s*\["privateHorseName"\]/,
+    "trainee policy must hard-restrict to privateHorseName",
+  );
+});
+
+test("action/trainee: normalizes name (trim/empty->null) and passes forbidden fields through unchanged", () => {
+  assert.match(
+    traineeActionSource,
+    /privateHorseName:\s*privateHorseName\.trim\(\) \|\| null/,
+    "requested private name must be trimmed with empty->null",
+  );
+  assert.match(
+    traineeActionSource,
+    /assignedHorseName:\s*student\.assignedHorseName/,
+    "assignedHorseName must be passed through from the read Student",
+  );
+  assert.match(
+    traineeActionSource,
+    /hasPrivateHorse:\s*student\.hasPrivateHorse/,
+    "hasPrivateHorse must be passed through from the read Student",
+  );
+});
+
+test("action/trainee: current offering is server-resolved and the service is used", () => {
+  assert.match(traineeActionSource, /resolveCurrentCourseOffering\(\)/, "offering must be resolved server-side");
+  assert.ok(
+    !/courseOfferingId\s*=\s*[^;]*args|params/.test(traineeActionSource),
+    "courseOfferingId must never come from client args",
+  );
+  assert.match(traineeActionSource, /writeTraineeHorseAssignment\(/, "trainee action must call the shared service");
 });

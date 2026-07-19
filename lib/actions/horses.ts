@@ -212,6 +212,24 @@ export async function updateStudentHorseInfoAsInstructor(
 // trusts a client-supplied flag. A student may only ever set their own
 // privateHorseName, and only while marked as having a private horse;
 // hasPrivateHorse and assignedHorseName are never touched here.
+//
+// TRUST BOUNDARY (unchanged this stage): studentId is still client-supplied
+// under the existing local trainee-login model; this action does NOT prove the
+// caller owns studentId. The pre-existing server-side checks below (Student
+// exists / isActive / hasPrivateHorse) are preserved exactly, with their exact
+// Hebrew messages, and the client-supplied hasPrivateHorse flag is never
+// trusted (it is re-read from the DB here).
+//
+// W8A-7: rescoped onto the same enrollment-scoped write service the admin and
+// instructor actions use. It no longer writes Student directly; the single
+// service transaction maintains the dated TraineeHorseAssignment history (linked
+// to the current offering's enrollment), the CourseEnrollment horse cache, and
+// the Student compatibility mirror, and fails closed on any three-way parity
+// anomaly. A trainee-scoped WritePolicy allows ONLY privateHorseName to change;
+// hasPrivateHorse and assignedHorseName are passed through with the values just
+// read from Student, so if they became stale the service field-policy check
+// fails closed rather than letting a trainee move a forbidden field. The public
+// signature and the trainee identity/auth model are unchanged.
 export async function updateOwnPrivateHorseName(
   studentId: string,
   privateHorseName: string
@@ -225,10 +243,62 @@ export async function updateOwnPrivateHorseName(
     return { success: false, error: "לא סומן/ה כבעל/ת סוס פרטי" };
   }
 
-  await prisma.student.update({
-    where: { id: studentId },
-    data: { privateHorseName: privateHorseName.trim() || null },
-  });
+  // Trusted explicit server instant; the pure service derives Israel-local today
+  // from it. This action has no client-supplied effective date - the change
+  // takes effect on today's Israel-local calendar day, matching the prior
+  // behavior when it wrote the Student cache directly (cutover == effectiveFrom
+  // == today).
+  const now = new Date();
+  const today = israelDateKeyFromInstant(now);
+
+  // Resolve the current CourseOffering SERVER-SIDE (never client-supplied) and
+  // convert only the three KNOWN structural offering failures into the same safe
+  // Hebrew ActionResult the admin/instructor writers use. Any other error
+  // propagates.
+  let courseOfferingId: string;
+  try {
+    const offering = await resolveCurrentCourseOffering();
+    courseOfferingId = offering.id;
+  } catch (err) {
+    if (isKnownCurrentOfferingError(err)) {
+      return { success: false, error: CURRENT_OFFERING_UNAVAILABLE_MESSAGE };
+    }
+    throw err;
+  }
+
+  // Trainee policy: horse domain, no future effective dates, and a HARD
+  // field-level restriction to privateHorseName only. hasPrivateHorse and
+  // assignedHorseName are NOT in the allow-list, so any attempt (or a stale
+  // pass-through) to change them is rejected as UNAUTHORIZED_ACTOR by the
+  // service.
+  const policy: WritePolicy = {
+    actorKind: "trainee",
+    allowFutureEffectiveDates: false,
+    allowedDomain: "horse",
+    allowedHorseFields: ["privateHorseName"],
+    cutover: today,
+  };
+
+  const outcome = await writeTraineeHorseAssignment(
+    {
+      studentId,
+      courseOfferingId,
+      effectiveFrom: today,
+      // Pass through the two forbidden fields with the values just read from
+      // Student; only privateHorseName is the trainee-requested change. The
+      // locked transaction data remains authoritative - stale pass-through
+      // values fail the field-policy check closed.
+      assignedHorseName: student.assignedHorseName,
+      hasPrivateHorse: student.hasPrivateHorse,
+      privateHorseName: privateHorseName.trim() || null,
+    },
+    policy,
+    now
+  );
+
+  if (!outcome.ok) {
+    return { success: false, error: horseWriteErrorMessage(outcome.code) };
+  }
 
   revalidatePath("/admin/horses");
   return { success: true };

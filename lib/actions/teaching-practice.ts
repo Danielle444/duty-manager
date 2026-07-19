@@ -19,6 +19,7 @@ import {
   type TeachingPracticeScheduleWarning,
 } from "@/lib/teaching-practice-schedule-check";
 import { hasMeaningfulTeachingPracticeFeedback } from "@/lib/teaching-practice-feedback";
+import { applyTeachingPracticeFeedbackVisibility } from "@/lib/teaching-practice-feedback-visibility-core";
 import { buildParentKey } from "@/lib/teaching-practice-same-parent";
 // Stage E2 - track-scoped auto-sync after a fixed-structure child/horse/
 // equipment save. Imported from lib/teaching-practice-full-sync-core.ts (a
@@ -1785,7 +1786,20 @@ type LessonWithDetailIncludes = Awaited<
   ReturnType<typeof prisma.teachingPracticeLesson.findFirstOrThrow<{ include: typeof LESSON_DETAIL_INCLUDE }>>
 >;
 
-function toLessonDetail(lesson: LessonWithDetailIncludes): TeachingPracticeLessonDetail {
+// The visibility option is REQUIRED (no default parameter) so every call site
+// must decide explicitly - admin readers pass { canViewFeedback: true }, the
+// two instructor readers pass the server-fetched
+// Instructor.canEditTeachingPracticeFeedback flag. When canViewFeedback is not
+// exactly true, every participant.feedback is returned as null (see
+// applyTeachingPracticeFeedbackVisibility) - the free text, rating,
+// updatedByName and updatedAt are hidden together, and a hidden feedback row
+// is never even revealed to exist. Fetch-then-strip is intentional here (the
+// LESSON_DETAIL_INCLUDE still selects feedback, per this scoped fix's brief).
+function toLessonDetail(
+  lesson: LessonWithDetailIncludes,
+  options: { canViewFeedback: boolean }
+): TeachingPracticeLessonDetail {
+  const canViewFeedback = options.canViewFeedback === true;
   return {
     ...toLessonSummary({
       ...lesson,
@@ -1798,14 +1812,17 @@ function toLessonDetail(lesson: LessonWithDetailIncludes): TeachingPracticeLesso
       traineeName: p.trainee.fullName,
       role: p.role,
       isManualOverride: p.isManualOverride,
-      feedback: p.feedback
-        ? {
-            feedback: p.feedback.feedback,
-            ratingHalfPoints: p.feedback.ratingHalfPoints,
-            updatedByName: p.feedback.updatedByName,
-            updatedAt: p.feedback.updatedAt.toISOString(),
-          }
-        : null,
+      feedback: applyTeachingPracticeFeedbackVisibility(
+        p.feedback
+          ? {
+              feedback: p.feedback.feedback,
+              ratingHalfPoints: p.feedback.ratingHalfPoints,
+              updatedByName: p.feedback.updatedByName,
+              updatedAt: p.feedback.updatedAt.toISOString(),
+            }
+          : null,
+        canViewFeedback
+      ),
     })),
     childAssignments: lesson.childAssignments.map((c) => ({
       id: c.id,
@@ -1823,20 +1840,21 @@ function toLessonDetail(lesson: LessonWithDetailIncludes): TeachingPracticeLesso
 }
 
 async function getTeachingPracticeLessonDetailInternal(
-  lessonId: string
+  lessonId: string,
+  options: { canViewFeedback: boolean }
 ): Promise<TeachingPracticeLessonDetail | null> {
   const lesson = await prisma.teachingPracticeLesson.findUnique({
     where: { id: lessonId },
     include: LESSON_DETAIL_INCLUDE,
   });
-  return lesson ? toLessonDetail(lesson) : null;
+  return lesson ? toLessonDetail(lesson, options) : null;
 }
 
 export async function getTeachingPracticeLessonDetailForAdmin(
   lessonId: string
 ): Promise<TeachingPracticeLessonDetail | null> {
   await requireAdmin();
-  return getTeachingPracticeLessonDetailInternal(lessonId);
+  return getTeachingPracticeLessonDetailInternal(lessonId, { canViewFeedback: true });
 }
 
 export async function getTeachingPracticeLessonDetailForInstructor(
@@ -1845,7 +1863,13 @@ export async function getTeachingPracticeLessonDetailForInstructor(
 ): Promise<TeachingPracticeLessonDetail | null> {
   const instructor = await prisma.instructor.findUnique({ where: { id: instructorId } });
   if (!instructor || !instructor.isActive) return null;
-  return getTeachingPracticeLessonDetailInternal(lessonId);
+  // Authoritative capability read straight from the DB row above - never a
+  // client-supplied flag. Only an active instructor whose
+  // canEditTeachingPracticeFeedback is exactly true receives participant
+  // feedback; everyone else gets participant.feedback === null.
+  return getTeachingPracticeLessonDetailInternal(lessonId, {
+    canViewFeedback: instructor.canEditTeachingPracticeFeedback === true,
+  });
 }
 
 // One day's lessons, with participants/childAssignments already joined -
@@ -1854,7 +1878,8 @@ export async function getTeachingPracticeLessonDetailForInstructor(
 // than lazily per row. Scoped to a single date (not a range) so it stays
 // cheap even as the lessons table grows.
 async function listTeachingPracticeLessonsDetailForDateInternal(
-  date: string
+  date: string,
+  options: { canViewFeedback: boolean }
 ): Promise<TeachingPracticeLessonDetail[]> {
   const day = parseDateKey(date);
   const lessons = await prisma.teachingPracticeLesson.findMany({
@@ -1862,14 +1887,14 @@ async function listTeachingPracticeLessonsDetailForDateInternal(
     include: LESSON_DETAIL_INCLUDE,
     orderBy: [{ startTime: "asc" }],
   });
-  return lessons.map(toLessonDetail);
+  return lessons.map((lesson) => toLessonDetail(lesson, options));
 }
 
 export async function listTeachingPracticeLessonsDetailForDateAsAdmin(
   date: string
 ): Promise<TeachingPracticeLessonDetail[]> {
   await requireAdmin();
-  return listTeachingPracticeLessonsDetailForDateInternal(date);
+  return listTeachingPracticeLessonsDetailForDateInternal(date, { canViewFeedback: true });
 }
 
 export async function listTeachingPracticeLessonsDetailForDateAsInstructor(
@@ -1878,7 +1903,12 @@ export async function listTeachingPracticeLessonsDetailForDateAsInstructor(
 ): Promise<TeachingPracticeLessonDetail[]> {
   const instructor = await prisma.instructor.findUnique({ where: { id: instructorId } });
   if (!instructor || !instructor.isActive) return [];
-  return listTeachingPracticeLessonsDetailForDateInternal(date);
+  // Authoritative capability read straight from the DB row above - never a
+  // client-supplied flag. When canEditTeachingPracticeFeedback is not exactly
+  // true, every participant.feedback in every returned lesson is null.
+  return listTeachingPracticeLessonsDetailForDateInternal(date, {
+    canViewFeedback: instructor.canEditTeachingPracticeFeedback === true,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -2077,7 +2107,13 @@ async function generateTeachingPracticeLessonFromTrackInternal(
     return created.id;
   });
 
-  const lesson = await getTeachingPracticeLessonDetailInternal(createdLessonId);
+  // A freshly generated lesson has no TeachingPracticeFeedback rows yet, so no
+  // feedback can be exposed here regardless - pass canViewFeedback: false to
+  // stay fail-closed (this generation path is gated on
+  // canManageTeachingPracticeAssignments, not on feedback-view capability).
+  const lesson = await getTeachingPracticeLessonDetailInternal(createdLessonId, {
+    canViewFeedback: false,
+  });
   return { success: true, lesson: lesson ?? undefined };
 }
 

@@ -4,6 +4,18 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
 import { requireAdmin } from "@/lib/auth/require-admin";
+import { resolveCurrentCourseOffering } from "@/lib/course/current-offering";
+import {
+  createTraineeWithEnrollmentSafe,
+  runTraineeCreateInTx,
+} from "@/lib/course/create-trainee-enrollment-core";
+
+// Single safe, generic message for ANY known current-offering structural
+// failure (no offering / ambiguous / incomplete). Deliberately reveals no
+// offering count, id, dates, class name, or Prisma detail - the manager is told
+// only that trainee creation is unavailable and to contact system management.
+const CURRENT_OFFERING_UNAVAILABLE_MESSAGE =
+  "לא ניתן להוסיף חניך/ה כעת עקב בעיה בהגדרת הקורס הנוכחי. יש לפנות לניהול המערכת";
 
 const studentSchema = z.object({
   firstName: z.string().trim().min(1, "יש להזין שם פרטי"),
@@ -40,24 +52,55 @@ export async function createStudent(formData: FormData): Promise<ActionResult> {
     return { success: false, error: parsed.error.issues[0]?.message ?? "קלט לא תקין" };
   }
 
-  const existing = await prisma.student.findUnique({
-    where: { identityNumber: parsed.data.identityNumber },
-  });
-  if (existing) {
-    return { success: false, error: "כבר קיים/ת חניך/ה עם מספר תעודת זהות זה" };
-  }
-
-  await prisma.student.create({
-    data: {
+  // MULTI-COURSE W6B: a new trainee is created atomically as Student + ACTIVE
+  // isPrimary CourseEnrollment in the SERVER-DERIVED current offering + initial
+  // subgroup GroupMembership, with the Student compatibility fields kept in
+  // sync. The offering is never client-supplied; the testable orchestration and
+  // the transaction body live in the non-"use server" core module. All group/
+  // offering/duplicate failures return before any write (all-or-nothing).
+  const result = await createTraineeWithEnrollmentSafe(
+    {
       firstName: parsed.data.firstName,
       lastName: parsed.data.lastName,
-      fullName: fullNameOf(parsed.data.firstName, parsed.data.lastName),
       identityNumber: parsed.data.identityNumber,
-      groupName: parsed.data.groupName || null,
+      phone: parsed.data.phone ?? null,
+      groupName: parsed.data.groupName ?? null,
       subgroupNumber: parsed.data.subgroupNumber ?? null,
-      phone: parsed.data.phone || null,
     },
-  });
+    {
+      resolveCurrentCourseOffering: async () => {
+        const offering = await resolveCurrentCourseOffering();
+        return { id: offering.id, startDate: offering.startDate };
+      },
+      now: () => new Date(),
+      identityNumberExists: async (identityNumber) =>
+        (await prisma.student.findUnique({
+          where: { identityNumber },
+          select: { id: true },
+        })) !== null,
+      findTopGroupId: async (courseOfferingId, name) =>
+        (
+          await prisma.courseGroup.findFirst({
+            where: { courseOfferingId, parentGroupId: null, name },
+            select: { id: true },
+          })
+        )?.id ?? null,
+      findSubGroupId: async (parentGroupId, name) =>
+        (
+          await prisma.courseGroup.findFirst({
+            where: { parentGroupId, name },
+            select: { id: true },
+          })
+        )?.id ?? null,
+      createAtomically: (plan) =>
+        prisma.$transaction((tx) => runTraineeCreateInTx(tx, plan)),
+    },
+    CURRENT_OFFERING_UNAVAILABLE_MESSAGE,
+  );
+
+  if (!result.success) {
+    return result;
+  }
 
   revalidatePath("/admin/students");
   revalidatePath("/admin");

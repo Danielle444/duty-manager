@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Button } from "@/lib/components/Button";
 import { Modal } from "@/lib/components/Modal";
 import { createStudent, setStudentActive, updateStudent } from "@/lib/actions/students";
+import { validateCreateTraineeForm } from "@/lib/course/create-trainee-form";
 import { setStudentAvailabilityScheme } from "@/lib/actions/availability";
 import { maskIdentityNumber } from "@/lib/format";
 import { formatHebrewDate, parseDateKey } from "@/lib/dates";
@@ -189,6 +190,20 @@ export function StudentsClient({
     e.preventDefault();
     setError(null);
     const formData = new FormData(e.currentTarget);
+    const isCreate = modalStudent === "new";
+    // W6B: a NEW trainee requires group + subgroup (the server refuses to create
+    // otherwise). Block here with the same Hebrew wording. Edit is exempt so a
+    // legacy trainee with a blank group/subgroup stays editable.
+    if (isCreate) {
+      const validationError = validateCreateTraineeForm({
+        groupName: String(formData.get("groupName") ?? ""),
+        subgroupNumber: String(formData.get("subgroupNumber") ?? ""),
+      });
+      if (validationError) {
+        setError(validationError);
+        return;
+      }
+    }
     startTransition(async () => {
       const result =
         modalStudent && modalStudent !== "new"
@@ -410,22 +425,24 @@ export function StudentsClient({
             />
           </label>
           <label className="flex flex-col gap-1 text-sm">
-            קבוצה (אופציונלי)
+            {modalStudent === "new" ? "קבוצה" : "קבוצה (אופציונלי)"}
             <input
               name="groupName"
               defaultValue={modalStudent !== "new" ? modalStudent?.groupName ?? "" : ""}
               placeholder="א / ב"
               className="rounded-lg border border-border px-3 py-2 text-sm"
+              required={modalStudent === "new"}
             />
           </label>
           <label className="flex flex-col gap-1 text-sm">
-            מס קבוצה (אופציונלי)
+            {modalStudent === "new" ? "מס קבוצה" : "מס קבוצה (אופציונלי)"}
             <input
               name="subgroupNumber"
               type="number"
               min={1}
               defaultValue={modalStudent !== "new" ? modalStudent?.subgroupNumber ?? "" : ""}
               className="rounded-lg border border-border px-3 py-2 text-sm"
+              required={modalStudent === "new"}
             />
           </label>
           <label className="flex flex-col gap-1 text-sm">

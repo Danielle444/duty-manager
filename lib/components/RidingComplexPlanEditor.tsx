@@ -36,6 +36,7 @@ import {
   type RidingSlotComplexStationSaveInput,
   type RidingSlotComplexPlanActionResult,
 } from "@/lib/actions/riding-slot-complex";
+import { ComplexPlanScheduleBoard } from "@/lib/components/ComplexPlanScheduleBoard";
 import {
   getComplexRidingPlanPublicationStatusForAdmin,
   getComplexRidingPlanPublicationStatusForInstructor,
@@ -1792,6 +1793,13 @@ export function RidingComplexPlanEditor({
   const [status, setStatus] = useState<LoadStatus>("loading");
   const [editing, setEditing] = useState<RidingSlotComplexPlanForEditing | null>(null);
   const [view, setView] = useState<EditorView>({ type: "blockList" });
+  // RIDING-COMPLEX-SCHEDULE-BOARD - read-only presentation switch. When true,
+  // the whole plan is shown at once as a schedule board (ComplexPlanScheduleBoard);
+  // when false (the default), the existing step-by-step editor renders unchanged.
+  // This flag only chooses which presentation is visible - it never touches the
+  // `view` state machine, any draft, or any save path, so the editor's behavior
+  // is identical whenever the board is off.
+  const [boardView, setBoardView] = useState(false);
   const [lastOverlapWarning, setLastOverlapWarning] = useState<string | null>(null);
   const [lastStationWarnings, setLastStationWarnings] = useState<RidingSlotComplexSaveWarnings | null>(null);
   const [listError, setListError] = useState<string | null>(null);
@@ -1850,6 +1858,7 @@ export function RidingComplexPlanEditor({
     setStatus("loading");
     setEditing(null);
     setView({ type: "blockList" });
+    setBoardView(false);
     setLastOverlapWarning(null);
     setLastStationWarnings(null);
     setListError(null);
@@ -2236,7 +2245,38 @@ export function RidingComplexPlanEditor({
               </p>
             </div>
 
-            {view.type === "blockList" && (
+            {/* RIDING-COMPLEX-SCHEDULE-BOARD - read-only presentation switch.
+                Defaults to the existing editor ("עריכה קיימת"); "תצוגת לוז"
+                shows the whole plan at once. Additive only - no save controls.
+                Only rendered from the safe list states (blockList/stationList)
+                or while the board is already showing, so it can never unmount
+                a BlockTimeEditorForm/StationEditorForm that holds an unsaved
+                draft; when boardView is true it stays available so the user can
+                always return to the editor. */}
+            {(boardView || view.type === "blockList" || view.type === "stationList") && (
+              <div className="flex shrink-0 gap-1 rounded-lg bg-muted p-1">
+                <Button
+                  variant={boardView ? "secondary" : "ghost"}
+                  aria-pressed={!boardView}
+                  className={`!flex-1 !py-1 !text-xs ${boardView ? "" : "!bg-card !shadow-sm"}`}
+                  onClick={() => setBoardView(false)}
+                >
+                  עריכה קיימת
+                </Button>
+                <Button
+                  variant={boardView ? "ghost" : "secondary"}
+                  aria-pressed={boardView}
+                  className={`!flex-1 !py-1 !text-xs ${boardView ? "!bg-card !shadow-sm" : ""}`}
+                  onClick={() => setBoardView(true)}
+                >
+                  תצוגת לוז
+                </Button>
+              </div>
+            )}
+
+            {boardView && <ComplexPlanScheduleBoard plan={plan} candidates={editing.candidates} />}
+
+            {!boardView && view.type === "blockList" && (
               <>
                 <PublicationStatusPanel
                   status={publicationStatus}
@@ -2312,7 +2352,7 @@ export function RidingComplexPlanEditor({
               </>
             )}
 
-            {view.type === "editBlock" && (
+            {!boardView && view.type === "editBlock" && (
               <BlockTimeEditorForm
                 key={view.blockId ?? "new"}
                 actor={actor}
@@ -2323,7 +2363,7 @@ export function RidingComplexPlanEditor({
               />
             )}
 
-            {view.type === "stationList" && activeBlock && (
+            {!boardView && view.type === "stationList" && activeBlock && (
               <>
                 <p className="shrink-0 truncate text-xs text-muted-foreground">
                   תכנון רכיבה מורכבת › {activeBlock.startTime}–{activeBlock.endTime} › תחנות מאמן
@@ -2406,7 +2446,7 @@ export function RidingComplexPlanEditor({
               </>
             )}
 
-            {view.type === "editStation" && activeBlock && (
+            {!boardView && view.type === "editStation" && activeBlock && (
               <StationEditorForm
                 key={view.stationId ?? "new"}
                 actor={actor}

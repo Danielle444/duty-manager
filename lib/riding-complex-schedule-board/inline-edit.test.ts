@@ -116,6 +116,7 @@ test("full station payload carries the complete snapshot (instructor, arena, all
   ];
   const payload = buildStationSavePayload({
     ridingSlotId: "rs1",
+    expectedVersion: 4,
     blockId: "b1",
     stationId: "s1",
     instructorId: "i1",
@@ -124,6 +125,7 @@ test("full station payload carries the complete snapshot (instructor, arena, all
   });
   assert.deepEqual(payload, {
     ridingSlotId: "rs1",
+    expectedVersion: 4,
     blockId: "b1",
     stationId: "s1",
     instructorId: "i1",
@@ -138,6 +140,7 @@ test("full station payload carries the complete snapshot (instructor, arena, all
 test("payload never carries a raw pair id or sortOrder (ids stay internal to routing)", () => {
   const payload = buildStationSavePayload({
     ridingSlotId: "rs1",
+    expectedVersion: 1,
     blockId: "b1",
     stationId: "s1",
     instructorId: null,

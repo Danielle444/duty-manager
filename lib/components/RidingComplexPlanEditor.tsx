@@ -110,52 +110,63 @@ function deleteComplexStation(
   actor: RidingComplexPlanEditorActor,
   ridingSlotId: string,
   blockId: string,
-  stationId: string
+  stationId: string,
+  expectedVersion: number
 ): Promise<RidingSlotComplexPlanActionResult> {
   return actor.type === "admin"
-    ? deleteRidingSlotComplexStationAsAdmin(ridingSlotId, blockId, stationId)
-    : deleteRidingSlotComplexStationAsInstructor(actor.instructorId, ridingSlotId, blockId, stationId);
+    ? deleteRidingSlotComplexStationAsAdmin(ridingSlotId, blockId, stationId, expectedVersion)
+    : deleteRidingSlotComplexStationAsInstructor(actor.instructorId, ridingSlotId, blockId, stationId, expectedVersion);
 }
 
 function reorderComplexStations(
   actor: RidingComplexPlanEditorActor,
   ridingSlotId: string,
   blockId: string,
-  orderedStationIds: string[]
+  orderedStationIds: string[],
+  expectedVersion: number
 ): Promise<RidingSlotComplexPlanActionResult> {
   return actor.type === "admin"
-    ? reorderRidingSlotComplexStationsAsAdmin(ridingSlotId, blockId, orderedStationIds)
-    : reorderRidingSlotComplexStationsAsInstructor(actor.instructorId, ridingSlotId, blockId, orderedStationIds);
+    ? reorderRidingSlotComplexStationsAsAdmin(ridingSlotId, blockId, orderedStationIds, expectedVersion)
+    : reorderRidingSlotComplexStationsAsInstructor(
+        actor.instructorId,
+        ridingSlotId,
+        blockId,
+        orderedStationIds,
+        expectedVersion
+      );
 }
 
 function deleteComplexBlock(
   actor: RidingComplexPlanEditorActor,
   ridingSlotId: string,
-  blockId: string
+  blockId: string,
+  expectedVersion: number
 ): Promise<RidingSlotComplexPlanActionResult> {
   return actor.type === "admin"
-    ? deleteRidingSlotComplexBlockAsAdmin(ridingSlotId, blockId)
-    : deleteRidingSlotComplexBlockAsInstructor(actor.instructorId, ridingSlotId, blockId);
+    ? deleteRidingSlotComplexBlockAsAdmin(ridingSlotId, blockId, expectedVersion)
+    : deleteRidingSlotComplexBlockAsInstructor(actor.instructorId, ridingSlotId, blockId, expectedVersion);
 }
 
 function duplicateComplexBlock(
   actor: RidingComplexPlanEditorActor,
   ridingSlotId: string,
-  blockId: string
+  blockId: string,
+  expectedVersion: number
 ): Promise<RidingSlotComplexPlanActionResult> {
   return actor.type === "admin"
-    ? duplicateRidingSlotComplexBlockAsAdmin(ridingSlotId, blockId)
-    : duplicateRidingSlotComplexBlockAsInstructor(actor.instructorId, ridingSlotId, blockId);
+    ? duplicateRidingSlotComplexBlockAsAdmin(ridingSlotId, blockId, expectedVersion)
+    : duplicateRidingSlotComplexBlockAsInstructor(actor.instructorId, ridingSlotId, blockId, expectedVersion);
 }
 
 function reorderComplexBlocks(
   actor: RidingComplexPlanEditorActor,
   ridingSlotId: string,
-  orderedBlockIds: string[]
+  orderedBlockIds: string[],
+  expectedVersion: number
 ): Promise<RidingSlotComplexPlanActionResult> {
   return actor.type === "admin"
-    ? reorderRidingSlotComplexBlocksAsAdmin(ridingSlotId, orderedBlockIds)
-    : reorderRidingSlotComplexBlocksAsInstructor(actor.instructorId, ridingSlotId, orderedBlockIds);
+    ? reorderRidingSlotComplexBlocksAsAdmin(ridingSlotId, orderedBlockIds, expectedVersion)
+    : reorderRidingSlotComplexBlocksAsInstructor(actor.instructorId, ridingSlotId, orderedBlockIds, expectedVersion);
 }
 
 // RIDING-COMPLEX-PUBLICATION P7B - status reading has no permission gate
@@ -1297,12 +1308,19 @@ function PairRowEditor({
 function BlockTimeEditorForm({
   actor,
   ridingSlotId,
+  planVersion,
   block,
   onSaved,
   onCancel,
 }: {
   actor: RidingComplexPlanEditorActor;
   ridingSlotId: string;
+  // RIDING-COMPLEX-SCHEDULE-BOARD Stage 3B.1 - the plan.version of the loaded
+  // snapshot this form was opened against, sent back as expectedVersion. On a
+  // STALE_PLAN conflict the server's generic message surfaces in saveError and
+  // the draft is kept; the parent must be reopened to advance the version (this
+  // form never silently re-derives it behind the draft).
+  planVersion: number;
   block: RidingSlotComplexBlockRow | null;
   onSaved: (
     plan: RidingSlotComplexPlanRow,
@@ -1327,6 +1345,7 @@ function BlockTimeEditorForm({
     startSaveTransition(async () => {
       const result = await saveComplexBlock(actor, {
         ridingSlotId,
+        expectedVersion: planVersion,
         blockId: block ? block.id : undefined,
         startTime,
         endTime,
@@ -1392,6 +1411,7 @@ function BlockTimeEditorForm({
 function StationEditorForm({
   actor,
   ridingSlotId,
+  planVersion,
   blockId,
   block,
   earlierBlocks,
@@ -1405,6 +1425,10 @@ function StationEditorForm({
 }: {
   actor: RidingComplexPlanEditorActor;
   ridingSlotId: string;
+  // RIDING-COMPLEX-SCHEDULE-BOARD Stage 3B.1 - see BlockTimeEditorForm's
+  // identical planVersion prop. Sent back as expectedVersion; a STALE_PLAN
+  // conflict keeps this station draft and shows the generic conflict message.
+  planVersion: number;
   blockId: string;
   block: RidingSlotComplexBlockRow;
   // Every block in the same plan that sorts before this one (by
@@ -1458,6 +1482,7 @@ function StationEditorForm({
         actor,
         buildStationSavePayload({
           ridingSlotId,
+          expectedVersion: planVersion,
           blockId,
           stationId: station ? station.id : undefined,
           instructorId: instructorId || null,
@@ -2315,6 +2340,25 @@ export function RidingComplexPlanEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, ridingSlotId]);
 
+  // RIDING-COMPLEX-SCHEDULE-BOARD Stage 3B.1 - reload the authoritative plan
+  // after a lost-update (STALE_PLAN) conflict on a LIST operation (delete/
+  // reorder/duplicate) that carries no open draft. Per the approved contract,
+  // list ops re-read the authoritative plan (advancing the next expectedVersion
+  // via refreshPlan) and surface the conflict notice, but NEVER auto-replay the
+  // operation. Open block/station/pair drafts deliberately do NOT call this:
+  // they keep their draft and require an explicit Cancel/Reopen so the version
+  // is never silently advanced behind an in-progress edit.
+  function reloadPlanAfterStaleConflict() {
+    readComplexPlan(actor, ridingSlotId)
+      .then((result) => {
+        if (result) refreshPlan(result.plan);
+      })
+      .catch(() => {
+        // A failed reload leaves the existing (stale) plan and the already-shown
+        // conflict notice in place - the user can still refresh/reopen manually.
+      });
+  }
+
   function refreshPlan(plan: RidingSlotComplexPlanRow) {
     setEditing((prev) => (prev ? { ...prev, plan } : prev));
     // RIDING-COMPLEX-PUBLICATION P7B - every block/station/pair mutation's
@@ -2464,9 +2508,17 @@ export function RidingComplexPlanEditor({
     isInlineSavingRef.current = true;
     setInlineError(null);
     startInlineSaveTransition(async () => {
-      const result = await saveComplexBlock(actor, { ridingSlotId, blockId, startTime, endTime });
+      const result = await saveComplexBlock(actor, {
+        ridingSlotId,
+        expectedVersion: plan.version,
+        blockId,
+        startTime,
+        endTime,
+      });
       isInlineSavingRef.current = false;
       if (!result.success || !result.plan) {
+        // STALE_PLAN keeps this open inline draft (its generic message is in
+        // result.error); the version is never silently advanced behind it.
         setInlineError(result.error ?? "אירעה שגיאה בשמירה");
         return;
       }
@@ -2500,6 +2552,7 @@ export function RidingComplexPlanEditor({
         actor,
         buildStationSavePayload({
           ridingSlotId,
+          expectedVersion: plan.version,
           blockId,
           stationId,
           instructorId: instructorId || null,
@@ -2588,15 +2641,21 @@ export function RidingComplexPlanEditor({
     arena: string | null,
     pairs: StationSavePairInput[]
   ) {
+    // Both callers (saveInlinePair/removeInlinePair) already guard `plan`; this
+    // re-guard is only so plan.version can be read as the expectedVersion.
+    if (!plan) return;
+    const expectedVersion = plan.version;
     isInlineSavingRef.current = true;
     setInlineError(null);
     startInlineSaveTransition(async () => {
       const result = await saveComplexStation(
         actor,
-        buildStationSavePayload({ ridingSlotId, blockId, stationId, instructorId, arena, pairs })
+        buildStationSavePayload({ ridingSlotId, expectedVersion, blockId, stationId, instructorId, arena, pairs })
       );
       isInlineSavingRef.current = false;
       if (!result.success || !result.plan) {
+        // STALE_PLAN keeps this open pair draft (generic message in
+        // result.error); the version is never silently advanced behind it.
         setInlineError(result.error ?? "אירעה שגיאה בשמירה");
         return;
       }
@@ -2643,14 +2702,18 @@ export function RidingComplexPlanEditor({
   }
 
   function handleDuplicateBlock(blockId: string) {
-    if (anyBlockActionPending) return;
+    if (anyBlockActionPending || !plan) return;
+    const expectedVersion = plan.version;
     setListError(null);
     setBusyBlockId(blockId);
     startDuplicateBlockTransition(async () => {
-      const result = await duplicateComplexBlock(actor, ridingSlotId, blockId);
+      const result = await duplicateComplexBlock(actor, ridingSlotId, blockId, expectedVersion);
       setBusyBlockId(null);
       if (!result.success || !result.plan) {
         setListError(result.error ?? "אירעה שגיאה בשכפול הבלוק");
+        // List op with no draft: on a lost-update conflict reload the
+        // authoritative plan (advancing the version) but never auto-replay.
+        if (result.staleConflict) reloadPlanAfterStaleConflict();
         return;
       }
       refreshPlan(result.plan);
@@ -2658,15 +2721,17 @@ export function RidingComplexPlanEditor({
   }
 
   function handleDeleteBlock(blockId: string) {
-    if (anyBlockActionPending) return;
+    if (anyBlockActionPending || !plan) return;
     if (!window.confirm("למחוק את טווח השעות הזה? כל התחנות והזוגות בו יימחקו. לא ניתן לשחזר את הפעולה.")) return;
+    const expectedVersion = plan.version;
     setListError(null);
     setBusyBlockId(blockId);
     startDeleteBlockTransition(async () => {
-      const result = await deleteComplexBlock(actor, ridingSlotId, blockId);
+      const result = await deleteComplexBlock(actor, ridingSlotId, blockId, expectedVersion);
       setBusyBlockId(null);
       if (!result.success || !result.plan) {
         setListError(result.error ?? "אירעה שגיאה במחיקת טווח השעות");
+        if (result.staleConflict) reloadPlanAfterStaleConflict();
         return;
       }
       refreshPlan(result.plan);
@@ -2675,6 +2740,7 @@ export function RidingComplexPlanEditor({
 
   function handleMoveBlock(blockId: string, direction: "up" | "down") {
     if (anyBlockActionPending || !editing) return;
+    const expectedVersion = editing.plan.version;
     const ids = editing.plan.blocks.map((b) => b.id);
     const index = ids.indexOf(blockId);
     const swapWith = direction === "up" ? index - 1 : index + 1;
@@ -2684,9 +2750,10 @@ export function RidingComplexPlanEditor({
 
     setListError(null);
     startReorderBlocksTransition(async () => {
-      const result = await reorderComplexBlocks(actor, ridingSlotId, reordered);
+      const result = await reorderComplexBlocks(actor, ridingSlotId, reordered, expectedVersion);
       if (!result.success || !result.plan) {
         setListError(result.error ?? "אירעה שגיאה בסידור טווחי השעות");
+        if (result.staleConflict) reloadPlanAfterStaleConflict();
         return;
       }
       refreshPlan(result.plan);
@@ -2710,15 +2777,17 @@ export function RidingComplexPlanEditor({
   }
 
   function handleDeleteStation(blockId: string, stationId: string) {
-    if (anyStationActionPending) return;
+    if (anyStationActionPending || !plan) return;
     if (!window.confirm("למחוק את תחנת המאמן הזו? כל הזוגות בה יימחקו. לא ניתן לשחזר את הפעולה.")) return;
+    const expectedVersion = plan.version;
     setStationListError(null);
     setBusyStationId(stationId);
     startDeleteStationTransition(async () => {
-      const result = await deleteComplexStation(actor, ridingSlotId, blockId, stationId);
+      const result = await deleteComplexStation(actor, ridingSlotId, blockId, stationId, expectedVersion);
       setBusyStationId(null);
       if (!result.success || !result.plan) {
         setStationListError(result.error ?? "אירעה שגיאה במחיקת התחנה");
+        if (result.staleConflict) reloadPlanAfterStaleConflict();
         return;
       }
       refreshPlan(result.plan);
@@ -2727,6 +2796,7 @@ export function RidingComplexPlanEditor({
 
   function handleMoveStation(blockId: string, stationId: string, direction: "up" | "down") {
     if (anyStationActionPending || !editing) return;
+    const expectedVersion = editing.plan.version;
     const block = editing.plan.blocks.find((b) => b.id === blockId);
     if (!block) return;
     const ids = block.stations.map((s) => s.id);
@@ -2738,9 +2808,10 @@ export function RidingComplexPlanEditor({
 
     setStationListError(null);
     startReorderStationsTransition(async () => {
-      const result = await reorderComplexStations(actor, ridingSlotId, blockId, reordered);
+      const result = await reorderComplexStations(actor, ridingSlotId, blockId, reordered, expectedVersion);
       if (!result.success || !result.plan) {
         setStationListError(result.error ?? "אירעה שגיאה בסידור התחנות");
+        if (result.staleConflict) reloadPlanAfterStaleConflict();
         return;
       }
       refreshPlan(result.plan);
@@ -3155,6 +3226,7 @@ export function RidingComplexPlanEditor({
                 key={view.blockId ?? "new"}
                 actor={actor}
                 ridingSlotId={ridingSlotId}
+                planVersion={plan.version}
                 block={view.blockId ? (plan.blocks.find((b) => b.id === view.blockId) ?? null) : null}
                 onSaved={handleBlockTimeSaved}
                 onCancel={handleCancelBlockEdit}
@@ -3249,6 +3321,7 @@ export function RidingComplexPlanEditor({
                 key={view.stationId ?? "new"}
                 actor={actor}
                 ridingSlotId={ridingSlotId}
+                planVersion={plan.version}
                 blockId={activeBlock.id}
                 block={activeBlock}
                 earlierBlocks={plan.blocks.filter((b) => b.sortOrder < activeBlock.sortOrder)}

@@ -1,6 +1,7 @@
 "use server";
 
 import { z } from "zod";
+import { Prisma } from "@/app/generated/prisma/client";
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
 import { requireAdmin } from "@/lib/auth/require-admin";
@@ -37,6 +38,12 @@ const INVALID_INSTRUCTOR = "אחד או יותר מהמדריכים/ות שנב�
 const INVALID_TRAINEE = "אחד או יותר מהחניכים שנבחרו אינם/ן פעילים/ות או לא נמצאו";
 const INVALID_BLOCK_ORDER = "רשימת סדר הבלוקים אינה תואמת את הבלוקים הקיימים בתכנון זה";
 const INVALID_STATION_ORDER = "רשימת סדר התחנות אינה תואמת את התחנות הקיימות בבלוק זה";
+// RIDING-COMPLEX-SCHEDULE-BOARD Stage 3B.1 - the single stable, non-PII Hebrew
+// copy shown for a lost-update (optimistic-concurrency) conflict: the client's
+// expectedVersion no longer matches the live plan.version because a cooperating
+// writer (another structural edit, or a Move/Swap) committed first. The user
+// must refresh/reopen before saving again - never a silent retry or overwrite.
+const STALE_PLAN = "התכנון השתנה מאז שנפתח. יש לרענן ולבדוק מחדש לפני שמירה.";
 
 // ---------- Shared read model ----------
 
@@ -89,6 +96,14 @@ export interface RidingSlotComplexPlanRow {
   ridingSlotId: string;
   updatedAt: string;
   updatedByName: string;
+  // RIDING-COMPLEX-SCHEDULE-BOARD Stage 3B.1 - the live optimistic-concurrency
+  // counter (RidingSlotComplexPlan.version), surfaced to the editor so every
+  // structural mutation can send it back as expectedVersion. It is the ONLY
+  // authoritative source of expectedVersion the client may use - never a
+  // module global or a guessed value. A successful mutation returns a fresh
+  // plan carrying the incremented version, which becomes the next
+  // expectedVersion automatically.
+  version: number;
   blocks: RidingSlotComplexBlockRow[];
 }
 
@@ -130,6 +145,15 @@ export interface RidingSlotComplexPlanActionResult extends ActionResult {
   // overlaps another block already in this plan (see saveComplexBlockInternal).
   // Never an error; the save still succeeds.
   overlapWarning?: string;
+  // RIDING-COMPLEX-SCHEDULE-BOARD Stage 3B.1 - set true (alongside a generic
+  // error) ONLY when the mutation failed the optimistic-concurrency check: the
+  // sent expectedVersion no longer matched the live plan.version. A stable,
+  // non-PII signal the editor uses to distinguish a lost-update conflict from
+  // an ordinary validation/not-found error (list ops reload the authoritative
+  // plan; open drafts keep their draft and instruct refresh) - never carries an
+  // id, name, or version number. Additive/optional: existing callers that
+  // ignore it are unaffected.
+  staleConflict?: boolean;
 }
 
 interface ComplexPlanActor {
@@ -224,6 +248,7 @@ type PlanWithRelations = {
   ridingSlotId: string;
   updatedAt: Date;
   updatedByName: string;
+  version: number;
   blocks: BlockWithRelations[];
 };
 
@@ -288,20 +313,164 @@ function toPlanRow(p: PlanWithRelations): RidingSlotComplexPlanRow {
     ridingSlotId: p.ridingSlotId,
     updatedAt: p.updatedAt.toISOString(),
     updatedByName: p.updatedByName,
+    version: p.version,
     blocks: p.blocks.map(toBlockRow),
   };
 }
 
-async function validateActiveInstructorIds(instructorIds: string[]): Promise<boolean> {
+// RIDING-COMPLEX-SCHEDULE-BOARD Stage 3B.1 - these active-id checks now take
+// the interactive `tx` client instead of the global prisma, so every hardened
+// writer runs them INSIDE its transaction, AFTER the advisory lock. That both
+// closes the small residual race the previous pre-transaction reads carried and
+// keeps the contract's "no structural lookup before the lock" invariant. They
+// issue no global-prisma query and never escape the caller's advisory lock.
+async function validateActiveInstructorIds(tx: Prisma.TransactionClient, instructorIds: string[]): Promise<boolean> {
   if (instructorIds.length === 0) return true;
-  const found = await prisma.instructor.findMany({ where: { id: { in: instructorIds }, isActive: true } });
+  const found = await tx.instructor.findMany({ where: { id: { in: instructorIds }, isActive: true } });
   return found.length === instructorIds.length;
 }
 
-async function validateActiveTraineeIds(traineeIds: string[]): Promise<boolean> {
+async function validateActiveTraineeIds(tx: Prisma.TransactionClient, traineeIds: string[]): Promise<boolean> {
   if (traineeIds.length === 0) return true;
-  const found = await prisma.student.findMany({ where: { id: { in: traineeIds }, isActive: true } });
+  const found = await tx.student.findMany({ where: { id: { in: traineeIds }, isActive: true } });
   return found.length === traineeIds.length;
+}
+
+// ---------------------------------------------------------------------------
+// RIDING-COMPLEX-SCHEDULE-BOARD Stage 3B.1 - shared optimistic-concurrency
+// architecture for every structural complex-plan writer.
+//
+// The problem this closes: each writer used to be an unconditional
+// last-write-wins update. A stale legacy save could land on top of - and
+// silently overwrite - a concurrent Move/Swap (or another edit) that had
+// already advanced the plan. Now every cooperating structural writer runs its
+// mutation through withLockedComplexPlan, which:
+//
+//   1. opens ONE interactive transaction;
+//   2. takes pg_advisory_xact_lock(hashtext(ridingSlotId)) as the FIRST in-tx
+//      statement - the exact same transaction-scoped key convention as
+//      createComplexPlanInternal / saveRidingSlotHorseListInternal / the Stage
+//      3B Move/Swap action, so all of them serialize per slot;
+//   3. re-reads the plan by exact ridingSlotId AFTER the lock (never a
+//      pre-lock lookup) and resolves its authoritative id + version;
+//   4. maps a missing plan to the existing not-found contract;
+//   5. maps expectedVersion !== live version to the stable STALE_PLAN copy
+//      (staleConflict: true) BEFORE any mutation - no write, no version bump;
+//   6. runs the writer's own target-ownership + validation + child writes
+//      (the `body`), all via `tx`, entirely under the lock;
+//   7. claims the version with ONE conditional updateMany guarded by the
+//      just-read version (increment + actor metadata). Because everything is
+//      one transaction, a zero-row claim throws StalePlanRollback and rolls
+//      back the body's child writes too - fail-closed, never a partial write
+//      or a silent overwrite. Under the per-slot lock a cooperating writer
+//      cannot commit between the step-5 read and this claim, so the claim is
+//      the belt-and-suspenders guard the contract mandates rather than the
+//      sole check.
+//
+// This is the same lock/read/validate/write/conditional-increment shape the
+// committed Move/Swap action uses (writes precede the guarded increment; a
+// zero-row match throws to roll everything back), factored into one helper so
+// the seven writers share it instead of duplicating the raw SQL and stale
+// logic. It is module-private: no client-callable bypass, no Prisma internals
+// exported to the UI.
+// ---------------------------------------------------------------------------
+
+// Thrown from inside a writer's body/claim to force a full transaction rollback
+// when a version claim (or a compound-where child write) unexpectedly matches
+// zero rows - a concurrent, committed change moved the target. Caught by
+// withLockedComplexPlan and mapped to the stable STALE_PLAN outcome, so no
+// partial write ever commits.
+class StalePlanRollback extends Error {
+  constructor() {
+    super("STALE_PLAN");
+    this.name = "StalePlanRollback";
+  }
+}
+
+// A writer body's result: `ok:false` carries a ready-to-return generic Hebrew
+// error (and, for a lost update discovered inside the body, stale:true) and
+// guarantees NO child write has been persisted yet, so the transaction may
+// safely commit the (no-op) read work. `ok:true` carries the writer-specific
+// success payload; withLockedComplexPlan then performs the single conditional
+// version claim before committing.
+type ComplexPlanMutationBody<T> =
+  | { ok: true; value: T }
+  | { ok: false; error: string; stale?: boolean };
+
+// The outcome the caller maps to a RidingSlotComplexPlanActionResult.
+type ComplexPlanMutationOutcome<T> =
+  | { ok: true; value: T }
+  | { ok: false; error: string; staleConflict: boolean };
+
+// Duck-typed Prisma error code check (P2028 lock timeout), identical convention
+// to createComplexPlanInternal below and lib/actions/weekly-feedback.ts.
+function prismaErrorCode(err: unknown): string | null {
+  if (err && typeof err === "object" && "code" in err && typeof (err as { code: unknown }).code === "string") {
+    return (err as { code: string }).code;
+  }
+  return null;
+}
+
+async function withLockedComplexPlan<T>(
+  ridingSlotId: string,
+  expectedVersion: number,
+  actorData: ReturnType<typeof actorWriteFields>,
+  body: (tx: Prisma.TransactionClient, planId: string) => Promise<ComplexPlanMutationBody<T>>
+): Promise<ComplexPlanMutationOutcome<T>> {
+  try {
+    return await prisma.$transaction(async (tx) => {
+      // (1) Advisory lock FIRST - transaction-scoped, auto-released at
+      // commit/rollback, safe under pgbouncer transaction-mode pooling. No
+      // global-prisma call is made anywhere inside this callback.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${ridingSlotId}))`;
+
+      // (2) Re-read the plan by exact ridingSlotId AFTER the lock. Only the
+      // id + version are needed here; the writer body re-reads its own targets.
+      const plan = await tx.ridingSlotComplexPlan.findUnique({
+        where: { ridingSlotId },
+        select: { id: true, version: true },
+      });
+      if (!plan) {
+        return { ok: false as const, error: NOT_FOUND_COMPLEX_PLAN, staleConflict: false };
+      }
+
+      // (3) In-transaction current-version check. A mismatch is a lost update:
+      // fail closed with the stable STALE_PLAN copy BEFORE any mutation.
+      if (plan.version !== expectedVersion) {
+        return { ok: false as const, error: STALE_PLAN, staleConflict: true };
+      }
+
+      // (4) The writer's own target-ownership + validation + child writes,
+      // all under the lock, all via `tx`. A false result means no write yet.
+      const result = await body(tx, plan.id);
+      if (!result.ok) {
+        return { ok: false as const, error: result.error, staleConflict: result.stale ?? false };
+      }
+
+      // (5) Exactly one conditional version claim, guarded by the just-read
+      // version, folded into the same actor-metadata update every writer
+      // already performed. A zero-row match (a cooperating writer committed a
+      // bump despite the lock - not reachable in practice, required by the
+      // contract) throws to roll back the body's writes too.
+      const bumped = await tx.ridingSlotComplexPlan.updateMany({
+        where: { id: plan.id, version: expectedVersion },
+        data: { ...actorData, version: { increment: 1 } },
+      });
+      if (bumped.count === 0) {
+        throw new StalePlanRollback();
+      }
+
+      return { ok: true as const, value: result.value };
+    });
+  } catch (err) {
+    if (err instanceof StalePlanRollback) {
+      return { ok: false, error: STALE_PLAN, staleConflict: true };
+    }
+    if (prismaErrorCode(err) === "P2028") {
+      return { ok: false, error: LOCK_TIMEOUT, staleConflict: false };
+    }
+    throw err;
+  }
 }
 
 function timeToMinutes(t: string): number {
@@ -576,6 +745,10 @@ export async function createRidingSlotComplexPlanAsInstructor(
 
 const blockSaveInputSchema = z.object({
   ridingSlotId: z.string().min(1),
+  // RIDING-COMPLEX-SCHEDULE-BOARD Stage 3B.1 - REQUIRED optimistic-concurrency
+  // guard. Must be the integer plan.version of the exact loaded snapshot the
+  // client edited; never optional, never defaulted server-side.
+  expectedVersion: z.number().int(),
   blockId: z.string().trim().optional(),
   startTime: z.string().regex(/^\d{1,2}:\d{2}$/, INVALID_TIME),
   endTime: z.string().regex(/^\d{1,2}:\d{2}$/, INVALID_TIME),
@@ -601,84 +774,76 @@ async function saveComplexBlockInternal(
   }
   const data = parsed.data;
 
+  // Pure (DB-free) validation stays before the transaction - it dereferences
+  // only the submitted input, never a structural target.
   if (timeToMinutes(data.endTime) <= timeToMinutes(data.startTime)) {
     return { success: false, error: END_BEFORE_START };
   }
 
-  const plan = await prisma.ridingSlotComplexPlan.findUnique({ where: { ridingSlotId: data.ridingSlotId } });
-  if (!plan) {
-    return { success: false, error: NOT_FOUND_COMPLEX_PLAN };
-  }
-
-  if (data.blockId) {
-    const existingBlock = await prisma.ridingSlotComplexBlock.findUnique({ where: { id: data.blockId } });
-    if (!existingBlock || existingBlock.planId !== plan.id) {
-      return { success: false, error: NOT_FOUND_BLOCK };
-    }
-  }
-
-  // Overlap check against every OTHER block already in this plan - a
-  // warning only, never blocks the save (overlapping time blocks may be a
-  // deliberate split or an in-progress draft). Excludes the block being
-  // edited against itself.
-  const otherBlocks = await prisma.ridingSlotComplexBlock.findMany({
-    where: { planId: plan.id, ...(data.blockId ? { id: { not: data.blockId } } : {}) },
-    select: { startTime: true, endTime: true },
-  });
+  const actorData = actorWriteFields(actor);
   const newStart = timeToMinutes(data.startTime);
   const newEnd = timeToMinutes(data.endTime);
-  const hasOverlap = otherBlocks.some(
-    (b) => newStart < timeToMinutes(b.endTime) && newEnd > timeToMinutes(b.startTime)
+
+  // Everything structural (block ownership, overlap read, the write) now runs
+  // inside the lock via withLockedComplexPlan, AFTER the version check.
+  const outcome = await withLockedComplexPlan(
+    data.ridingSlotId,
+    data.expectedVersion,
+    actorData,
+    async (tx, planId) => {
+      if (data.blockId) {
+        const existingBlock = await tx.ridingSlotComplexBlock.findUnique({ where: { id: data.blockId } });
+        if (!existingBlock || existingBlock.planId !== planId) {
+          return { ok: false as const, error: NOT_FOUND_BLOCK };
+        }
+      }
+
+      // Overlap check against every OTHER block already in this plan - a
+      // warning only, never blocks the save (overlapping time blocks may be a
+      // deliberate split or an in-progress draft). Excludes the block being
+      // edited against itself.
+      const otherBlocks = await tx.ridingSlotComplexBlock.findMany({
+        where: { planId, ...(data.blockId ? { id: { not: data.blockId } } : {}) },
+        select: { startTime: true, endTime: true },
+      });
+      const hasOverlap = otherBlocks.some(
+        (b) => newStart < timeToMinutes(b.endTime) && newEnd > timeToMinutes(b.startTime)
+      );
+
+      // updateMany with a compound (id + planId) where re-enforces ownership
+      // inside the transaction. Under the advisory lock a zero-row match means
+      // the block vanished concurrently - fail closed via rollback.
+      let createdBlockId: string | null = null;
+      if (data.blockId) {
+        const updated = await tx.ridingSlotComplexBlock.updateMany({
+          where: { id: data.blockId, planId },
+          data: { startTime: data.startTime, endTime: data.endTime },
+        });
+        if (updated.count === 0) {
+          throw new StalePlanRollback();
+        }
+      } else {
+        const maxSort = await tx.ridingSlotComplexBlock.aggregate({
+          where: { planId },
+          _max: { sortOrder: true },
+        });
+        const created = await tx.ridingSlotComplexBlock.create({
+          data: {
+            planId,
+            startTime: data.startTime,
+            endTime: data.endTime,
+            sortOrder: (maxSort._max.sortOrder ?? -1) + 1,
+          },
+        });
+        createdBlockId = created.id;
+      }
+
+      return { ok: true as const, value: { createdBlockId, hasOverlap } };
+    }
   );
 
-  const actorData = actorWriteFields(actor);
-
-  // updateMany with a compound (id + planId) where, rather than a plain
-  // update-by-id, is the "sufficiently restrictive write condition" for the
-  // existing-block path: it can never throw a not-found error, and
-  // re-enforces ownership INSIDE the transaction rather than trusting the
-  // plain pre-transaction existingBlock read above.
-  const txResult = await prisma.$transaction(async (tx) => {
-    let blockId = data.blockId;
-    let createdBlockId: string | null = null;
-    if (blockId) {
-      const updated = await tx.ridingSlotComplexBlock.updateMany({
-        where: { id: blockId, planId: plan.id },
-        data: { startTime: data.startTime, endTime: data.endTime },
-      });
-      if (updated.count === 0) {
-        return { ok: false as const };
-      }
-    } else {
-      const maxSort = await tx.ridingSlotComplexBlock.aggregate({
-        where: { planId: plan.id },
-        _max: { sortOrder: true },
-      });
-      const created = await tx.ridingSlotComplexBlock.create({
-        data: {
-          planId: plan.id,
-          startTime: data.startTime,
-          endTime: data.endTime,
-          sortOrder: (maxSort._max.sortOrder ?? -1) + 1,
-        },
-      });
-      blockId = created.id;
-      createdBlockId = created.id;
-    }
-
-    // RIDING-COMPLEX-PUBLICATION P7A - version bump is folded into this
-    // same actor-metadata update, inside the same transaction as the block
-    // write above, so it can never drift out of sync with the mutation it
-    // represents (see RidingSlotComplexPlan.version's own schema comment).
-    await tx.ridingSlotComplexPlan.update({
-      where: { id: plan.id },
-      data: { ...actorData, version: { increment: 1 } },
-    });
-    return { ok: true as const, createdBlockId };
-  });
-
-  if (!txResult.ok) {
-    return { success: false, error: NOT_FOUND_BLOCK };
+  if (!outcome.ok) {
+    return { success: false, error: outcome.error, staleConflict: outcome.staleConflict || undefined };
   }
 
   revalidatePath("/admin/weekly-schedule");
@@ -688,8 +853,8 @@ async function saveComplexBlockInternal(
   return {
     success: true,
     plan: editing?.plan,
-    overlapWarning: hasOverlap ? OVERLAP_WARNING : undefined,
-    newBlockId: txResult.createdBlockId ?? undefined,
+    overlapWarning: outcome.value.hasOverlap ? OVERLAP_WARNING : undefined,
+    newBlockId: outcome.value.createdBlockId ?? undefined,
   };
 }
 
@@ -722,6 +887,9 @@ const stationPairInputSchema = z.object({
 
 const stationSaveInputSchema = z.object({
   ridingSlotId: z.string().min(1),
+  // RIDING-COMPLEX-SCHEDULE-BOARD Stage 3B.1 - REQUIRED optimistic-concurrency
+  // guard (see blockSaveInputSchema's identical field).
+  expectedVersion: z.number().int(),
   blockId: z.string().min(1),
   stationId: z.string().trim().optional(),
   instructorId: z.string().trim().nullish(),
@@ -732,23 +900,17 @@ const stationSaveInputSchema = z.object({
 export type RidingSlotComplexPairInput = z.infer<typeof stationPairInputSchema>;
 export type RidingSlotComplexStationSaveInput = z.infer<typeof stationSaveInputSchema>;
 
-// Shared core of saveRidingSlotComplexStationAsAdmin/AsInstructor. All
-// read-only validation (plan/block/station lookup, active instructor/
-// trainee checks, within-submission and cross-station duplicate checks)
-// runs BEFORE the transaction - only the actual writes (upsert station,
-// full-replace this station's pairs, touch plan actor metadata) run inside
-// it, kept short and DB-only, same pattern as every other save in this file.
-//
-// Cross-station duplicate checks (trainee/instructor/horse) read every
-// OTHER station already persisted in this block via a plain pre-transaction
-// query, the same established convention this file already uses for
-// validateActiveTraineeIds/validateActiveInstructorIds - not moved inside
-// the transaction, so it carries the same small, already-accepted residual
-// race window those checks have always had (a concurrent save to a
-// different station in the same block, landing in the gap between this
-// read and the transaction's commit, is not caught here). Ownership itself
-// (station belongs to this exact block) IS re-enforced inside the
-// transaction via the compound updateMany where-clause below.
+// Shared core of saveRidingSlotComplexStationAsAdmin/AsInstructor. Pure,
+// DB-free validation (pair normalization, within-submission duplicate and
+// same-trainee checks) runs BEFORE the transaction. Every structural read
+// (plan/block/station ownership, active instructor/trainee checks, block-wide
+// cross-station duplicate checks) and every write now runs INSIDE the
+// transaction, after the advisory lock and version check, via
+// withLockedComplexPlan. Moving the cross-station/active reads under the lock
+// also closes the small residual race the previous pre-transaction reads
+// carried (a concurrent save to a different station in the same block).
+// Ownership (station belongs to this exact block) is still additionally
+// re-enforced via the compound updateMany where-clause below.
 async function saveComplexStationInternal(
   input: RidingSlotComplexStationSaveInput,
   actor: ComplexPlanActor
@@ -759,32 +921,14 @@ async function saveComplexStationInternal(
   }
   const data = parsed.data;
 
-  const plan = await prisma.ridingSlotComplexPlan.findUnique({ where: { ridingSlotId: data.ridingSlotId } });
-  if (!plan) {
-    return { success: false, error: NOT_FOUND_COMPLEX_PLAN };
-  }
-
-  const block = await prisma.ridingSlotComplexBlock.findUnique({ where: { id: data.blockId } });
-  if (!block || block.planId !== plan.id) {
-    return { success: false, error: NOT_FOUND_BLOCK };
-  }
-
-  if (data.stationId) {
-    const existingStation = await prisma.ridingSlotComplexStation.findUnique({ where: { id: data.stationId } });
-    if (!existingStation || existingStation.blockId !== block.id) {
-      return { success: false, error: NOT_FOUND_STATION };
-    }
-  }
-
   const instructorId = data.instructorId || null;
-  if (instructorId && !(await validateActiveInstructorIds([instructorId]))) {
-    return { success: false, error: INVALID_INSTRUCTOR };
-  }
+  const arena = data.arena || null;
 
   // Draft-friendly normalization - identical rule set to the original P2
   // block-level save: a completely blank pair placeholder is silently
   // dropped; a pair with meaningful data (trainee2/horse/note) but no
-  // trainee1Id is malformed and rejects the whole save.
+  // trainee1Id is malformed and rejects the whole save. Pure (no DB), so it
+  // stays before the transaction.
   const normalizedRaw = data.pairs.map((p) => ({
     trainee1Id: p.trainee1Id || null,
     trainee2Id: p.trainee2Id || null,
@@ -812,7 +956,8 @@ async function saveComplexStationInternal(
 
   // Within-submission duplicate checks, scoped to this station's own
   // submitted pairs - the cross-station, block-wide checks happen
-  // separately below, against every OTHER already-persisted station.
+  // separately (inside the transaction), against every OTHER already-persisted
+  // station. Pure (no DB), so they stay before the transaction.
   const traineeOccurrences = new Map<string, number>();
   for (const pair of normalizedPairs) {
     traineeOccurrences.set(pair.trainee1Id, (traineeOccurrences.get(pair.trainee1Id) ?? 0) + 1);
@@ -835,102 +980,116 @@ async function saveComplexStationInternal(
   }
 
   const allTraineeIds = Array.from(traineeOccurrences.keys());
-  if (!(await validateActiveTraineeIds(allTraineeIds))) {
-    return { success: false, error: INVALID_TRAINEE };
-  }
-
-  // Block-wide cross-station validation: every OTHER station already
-  // persisted in this block (excluding the one being saved, if editing an
-  // existing one), checked against the submitted replacement data.
-  const otherStations = await prisma.ridingSlotComplexStation.findMany({
-    where: {
-      blockId: block.id,
-      ...(data.stationId ? { id: { not: data.stationId } } : {}),
-    },
-    select: {
-      instructorId: true,
-      pairs: { select: { trainee1Id: true, trainee2Id: true, horseName: true } },
-    },
-  });
-
-  if (instructorId && otherStations.some((s) => s.instructorId === instructorId)) {
-    return { success: false, error: DUPLICATE_INSTRUCTOR_IN_BLOCK };
-  }
-
-  const otherTraineeIds = new Set<string>();
-  const otherHorseKeys = new Set<string>();
-  for (const station of otherStations) {
-    for (const pair of station.pairs) {
-      if (pair.trainee1Id) otherTraineeIds.add(pair.trainee1Id);
-      if (pair.trainee2Id) otherTraineeIds.add(pair.trainee2Id);
-      if (pair.horseName) otherHorseKeys.add(pair.horseName.trim().toLowerCase());
-    }
-  }
-  if (allTraineeIds.some((id) => otherTraineeIds.has(id))) {
-    return { success: false, error: DUPLICATE_TRAINEE_IN_BLOCK };
-  }
-  if (Array.from(horseOccurrences.keys()).some((key) => otherHorseKeys.has(key))) {
-    return { success: false, error: DUPLICATE_HORSE_IN_BLOCK };
-  }
-
-  const arena = data.arena || null;
   const actorData = actorWriteFields(actor);
 
-  const txResult = await prisma.$transaction(async (tx) => {
-    let stationId = data.stationId;
-    if (stationId) {
-      const updated = await tx.ridingSlotComplexStation.updateMany({
-        where: { id: stationId, blockId: block.id },
-        data: { instructorId, arena },
-      });
-      if (updated.count === 0) {
-        return { ok: false as const };
+  const outcome = await withLockedComplexPlan(
+    data.ridingSlotId,
+    data.expectedVersion,
+    actorData,
+    async (tx, planId) => {
+      const block = await tx.ridingSlotComplexBlock.findUnique({ where: { id: data.blockId } });
+      if (!block || block.planId !== planId) {
+        return { ok: false as const, error: NOT_FOUND_BLOCK };
       }
-    } else {
-      const maxSort = await tx.ridingSlotComplexStation.aggregate({
-        where: { blockId: block.id },
-        _max: { sortOrder: true },
-      });
-      const created = await tx.ridingSlotComplexStation.create({
-        data: {
+
+      if (data.stationId) {
+        const existingStation = await tx.ridingSlotComplexStation.findUnique({ where: { id: data.stationId } });
+        if (!existingStation || existingStation.blockId !== block.id) {
+          return { ok: false as const, error: NOT_FOUND_STATION };
+        }
+      }
+
+      if (instructorId && !(await validateActiveInstructorIds(tx, [instructorId]))) {
+        return { ok: false as const, error: INVALID_INSTRUCTOR };
+      }
+
+      if (!(await validateActiveTraineeIds(tx, allTraineeIds))) {
+        return { ok: false as const, error: INVALID_TRAINEE };
+      }
+
+      // Block-wide cross-station validation: every OTHER station already
+      // persisted in this block (excluding the one being saved, if editing an
+      // existing one), checked against the submitted replacement data.
+      const otherStations = await tx.ridingSlotComplexStation.findMany({
+        where: {
           blockId: block.id,
-          instructorId,
-          arena,
-          sortOrder: (maxSort._max.sortOrder ?? -1) + 1,
+          ...(data.stationId ? { id: { not: data.stationId } } : {}),
+        },
+        select: {
+          instructorId: true,
+          pairs: { select: { trainee1Id: true, trainee2Id: true, horseName: true } },
         },
       });
-      stationId = created.id;
+
+      if (instructorId && otherStations.some((s) => s.instructorId === instructorId)) {
+        return { ok: false as const, error: DUPLICATE_INSTRUCTOR_IN_BLOCK };
+      }
+
+      const otherTraineeIds = new Set<string>();
+      const otherHorseKeys = new Set<string>();
+      for (const station of otherStations) {
+        for (const pair of station.pairs) {
+          if (pair.trainee1Id) otherTraineeIds.add(pair.trainee1Id);
+          if (pair.trainee2Id) otherTraineeIds.add(pair.trainee2Id);
+          if (pair.horseName) otherHorseKeys.add(pair.horseName.trim().toLowerCase());
+        }
+      }
+      if (allTraineeIds.some((id) => otherTraineeIds.has(id))) {
+        return { ok: false as const, error: DUPLICATE_TRAINEE_IN_BLOCK };
+      }
+      if (Array.from(horseOccurrences.keys()).some((key) => otherHorseKeys.has(key))) {
+        return { ok: false as const, error: DUPLICATE_HORSE_IN_BLOCK };
+      }
+
+      let stationId = data.stationId;
+      if (stationId) {
+        const updated = await tx.ridingSlotComplexStation.updateMany({
+          where: { id: stationId, blockId: block.id },
+          data: { instructorId, arena },
+        });
+        if (updated.count === 0) {
+          throw new StalePlanRollback();
+        }
+      } else {
+        const maxSort = await tx.ridingSlotComplexStation.aggregate({
+          where: { blockId: block.id },
+          _max: { sortOrder: true },
+        });
+        const created = await tx.ridingSlotComplexStation.create({
+          data: {
+            blockId: block.id,
+            instructorId,
+            arena,
+            sortOrder: (maxSort._max.sortOrder ?? -1) + 1,
+          },
+        });
+        stationId = created.id;
+      }
+
+      // Array order is the canonical pair sortOrder - client-submitted pair
+      // ids are deliberately not part of the input shape at all (full-replace
+      // semantics make them unnecessary, same convention as
+      // RidingSlotHorseListItem's identical delete+recreate save).
+      await tx.ridingSlotComplexPair.deleteMany({ where: { stationId } });
+      if (normalizedPairs.length > 0) {
+        await tx.ridingSlotComplexPair.createMany({
+          data: normalizedPairs.map((p, index) => ({
+            stationId: stationId!,
+            trainee1Id: p.trainee1Id,
+            trainee2Id: p.trainee2Id,
+            horseName: p.horseName,
+            note: p.note,
+            sortOrder: index,
+          })),
+        });
+      }
+
+      return { ok: true as const, value: null };
     }
+  );
 
-    // Array order is the canonical pair sortOrder - client-submitted pair
-    // ids are deliberately not part of the input shape at all (full-replace
-    // semantics make them unnecessary, same convention as
-    // RidingSlotHorseListItem's identical delete+recreate save).
-    await tx.ridingSlotComplexPair.deleteMany({ where: { stationId } });
-    if (normalizedPairs.length > 0) {
-      await tx.ridingSlotComplexPair.createMany({
-        data: normalizedPairs.map((p, index) => ({
-          stationId: stationId!,
-          trainee1Id: p.trainee1Id,
-          trainee2Id: p.trainee2Id,
-          horseName: p.horseName,
-          note: p.note,
-          sortOrder: index,
-        })),
-      });
-    }
-
-    // RIDING-COMPLEX-PUBLICATION P7A - see saveComplexBlockInternal's
-    // identical comment.
-    await tx.ridingSlotComplexPlan.update({
-      where: { id: plan.id },
-      data: { ...actorData, version: { increment: 1 } },
-    });
-    return { ok: true as const };
-  });
-
-  if (!txResult.ok) {
-    return { success: false, error: NOT_FOUND_STATION };
+  if (!outcome.ok) {
+    return { success: false, error: outcome.error, staleConflict: outcome.staleConflict || undefined };
   }
 
   revalidatePath("/admin/weekly-schedule");
@@ -972,47 +1131,35 @@ async function deleteComplexStationInternal(
   ridingSlotId: string,
   blockId: string,
   stationId: string,
+  expectedVersion: number,
   actor: ComplexPlanActor
 ): Promise<RidingSlotComplexPlanActionResult> {
-  const plan = await prisma.ridingSlotComplexPlan.findUnique({ where: { ridingSlotId } });
-  if (!plan) {
-    return { success: false, error: NOT_FOUND_COMPLEX_PLAN };
-  }
-
-  const block = await prisma.ridingSlotComplexBlock.findUnique({ where: { id: blockId } });
-  if (!block || block.planId !== plan.id) {
-    return { success: false, error: NOT_FOUND_BLOCK };
-  }
-
-  const station = await prisma.ridingSlotComplexStation.findUnique({ where: { id: stationId } });
-  if (!station || station.blockId !== block.id) {
-    return { success: false, error: NOT_FOUND_STATION };
-  }
-
   const actorData = actorWriteFields(actor);
 
-  // deleteMany with a compound (id + blockId) where - same
-  // sufficiently-restrictive-write-condition reasoning used throughout this
-  // file: never throws not-found, and re-checks ownership inside the
-  // transaction rather than trusting the plain pre-transaction reads above.
-  const txResult = await prisma.$transaction(async (tx) => {
-    // Cascade (schema onDelete: Cascade) removes this station's pairs -
-    // never the parent block.
+  const outcome = await withLockedComplexPlan(ridingSlotId, expectedVersion, actorData, async (tx, planId) => {
+    const block = await tx.ridingSlotComplexBlock.findUnique({ where: { id: blockId } });
+    if (!block || block.planId !== planId) {
+      return { ok: false as const, error: NOT_FOUND_BLOCK };
+    }
+
+    const station = await tx.ridingSlotComplexStation.findUnique({ where: { id: stationId } });
+    if (!station || station.blockId !== block.id) {
+      return { ok: false as const, error: NOT_FOUND_STATION };
+    }
+
+    // deleteMany with a compound (id + blockId) where re-enforces ownership
+    // under the lock. Cascade (schema onDelete: Cascade) removes this station's
+    // pairs - never the parent block. A zero-row match means the station
+    // vanished concurrently - fail closed via rollback.
     const deleted = await tx.ridingSlotComplexStation.deleteMany({ where: { id: stationId, blockId: block.id } });
     if (deleted.count === 0) {
-      return { ok: false as const };
+      throw new StalePlanRollback();
     }
-    // RIDING-COMPLEX-PUBLICATION P7A - see saveComplexBlockInternal's
-    // identical comment.
-    await tx.ridingSlotComplexPlan.update({
-      where: { id: plan.id },
-      data: { ...actorData, version: { increment: 1 } },
-    });
-    return { ok: true as const };
+    return { ok: true as const, value: null };
   });
 
-  if (!txResult.ok) {
-    return { success: false, error: NOT_FOUND_STATION };
+  if (!outcome.ok) {
+    return { success: false, error: outcome.error, staleConflict: outcome.staleConflict || undefined };
   }
 
   revalidatePath("/admin/weekly-schedule");
@@ -1025,23 +1172,25 @@ async function deleteComplexStationInternal(
 export async function deleteRidingSlotComplexStationAsAdmin(
   ridingSlotId: string,
   blockId: string,
-  stationId: string
+  stationId: string,
+  expectedVersion: number
 ): Promise<RidingSlotComplexPlanActionResult> {
   const admin = await requireAdmin();
-  return deleteComplexStationInternal(ridingSlotId, blockId, stationId, adminActor(admin));
+  return deleteComplexStationInternal(ridingSlotId, blockId, stationId, expectedVersion, adminActor(admin));
 }
 
 export async function deleteRidingSlotComplexStationAsInstructor(
   instructorId: string,
   ridingSlotId: string,
   blockId: string,
-  stationId: string
+  stationId: string,
+  expectedVersion: number
 ): Promise<RidingSlotComplexPlanActionResult> {
   const instructor = await prisma.instructor.findUnique({ where: { id: instructorId } });
   if (!instructor || !instructor.isActive || !instructor.canEditRidingNotes) {
     return { success: false, error: NO_PERMISSION };
   }
-  return deleteComplexStationInternal(ridingSlotId, blockId, stationId, instructorActor(instructor));
+  return deleteComplexStationInternal(ridingSlotId, blockId, stationId, expectedVersion, instructorActor(instructor));
 }
 
 // ---------- Reorder stations (within one block) ----------
@@ -1050,56 +1199,46 @@ async function reorderComplexStationsInternal(
   ridingSlotId: string,
   blockId: string,
   orderedStationIds: string[],
+  expectedVersion: number,
   actor: ComplexPlanActor
 ): Promise<RidingSlotComplexPlanActionResult> {
-  const plan = await prisma.ridingSlotComplexPlan.findUnique({ where: { ridingSlotId } });
-  if (!plan) {
-    return { success: false, error: NOT_FOUND_COMPLEX_PLAN };
-  }
-
-  const block = await prisma.ridingSlotComplexBlock.findUnique({ where: { id: blockId } });
-  if (!block || block.planId !== plan.id) {
-    return { success: false, error: NOT_FOUND_BLOCK };
-  }
-
-  const existingStations = await prisma.ridingSlotComplexStation.findMany({
-    where: { blockId: block.id },
-    select: { id: true },
-  });
-  const existingIds = new Set(existingStations.map((s) => s.id));
-  const submittedIds = new Set(orderedStationIds);
-
-  if (
-    orderedStationIds.length !== existingStations.length ||
-    submittedIds.size !== orderedStationIds.length ||
-    orderedStationIds.some((id) => !existingIds.has(id))
-  ) {
-    return { success: false, error: INVALID_STATION_ORDER };
-  }
-
   const actorData = actorWriteFields(actor);
 
-  const txResult = await prisma.$transaction(async (tx) => {
+  const outcome = await withLockedComplexPlan(ridingSlotId, expectedVersion, actorData, async (tx, planId) => {
+    const block = await tx.ridingSlotComplexBlock.findUnique({ where: { id: blockId } });
+    if (!block || block.planId !== planId) {
+      return { ok: false as const, error: NOT_FOUND_BLOCK };
+    }
+
+    const existingStations = await tx.ridingSlotComplexStation.findMany({
+      where: { blockId: block.id },
+      select: { id: true },
+    });
+    const existingIds = new Set(existingStations.map((s) => s.id));
+    const submittedIds = new Set(orderedStationIds);
+
+    if (
+      orderedStationIds.length !== existingStations.length ||
+      submittedIds.size !== orderedStationIds.length ||
+      orderedStationIds.some((id) => !existingIds.has(id))
+    ) {
+      return { ok: false as const, error: INVALID_STATION_ORDER };
+    }
+
     for (const [index, id] of orderedStationIds.entries()) {
       const updated = await tx.ridingSlotComplexStation.updateMany({
         where: { id, blockId: block.id },
         data: { sortOrder: index },
       });
       if (updated.count === 0) {
-        return { ok: false as const };
+        throw new StalePlanRollback();
       }
     }
-    // RIDING-COMPLEX-PUBLICATION P7A - see saveComplexBlockInternal's
-    // identical comment.
-    await tx.ridingSlotComplexPlan.update({
-      where: { id: plan.id },
-      data: { ...actorData, version: { increment: 1 } },
-    });
-    return { ok: true as const };
+    return { ok: true as const, value: null };
   });
 
-  if (!txResult.ok) {
-    return { success: false, error: INVALID_STATION_ORDER };
+  if (!outcome.ok) {
+    return { success: false, error: outcome.error, staleConflict: outcome.staleConflict || undefined };
   }
 
   revalidatePath("/admin/weekly-schedule");
@@ -1112,23 +1251,31 @@ async function reorderComplexStationsInternal(
 export async function reorderRidingSlotComplexStationsAsAdmin(
   ridingSlotId: string,
   blockId: string,
-  orderedStationIds: string[]
+  orderedStationIds: string[],
+  expectedVersion: number
 ): Promise<RidingSlotComplexPlanActionResult> {
   const admin = await requireAdmin();
-  return reorderComplexStationsInternal(ridingSlotId, blockId, orderedStationIds, adminActor(admin));
+  return reorderComplexStationsInternal(ridingSlotId, blockId, orderedStationIds, expectedVersion, adminActor(admin));
 }
 
 export async function reorderRidingSlotComplexStationsAsInstructor(
   instructorId: string,
   ridingSlotId: string,
   blockId: string,
-  orderedStationIds: string[]
+  orderedStationIds: string[],
+  expectedVersion: number
 ): Promise<RidingSlotComplexPlanActionResult> {
   const instructor = await prisma.instructor.findUnique({ where: { id: instructorId } });
   if (!instructor || !instructor.isActive || !instructor.canEditRidingNotes) {
     return { success: false, error: NO_PERMISSION };
   }
-  return reorderComplexStationsInternal(ridingSlotId, blockId, orderedStationIds, instructorActor(instructor));
+  return reorderComplexStationsInternal(
+    ridingSlotId,
+    blockId,
+    orderedStationIds,
+    expectedVersion,
+    instructorActor(instructor)
+  );
 }
 
 // ---------- Delete block ----------
@@ -1140,43 +1287,30 @@ export async function reorderRidingSlotComplexStationsAsInstructor(
 async function deleteComplexBlockInternal(
   ridingSlotId: string,
   blockId: string,
+  expectedVersion: number,
   actor: ComplexPlanActor
 ): Promise<RidingSlotComplexPlanActionResult> {
-  const plan = await prisma.ridingSlotComplexPlan.findUnique({ where: { ridingSlotId } });
-  if (!plan) {
-    return { success: false, error: NOT_FOUND_COMPLEX_PLAN };
-  }
-
-  const block = await prisma.ridingSlotComplexBlock.findUnique({ where: { id: blockId } });
-  if (!block || block.planId !== plan.id) {
-    return { success: false, error: NOT_FOUND_BLOCK };
-  }
-
   const actorData = actorWriteFields(actor);
 
-  // deleteMany with a compound (id + planId) where - same
-  // sufficiently-restrictive-write-condition reasoning as
-  // saveComplexBlockInternal's updateMany above: never throws not-found,
-  // and re-checks ownership inside the transaction rather than trusting the
-  // plain pre-transaction block read above.
-  const txResult = await prisma.$transaction(async (tx) => {
-    // Cascades (schema onDelete: Cascade) remove this block's stations,
-    // which cascade further to their pairs - never the parent plan.
-    const deleted = await tx.ridingSlotComplexBlock.deleteMany({ where: { id: blockId, planId: plan.id } });
-    if (deleted.count === 0) {
-      return { ok: false as const };
+  const outcome = await withLockedComplexPlan(ridingSlotId, expectedVersion, actorData, async (tx, planId) => {
+    const block = await tx.ridingSlotComplexBlock.findUnique({ where: { id: blockId } });
+    if (!block || block.planId !== planId) {
+      return { ok: false as const, error: NOT_FOUND_BLOCK };
     }
-    // RIDING-COMPLEX-PUBLICATION P7A - see saveComplexBlockInternal's
-    // identical comment.
-    await tx.ridingSlotComplexPlan.update({
-      where: { id: plan.id },
-      data: { ...actorData, version: { increment: 1 } },
-    });
-    return { ok: true as const };
+
+    // deleteMany with a compound (id + planId) where re-enforces ownership
+    // under the lock. Cascades (schema onDelete: Cascade) remove this block's
+    // stations, which cascade further to their pairs - never the parent plan.
+    // A zero-row match means the block vanished concurrently - fail closed.
+    const deleted = await tx.ridingSlotComplexBlock.deleteMany({ where: { id: blockId, planId } });
+    if (deleted.count === 0) {
+      throw new StalePlanRollback();
+    }
+    return { ok: true as const, value: null };
   });
 
-  if (!txResult.ok) {
-    return { success: false, error: NOT_FOUND_BLOCK };
+  if (!outcome.ok) {
+    return { success: false, error: outcome.error, staleConflict: outcome.staleConflict || undefined };
   }
 
   revalidatePath("/admin/weekly-schedule");
@@ -1188,22 +1322,24 @@ async function deleteComplexBlockInternal(
 
 export async function deleteRidingSlotComplexBlockAsAdmin(
   ridingSlotId: string,
-  blockId: string
+  blockId: string,
+  expectedVersion: number
 ): Promise<RidingSlotComplexPlanActionResult> {
   const admin = await requireAdmin();
-  return deleteComplexBlockInternal(ridingSlotId, blockId, adminActor(admin));
+  return deleteComplexBlockInternal(ridingSlotId, blockId, expectedVersion, adminActor(admin));
 }
 
 export async function deleteRidingSlotComplexBlockAsInstructor(
   instructorId: string,
   ridingSlotId: string,
-  blockId: string
+  blockId: string,
+  expectedVersion: number
 ): Promise<RidingSlotComplexPlanActionResult> {
   const instructor = await prisma.instructor.findUnique({ where: { id: instructorId } });
   if (!instructor || !instructor.isActive || !instructor.canEditRidingNotes) {
     return { success: false, error: NO_PERMISSION };
   }
-  return deleteComplexBlockInternal(ridingSlotId, blockId, instructorActor(instructor));
+  return deleteComplexBlockInternal(ridingSlotId, blockId, expectedVersion, instructorActor(instructor));
 }
 
 // ---------- Duplicate block ----------
@@ -1217,46 +1353,30 @@ export async function deleteRidingSlotComplexBlockAsInstructor(
 async function duplicateComplexBlockInternal(
   ridingSlotId: string,
   blockId: string,
+  expectedVersion: number,
   actor: ComplexPlanActor
 ): Promise<RidingSlotComplexPlanActionResult> {
-  const plan = await prisma.ridingSlotComplexPlan.findUnique({ where: { ridingSlotId } });
-  if (!plan) {
-    return { success: false, error: NOT_FOUND_COMPLEX_PLAN };
-  }
-
-  // Fast pre-transaction existence check only, to avoid opening a
-  // transaction for an obviously-invalid blockId - NOT the source of truth
-  // for what gets copied (see below).
-  const precheck = await prisma.ridingSlotComplexBlock.findUnique({
-    where: { id: blockId },
-    select: { planId: true },
-  });
-  if (!precheck || precheck.planId !== plan.id) {
-    return { success: false, error: NOT_FOUND_BLOCK };
-  }
-
   const actorData = actorWriteFields(actor);
 
-  // The source block (and its stations) is re-read INSIDE the transaction
-  // (fresh, not from the precheck above) so the copy always reflects the
-  // latest committed state, never a value that could have gone stale in the
-  // gap between the precheck and this transaction opening.
-  const txResult = await prisma.$transaction(async (tx) => {
+  // The source block (and its stations) is read INSIDE the transaction, under
+  // the advisory lock, AFTER the version check - never a pre-lock lookup - so
+  // the copy always reflects the latest committed state.
+  const outcome = await withLockedComplexPlan(ridingSlotId, expectedVersion, actorData, async (tx, planId) => {
     const sourceBlock = await tx.ridingSlotComplexBlock.findUnique({
       where: { id: blockId },
       include: { stations: { orderBy: { sortOrder: "asc" } } },
     });
-    if (!sourceBlock || sourceBlock.planId !== plan.id) {
-      return { ok: false as const };
+    if (!sourceBlock || sourceBlock.planId !== planId) {
+      return { ok: false as const, error: NOT_FOUND_BLOCK };
     }
 
     const maxSort = await tx.ridingSlotComplexBlock.aggregate({
-      where: { planId: plan.id },
+      where: { planId },
       _max: { sortOrder: true },
     });
     const created = await tx.ridingSlotComplexBlock.create({
       data: {
-        planId: plan.id,
+        planId,
         startTime: sourceBlock.startTime,
         endTime: sourceBlock.endTime,
         sortOrder: (maxSort._max.sortOrder ?? -1) + 1,
@@ -1296,44 +1416,40 @@ async function duplicateComplexBlockInternal(
       });
     }
 
-    // RIDING-COMPLEX-PUBLICATION P7A - see saveComplexBlockInternal's
-    // identical comment.
-    await tx.ridingSlotComplexPlan.update({
-      where: { id: plan.id },
-      data: { ...actorData, version: { increment: 1 } },
-    });
-    return { ok: true as const, newBlockId: created.id };
+    return { ok: true as const, value: { newBlockId: created.id } };
   });
 
-  if (!txResult.ok) {
-    return { success: false, error: NOT_FOUND_BLOCK };
+  if (!outcome.ok) {
+    return { success: false, error: outcome.error, staleConflict: outcome.staleConflict || undefined };
   }
 
   revalidatePath("/admin/weekly-schedule");
   revalidatePath("/instructor");
 
   const editing = await buildComplexPlanForEditing(ridingSlotId, { canEdit: true });
-  return { success: true, plan: editing?.plan, newBlockId: txResult.newBlockId };
+  return { success: true, plan: editing?.plan, newBlockId: outcome.value.newBlockId };
 }
 
 export async function duplicateRidingSlotComplexBlockAsAdmin(
   ridingSlotId: string,
-  blockId: string
+  blockId: string,
+  expectedVersion: number
 ): Promise<RidingSlotComplexPlanActionResult> {
   const admin = await requireAdmin();
-  return duplicateComplexBlockInternal(ridingSlotId, blockId, adminActor(admin));
+  return duplicateComplexBlockInternal(ridingSlotId, blockId, expectedVersion, adminActor(admin));
 }
 
 export async function duplicateRidingSlotComplexBlockAsInstructor(
   instructorId: string,
   ridingSlotId: string,
-  blockId: string
+  blockId: string,
+  expectedVersion: number
 ): Promise<RidingSlotComplexPlanActionResult> {
   const instructor = await prisma.instructor.findUnique({ where: { id: instructorId } });
   if (!instructor || !instructor.isActive || !instructor.canEditRidingNotes) {
     return { success: false, error: NO_PERMISSION };
   }
-  return duplicateComplexBlockInternal(ridingSlotId, blockId, instructorActor(instructor));
+  return duplicateComplexBlockInternal(ridingSlotId, blockId, expectedVersion, instructorActor(instructor));
 }
 
 // ---------- Reorder blocks ----------
@@ -1342,57 +1458,44 @@ export async function duplicateRidingSlotComplexBlockAsInstructor(
 async function reorderComplexBlocksInternal(
   ridingSlotId: string,
   orderedBlockIds: string[],
+  expectedVersion: number,
   actor: ComplexPlanActor
 ): Promise<RidingSlotComplexPlanActionResult> {
-  const plan = await prisma.ridingSlotComplexPlan.findUnique({ where: { ridingSlotId } });
-  if (!plan) {
-    return { success: false, error: NOT_FOUND_COMPLEX_PLAN };
-  }
-
-  const existingBlocks = await prisma.ridingSlotComplexBlock.findMany({
-    where: { planId: plan.id },
-    select: { id: true },
-  });
-  const existingIds = new Set(existingBlocks.map((b) => b.id));
-  const submittedIds = new Set(orderedBlockIds);
-
-  if (
-    orderedBlockIds.length !== existingBlocks.length ||
-    submittedIds.size !== orderedBlockIds.length ||
-    orderedBlockIds.some((id) => !existingIds.has(id))
-  ) {
-    return { success: false, error: INVALID_BLOCK_ORDER };
-  }
-
   const actorData = actorWriteFields(actor);
 
-  // updateMany with a compound (id + planId) where per block, same
-  // sufficiently-restrictive-write-condition reasoning as
-  // saveComplexBlockInternal/deleteComplexBlockInternal above - if a block
-  // was deleted (or, impossibly, reassigned) in the gap between the
-  // pre-transaction bijection check and this transaction, count === 0
-  // surfaces that instead of a raw not-found error.
-  const txResult = await prisma.$transaction(async (tx) => {
+  const outcome = await withLockedComplexPlan(ridingSlotId, expectedVersion, actorData, async (tx, planId) => {
+    const existingBlocks = await tx.ridingSlotComplexBlock.findMany({
+      where: { planId },
+      select: { id: true },
+    });
+    const existingIds = new Set(existingBlocks.map((b) => b.id));
+    const submittedIds = new Set(orderedBlockIds);
+
+    if (
+      orderedBlockIds.length !== existingBlocks.length ||
+      submittedIds.size !== orderedBlockIds.length ||
+      orderedBlockIds.some((id) => !existingIds.has(id))
+    ) {
+      return { ok: false as const, error: INVALID_BLOCK_ORDER };
+    }
+
+    // updateMany with a compound (id + planId) where per block re-enforces
+    // ownership under the lock. A zero-row match means a block vanished
+    // concurrently - fail closed via rollback.
     for (const [index, id] of orderedBlockIds.entries()) {
       const updated = await tx.ridingSlotComplexBlock.updateMany({
-        where: { id, planId: plan.id },
+        where: { id, planId },
         data: { sortOrder: index },
       });
       if (updated.count === 0) {
-        return { ok: false as const };
+        throw new StalePlanRollback();
       }
     }
-    // RIDING-COMPLEX-PUBLICATION P7A - see saveComplexBlockInternal's
-    // identical comment.
-    await tx.ridingSlotComplexPlan.update({
-      where: { id: plan.id },
-      data: { ...actorData, version: { increment: 1 } },
-    });
-    return { ok: true as const };
+    return { ok: true as const, value: null };
   });
 
-  if (!txResult.ok) {
-    return { success: false, error: INVALID_BLOCK_ORDER };
+  if (!outcome.ok) {
+    return { success: false, error: outcome.error, staleConflict: outcome.staleConflict || undefined };
   }
 
   revalidatePath("/admin/weekly-schedule");
@@ -1404,36 +1507,67 @@ async function reorderComplexBlocksInternal(
 
 export async function reorderRidingSlotComplexBlocksAsAdmin(
   ridingSlotId: string,
-  orderedBlockIds: string[]
+  orderedBlockIds: string[],
+  expectedVersion: number
 ): Promise<RidingSlotComplexPlanActionResult> {
   const admin = await requireAdmin();
-  return reorderComplexBlocksInternal(ridingSlotId, orderedBlockIds, adminActor(admin));
+  return reorderComplexBlocksInternal(ridingSlotId, orderedBlockIds, expectedVersion, adminActor(admin));
 }
 
 export async function reorderRidingSlotComplexBlocksAsInstructor(
   instructorId: string,
   ridingSlotId: string,
-  orderedBlockIds: string[]
+  orderedBlockIds: string[],
+  expectedVersion: number
 ): Promise<RidingSlotComplexPlanActionResult> {
   const instructor = await prisma.instructor.findUnique({ where: { id: instructorId } });
   if (!instructor || !instructor.isActive || !instructor.canEditRidingNotes) {
     return { success: false, error: NO_PERMISSION };
   }
-  return reorderComplexBlocksInternal(ridingSlotId, orderedBlockIds, instructorActor(instructor));
+  return reorderComplexBlocksInternal(ridingSlotId, orderedBlockIds, expectedVersion, instructorActor(instructor));
 }
 
 // ---------- Delete plan (admin only) ----------
-// UNCHANGED from P2.
-
+//
+// RIDING-COMPLEX-SCHEDULE-BOARD Stage 3B.1 - deliberately NOT given an
+// expectedVersion gate. This is an admin-only, destructive "delete the entire
+// complex plan, whatever it currently contains" action; gating it on a version
+// would be a silent semantic change (an admin who means to wipe the plan should
+// not be blocked because a station moved since the page loaded). Its business
+// contract is unchanged.
+//
+// It IS now wrapped in one interactive transaction whose FIRST statement takes
+// the same per-slot advisory lock every cooperating structural writer / the
+// Move/Swap action uses, so a whole-plan delete can never interleave with an
+// in-flight targeted mutation for the same slot: the delete either fully
+// precedes or fully follows it, never lands mid-mutation. No version is read or
+// bumped - the plan (and its cascade) simply goes away.
 export async function deleteRidingSlotComplexPlanAsAdmin(ridingSlotId: string): Promise<ActionResult> {
   await requireAdmin();
 
-  const plan = await prisma.ridingSlotComplexPlan.findUnique({ where: { ridingSlotId } });
-  if (!plan) {
-    return { success: false, error: NOT_FOUND_COMPLEX_PLAN };
-  }
+  try {
+    const txResult = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${ridingSlotId}))`;
+      const plan = await tx.ridingSlotComplexPlan.findUnique({
+        where: { ridingSlotId },
+        select: { id: true },
+      });
+      if (!plan) {
+        return { ok: false as const };
+      }
+      await tx.ridingSlotComplexPlan.delete({ where: { id: plan.id } });
+      return { ok: true as const };
+    });
 
-  await prisma.ridingSlotComplexPlan.delete({ where: { id: plan.id } });
+    if (!txResult.ok) {
+      return { success: false, error: NOT_FOUND_COMPLEX_PLAN };
+    }
+  } catch (err) {
+    if (prismaErrorCode(err) === "P2028") {
+      return { success: false, error: LOCK_TIMEOUT };
+    }
+    throw err;
+  }
 
   revalidatePath("/admin/weekly-schedule");
   revalidatePath("/instructor");

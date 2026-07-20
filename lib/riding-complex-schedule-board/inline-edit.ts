@@ -164,13 +164,18 @@ export function pairFieldsToInput(fields: InlinePairFields): StationSavePairInpu
 // The full saveComplexStation payload (structurally matches
 // RidingSlotComplexStationSaveInput). ALWAYS a full-station snapshot: the
 // station's instructor, arena, and the COMPLETE ordered pairs array. The
-// station writer is full-replace with no version guard (see audit), so every
-// save - including a single-pair edit or a metadata-only edit - must resubmit
-// the whole station, or unedited pairs would be deleted. This is the single
-// payload builder consumed by the legacy station form, the inline station-meta
-// editor, and the pair dialog.
+// station writer is full-replace, so every save - including a single-pair edit
+// or a metadata-only edit - must resubmit the whole station, or unedited pairs
+// would be deleted. This is the single payload builder consumed by the legacy
+// station form, the inline station-meta editor, and the pair dialog.
+//
+// RIDING-COMPLEX-SCHEDULE-BOARD Stage 3B.1 - the payload now also carries the
+// REQUIRED optimistic-concurrency guard `expectedVersion` (the plan.version of
+// the loaded snapshot the caller derived this payload from), threaded through
+// unchanged so the server can reject a lost update.
 export interface StationSavePayload {
   ridingSlotId: string;
+  expectedVersion: number;
   blockId: string;
   stationId?: string;
   instructorId: string | null;
@@ -181,6 +186,7 @@ export interface StationSavePayload {
 export function buildStationSavePayload(args: StationSavePayload): StationSavePayload {
   return {
     ridingSlotId: args.ridingSlotId,
+    expectedVersion: args.expectedVersion,
     blockId: args.blockId,
     stationId: args.stationId,
     instructorId: args.instructorId,

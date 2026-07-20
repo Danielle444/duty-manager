@@ -1,6 +1,29 @@
 "use client";
 
 import { useEffect, useRef, useState, useTransition } from "react";
+import {
+  applyComplexPlanMoveSwapAsAdmin,
+  applyComplexPlanMoveSwapAsInstructor,
+  type ComplexPlanMoveSwapActionResult,
+} from "@/lib/actions/riding-slot-complex-move-swap";
+import type { ComplexPlanMoveSwapCommand } from "@/lib/riding-complex-schedule-board/move-swap";
+import {
+  buildTraineePlacementIndex,
+  type TraineePlacementIndex,
+  type TraineeSlot,
+} from "@/lib/riding-complex-schedule-board/placement-index";
+import { decideTraineeSelection } from "@/lib/riding-complex-schedule-board/trainee-selection-decision";
+import {
+  buildProposalViewModel,
+  decideProposalActionResult,
+  type ProposalViewModel,
+} from "@/lib/riding-complex-schedule-board/proposal-view-model";
+import {
+  buildMoveSwapProposalLabels,
+  decideFullListTraineeClick,
+  decisionToProposalInput,
+  type FullListTraineeDecision,
+} from "@/lib/riding-complex-schedule-board/trainee-move-swap-orchestration";
 import { Button } from "@/lib/components/Button";
 import { Modal } from "@/lib/components/Modal";
 import { SuggestInput } from "@/lib/components/SuggestInput";
@@ -95,6 +118,21 @@ function saveComplexBlock(
   return actor.type === "admin"
     ? saveRidingSlotComplexBlockAsAdmin(input)
     : saveRidingSlotComplexBlockAsInstructor(actor.instructorId, input);
+}
+
+// RIDING-COMPLEX-SCHEDULE-BOARD (Stage 3C.2) - route one atomic trainee Move/Swap
+// to the committed transactional action, mirroring the established admin/
+// instructor routing of every sibling complex-plan writer. The command is the
+// exact Stage 3C.1 command, passed through unchanged. Authorization is the
+// server action's sole responsibility (it never trusts a client canEdit flag).
+function applyComplexMoveSwap(
+  actor: RidingComplexPlanEditorActor,
+  ridingSlotId: string,
+  command: ComplexPlanMoveSwapCommand
+): Promise<ComplexPlanMoveSwapActionResult> {
+  return actor.type === "admin"
+    ? applyComplexPlanMoveSwapAsAdmin(ridingSlotId, command)
+    : applyComplexPlanMoveSwapAsInstructor(actor.instructorId, ridingSlotId, command);
 }
 
 function saveComplexStation(
@@ -563,6 +601,7 @@ function TraineePicker({
   onChange,
   placeholder,
   disabledStudentIds,
+  onOccupiedSelect,
 }: {
   candidates: RidingSlotComplexTraineeCandidate[];
   value: string;
@@ -574,6 +613,12 @@ function TraineePicker({
   // is never disabled (so it can be kept/seen). Omitted in the legacy editor,
   // whose dropdowns stay fully enabled (validation still guards duplicates).
   disabledStudentIds?: Set<string>;
+  // RIDING-COMPLEX-SCHEDULE-BOARD (Stage 3C.2): when provided (the saved-pair
+  // dialog), an already-assigned trainee is no longer blindly disabled - picking
+  // one routes here (never to onChange, so the local draft is untouched) so the
+  // parent can offer an atomic Move/Swap proposal. Omitted in CREATE mode and in
+  // the legacy editor, where an occupied trainee stays disabled as before.
+  onOccupiedSelect?: (studentId: string) => void;
 }) {
   const [isOpen, setIsOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -650,7 +695,13 @@ function TraineePicker({
                 {section.subgroups.map((sub) => (
                   <div key={sub.subgroupNumber ?? "__none__"}>
                     {sub.items.map((c) => {
-                      const isUnavailable = c.studentId !== value && Boolean(disabledStudentIds?.has(c.studentId));
+                      const isAssignedElsewhere =
+                        c.studentId !== value && Boolean(disabledStudentIds?.has(c.studentId));
+                      // An already-assigned trainee is clickable (routed to a
+                      // Move/Swap proposal) only when the parent supplied
+                      // onOccupiedSelect; otherwise it stays disabled as before.
+                      const routeOccupied = isAssignedElsewhere && Boolean(onOccupiedSelect);
+                      const isUnavailable = isAssignedElsewhere && !routeOccupied;
                       return (
                         <button
                           key={c.studentId}
@@ -658,7 +709,13 @@ function TraineePicker({
                           disabled={isUnavailable}
                           onMouseDown={(e) => e.preventDefault()}
                           onClick={() => {
-                            onChange(c.studentId);
+                            if (routeOccupied) {
+                              // Never mutate the local draft for an occupied
+                              // trainee - hand it to the parent's proposal flow.
+                              onOccupiedSelect?.(c.studentId);
+                            } else {
+                              onChange(c.studentId);
+                            }
                             setIsOpen(false);
                             setSearch("");
                           }}
@@ -670,7 +727,7 @@ function TraineePicker({
                             {c.studentName}
                           </span>
                           <span className="shrink-0 text-xs text-muted-foreground">
-                            {isUnavailable
+                            {isAssignedElsewhere
                               ? "כבר בשיבוץ"
                               : sub.subgroupNumber != null
                                 ? `תת-קבוצה ${sub.subgroupNumber}`
@@ -1012,6 +1069,7 @@ function ContextualPairPicker({
   initialSelectedIds,
   onConfirm,
   onCancel,
+  onOccupiedClick,
 }: {
   candidates: RidingSlotComplexTraineeCandidate[];
   usedTraineeIds: Set<string>;
@@ -1027,6 +1085,12 @@ function ContextualPairPicker({
   initialSelectedIds?: string[];
   onConfirm: (trainee1Id: string, trainee2Id: string | null, prefillHorse: string) => void;
   onCancel: () => void;
+  // RIDING-COMPLEX-SCHEDULE-BOARD (Stage 3C.2): when provided (saved-pair
+  // dialog), clicking an already-assigned trainee routes here to build one
+  // atomic Move/Swap proposal instead of toggling - so an occupied trainee never
+  // enters selectedIds. Omitted in CREATE mode and the legacy editor, where an
+  // already-used trainee stays disabled as before.
+  onOccupiedClick?: (studentId: string) => void;
 }) {
   const [search, setSearch] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>(() => initialSelectedIds ?? []);
@@ -1086,7 +1150,12 @@ function ContextualPairPicker({
                     const isUsed = usedTraineeIds.has(c.studentId);
                     const isSelected = selectedIds.includes(c.studentId);
                     const atCap = !isSelected && selectedIds.length >= 2;
-                    const disableTap = isUsed || atCap;
+                    // An already-used trainee is clickable (routed to a Move/Swap
+                    // proposal) only when onOccupiedClick is supplied; otherwise
+                    // it stays disabled exactly as before. A used trainee never
+                    // enters the checkbox selection.
+                    const routeOccupied = isUsed && Boolean(onOccupiedClick);
+                    const disableTap = routeOccupied ? false : isUsed || atCap;
                     const isCoachMatch = candidateMatchesStationCoach(c, stationInstructorName);
                     // Non-blocking - never disables the trainee, never
                     // treated as a validation issue, does not prevent
@@ -1097,7 +1166,7 @@ function ContextualPairPicker({
                         key={c.studentId}
                         type="button"
                         disabled={disableTap}
-                        onClick={() => toggle(c.studentId)}
+                        onClick={() => (routeOccupied ? onOccupiedClick?.(c.studentId) : toggle(c.studentId))}
                         className={`flex w-full flex-col gap-1 rounded-lg border p-2.5 text-right disabled:cursor-not-allowed ${
                           isSelected ? "border-primary bg-primary/10" : "border-border bg-card"
                         } ${disableTap ? "opacity-50" : "hover:bg-muted"}`}
@@ -1193,6 +1262,7 @@ function PairRowEditor({
   onRemove,
   onPickFromList,
   disabledTraineeIds,
+  onOccupiedTraineeSelect,
 }: {
   pair: PairDraft;
   candidates: RidingSlotComplexTraineeCandidate[];
@@ -1212,6 +1282,11 @@ function PairRowEditor({
   // overlapping session, disabled in BOTH dropdowns so they follow the same
   // availability rule as the full selector. Omitted in the legacy editor.
   disabledTraineeIds?: Set<string>;
+  // RIDING-COMPLEX-SCHEDULE-BOARD (Stage 3C.2, saved-pair dialog): picking an
+  // already-assigned trainee in either dropdown routes here with the target seat
+  // (1 or 2) so the parent can offer an atomic Move/Swap instead of a local draft
+  // edit. Omitted in CREATE mode and the legacy editor.
+  onOccupiedTraineeSelect?: (slot: TraineeSlot, studentId: string) => void;
 }) {
   const [showNote, setShowNote] = useState(Boolean(pair.note));
   const horseInputRef = useRef<{ focus: () => void } | null>(null);
@@ -1229,6 +1304,7 @@ function PairRowEditor({
           onChange={(id) => onChange({ ...pair, trainee1Id: id })}
           placeholder="חניכ/ה 1"
           disabledStudentIds={disabledTraineeIds}
+          onOccupiedSelect={onOccupiedTraineeSelect ? (id) => onOccupiedTraineeSelect(1, id) : undefined}
         />
         <span className="hidden shrink-0 text-muted-foreground sm:inline">+</span>
         <TraineePicker
@@ -1237,6 +1313,7 @@ function PairRowEditor({
           onChange={(id) => onChange({ ...pair, trainee2Id: id })}
           placeholder="חניכ/ה 2 (אופציונלי)"
           disabledStudentIds={disabledTraineeIds}
+          onOccupiedSelect={onOccupiedTraineeSelect ? (id) => onOccupiedTraineeSelect(2, id) : undefined}
         />
       </div>
       {onPickFromList && (
@@ -2046,6 +2123,14 @@ function InlineStationMetaEditor({
 // saveComplexStation write; this component holds only the selector-open toggle.
 // Save is disabled without a first trainee. Remove (edit mode) delegates to the
 // parent's confirm+save.
+//
+// RIDING-COMPLEX-SCHEDULE-BOARD (Stage 3C.2 - trainee Move/Swap): when the parent
+// prepares a `proposal` (from an occupied-trainee click in a saved-pair dialog),
+// this dialog's body is REPLACED by a safe Hebrew before/after confirmation - the
+// same body-swap pattern the selector already uses, so there is never a third
+// nested Modal. Confirm/Cancel are the parent's; occupied clicks in either the
+// dropdowns or the full list route out via onOccupiedTraineeSelect /
+// onOccupiedListClick and NEVER mutate the local draft.
 function InlinePairDialog({
   mode,
   draft,
@@ -2062,6 +2147,13 @@ function InlinePairDialog({
   onSave,
   onRemove,
   onClose,
+  onOccupiedTraineeSelect,
+  onOccupiedListClick,
+  proposal,
+  proposalSubmitting,
+  proposalError,
+  onConfirmProposal,
+  onCancelProposal,
 }: {
   mode: "create" | "edit";
   draft: PairDraft;
@@ -2078,19 +2170,36 @@ function InlinePairDialog({
   onSave: () => void;
   onRemove?: () => void;
   onClose: () => void;
+  // Occupied-trainee routes (saved-pair dialog only); absent -> occupied
+  // trainees stay disabled (CREATE mode / legacy behavior).
+  onOccupiedTraineeSelect?: (slot: TraineeSlot, studentId: string) => void;
+  onOccupiedListClick?: (studentId: string) => void;
+  // The prepared Move/Swap confirmation view model, or null when no proposal is
+  // pending. When set, the body renders the confirmation instead of the editor.
+  proposal?: ProposalViewModel | null;
+  proposalSubmitting?: boolean;
+  proposalError?: string | null;
+  onConfirmProposal?: () => void;
+  onCancelProposal?: () => void;
 }) {
   const [selectorOpen, setSelectorOpen] = useState(false);
   const canSave = Boolean(draft.trainee1Id) && issues.length === 0;
+  const proposalOpen = Boolean(proposal);
 
   return (
     <Modal
       open
-      title={mode === "create" ? "הוספת זוג" : "עריכת זוג"}
+      title={proposal ? proposal.title : mode === "create" ? "הוספת זוג" : "עריכת זוג"}
       size="wide"
       onClose={() => {
-        // Never dismiss mid-save via backdrop click or the header X. While the
-        // selector is open, the X/backdrop closes only the selector.
-        if (saving) return;
+        // Never dismiss mid-save/mid-submit via backdrop click or the header X.
+        // A pending proposal is cancelled (zero write) before anything else;
+        // then the selector; then the whole dialog.
+        if (saving || proposalSubmitting) return;
+        if (proposalOpen) {
+          onCancelProposal?.();
+          return;
+        }
         if (selectorOpen) {
           setSelectorOpen(false);
           return;
@@ -2098,8 +2207,32 @@ function InlinePairDialog({
         onClose();
       }}
     >
-      {selectorOpen ? (
-        <div className="flex max-h-[70vh] min-h-0 flex-1 flex-col">
+      {proposal ? (
+        // Confirmation body: renders ONLY the Stage 3C.1 view-model display
+        // fields. No id/version appears in any text, attribute, or key.
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-2 rounded-lg border border-border bg-muted/40 p-3 text-sm">
+            <p className="text-card-foreground">{proposal.before}</p>
+            <p className="font-medium text-card-foreground">{proposal.after}</p>
+          </div>
+          {proposalError && <p className="text-sm text-danger">{proposalError}</p>}
+          <div className="flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={proposalSubmitting}
+              onClick={() => onCancelProposal?.()}
+            >
+              {proposal.cancelLabel}
+            </Button>
+            <Button type="button" disabled={proposalSubmitting} onClick={() => onConfirmProposal?.()}>
+              {proposalSubmitting ? "מבצע..." : proposal.confirmLabel}
+            </Button>
+          </div>
+        </div>
+      ) : selectorOpen ? (
+        <div className="flex max-h-[70vh] min-h-0 flex-1 flex-col gap-2">
+          {error && <p className="shrink-0 text-sm text-danger">{error}</p>}
           <ContextualPairPicker
             candidates={candidates}
             usedTraineeIds={usedTraineeIds}
@@ -2111,6 +2244,7 @@ function InlinePairDialog({
               setSelectorOpen(false);
             }}
             onCancel={() => setSelectorOpen(false)}
+            onOccupiedClick={onOccupiedListClick}
           />
         </div>
       ) : (
@@ -2122,6 +2256,7 @@ function InlinePairDialog({
             onChange={onChange}
             onPickFromList={() => setSelectorOpen(true)}
             disabledTraineeIds={usedTraineeIds}
+            onOccupiedTraineeSelect={onOccupiedTraineeSelect}
           />
           {issues.length > 0 && (
             <div className="rounded-lg border border-warning/40 bg-warning-muted/30 p-2.5 text-sm text-warning">
@@ -2201,6 +2336,17 @@ export function RidingComplexPlanEditor({
   const [inlineError, setInlineError] = useState<string | null>(null);
   const [isInlineSaving, startInlineSaveTransition] = useTransition();
   const isInlineSavingRef = useRef(false);
+  // RIDING-COMPLEX-SCHEDULE-BOARD (Stage 3C.2 - trainee Move/Swap) - the single
+  // prepared confirmation view model (null when none pending), its own submit
+  // transition/ref (kept separate from the station-save one above so neither
+  // interferes), its own error, and a board-level notice shown after a
+  // reload-closing outcome. Set only from a saved-pair dialog occupied-trainee
+  // click; the pair dialog stays open (inlineEdit set) beneath the confirmation.
+  const [moveSwapProposal, setMoveSwapProposal] = useState<ProposalViewModel | null>(null);
+  const [moveSwapError, setMoveSwapError] = useState<string | null>(null);
+  const [isApplyingMoveSwap, startMoveSwapTransition] = useTransition();
+  const isApplyingMoveSwapRef = useRef(false);
+  const [boardNotice, setBoardNotice] = useState<string | null>(null);
   const [lastOverlapWarning, setLastOverlapWarning] = useState<string | null>(null);
   const [lastStationWarnings, setLastStationWarnings] = useState<RidingSlotComplexSaveWarnings | null>(null);
   const [listError, setListError] = useState<string | null>(null);
@@ -2263,6 +2409,9 @@ export function RidingComplexPlanEditor({
     setBoardView(initialBoardView());
     setInlineEdit(null);
     setInlineError(null);
+    setMoveSwapProposal(null);
+    setMoveSwapError(null);
+    setBoardNotice(null);
     setLastOverlapWarning(null);
     setLastStationWarnings(null);
     setListError(null);
@@ -2382,7 +2531,7 @@ export function RidingComplexPlanEditor({
   // Any inline editor or the pair dialog is active - the board hides every other
   // edit control (editLocked), so only one target is ever open and switching
   // away always requires an explicit Cancel first (no silent draft discard).
-  const inlineEditActive = inlineEdit !== null || isInlineSaving;
+  const inlineEditActive = inlineEdit !== null || isInlineSaving || isApplyingMoveSwap;
   // Switching between the schedule board and the legacy editor is blocked while
   // an inline draft is active/saving or a publication action is pending.
   const viewSwitchBlocked = isEditorActionBlocked(inlineEditActive, isPublishing || isUnpublishing);
@@ -2467,6 +2616,7 @@ export function RidingComplexPlanEditor({
     if (!pairRow) return;
     setInlineError(null);
     setLastStationWarnings(null);
+    setBoardNotice(null);
     setInlineEdit({ kind: "pair", blockId, stationId, pairId, draft: pairDraftFromRow(pairRow) });
   }
 
@@ -2476,6 +2626,7 @@ export function RidingComplexPlanEditor({
     if (!plan || !canOpenInlineTarget(inlineEdit) || !boardEditTargetExists(plan.blocks, blockId, stationId)) return;
     setInlineError(null);
     setLastStationWarnings(null);
+    setBoardNotice(null);
     setInlineEdit({ kind: "pair", blockId, stationId, pairId: null, draft: newPairDraftFrom("", "", "") });
   }
 
@@ -2491,10 +2642,173 @@ export function RidingComplexPlanEditor({
   }
 
   function cancelInlineEdit() {
-    // Never abandon a save that is already in flight.
-    if (isInlineSavingRef.current) return;
+    // Never abandon a save or a Move/Swap that is already in flight.
+    if (isInlineSavingRef.current || isApplyingMoveSwapRef.current) return;
     setInlineEdit(null);
     setInlineError(null);
+    setMoveSwapProposal(null);
+    setMoveSwapError(null);
+  }
+
+  // RIDING-COMPLEX-SCHEDULE-BOARD (Stage 3C.2 - trainee Move/Swap) --------------
+  // A saved-pair dialog is the ONLY entry point (occupied trainees are disabled
+  // in CREATE mode and in the legacy editor). Every occupied click runs the
+  // committed Stage 3C.1 decision core over the CURRENTLY LOADED authoritative
+  // plan; nothing here re-derives a business rule or mutates the pair draft.
+
+  // Build the block-scoped placement index from the loaded plan. Rebuilt per
+  // click (plans are small) so it always reflects the latest refreshPlan.
+  function currentPlacementIndex(): TraineePlacementIndex | null {
+    return plan ? buildTraineePlacementIndex(plan) : null;
+  }
+
+  // studentId -> already-visible name; pairId -> an already-visible station label
+  // (coach / arena / time range). Names only - never an id - so the proposal copy
+  // stays id-free.
+  function moveSwapLabelMaps(): { traineeNames: Map<string, string>; stationLabels: Map<string, string> } {
+    const traineeNames = new Map<string, string>();
+    for (const c of editing?.candidates ?? []) traineeNames.set(c.studentId, c.studentName);
+    const stationLabels = new Map<string, string>();
+    if (plan) {
+      for (const block of plan.blocks) {
+        for (const station of block.stations) {
+          const label = station.instructor?.fullName ?? station.arena ?? `${block.startTime}–${block.endTime}`;
+          for (const pair of station.pairs) stationLabels.set(pair.id, label);
+        }
+      }
+    }
+    return { traineeNames, stationLabels };
+  }
+
+  // Generic, non-PII Hebrew guidance for a decision that cannot become a
+  // proposal. No id, name, or note.
+  function moveSwapUnavailableMessage(): string {
+    return "לא ניתן לבצע את הפעולה על החניכ/ה הזה. רעננו ונסו שוב.";
+  }
+
+  // Turn a decision into UI: MOVE/SWAP -> prepare the confirmation; NO_CHANGE ->
+  // nothing; EXPLICIT_SLOT_REQUIRED -> ask for an explicit seat (full pair, both
+  // held); AMBIGUOUS / UNAVAILABLE -> safe guidance; STALE_TARGET -> reload the
+  // authoritative plan and close the (now stale) pair UI, never retrying.
+  // LOCAL_SELECTION never reaches here (occupied clicks only).
+  function dispatchTraineeDecision(decision: FullListTraineeDecision, candidateTraineeId: string) {
+    if (inlineEdit?.kind !== "pair") return;
+    if (decision.kind === "MOVE_PROPOSAL" || decision.kind === "SWAP_PROPOSAL") {
+      const proposalInput = decisionToProposalInput(decision);
+      const index = currentPlacementIndex();
+      if (!proposalInput || !index) return;
+      const { traineeNames, stationLabels } = moveSwapLabelMaps();
+      const labels = buildMoveSwapProposalLabels(proposalInput, {
+        index,
+        blockId: inlineEdit.blockId,
+        candidateTraineeName: traineeNames.get(candidateTraineeId) ?? null,
+        traineeNames,
+        stationLabels,
+      });
+      setMoveSwapError(null);
+      setMoveSwapProposal(buildProposalViewModel(proposalInput, labels));
+      return;
+    }
+    if (decision.kind === "STALE_TARGET") {
+      reloadPlanAndClosePairUI("העמדה השתנתה. רעננו את התצוגה.");
+      return;
+    }
+    if (decision.kind === "EXPLICIT_SLOT_REQUIRED") {
+      // Both destination seats are held: a swap is required but the full list
+      // cannot say with whom. Zero action; ask for an explicit seat. Draft kept.
+      setInlineError("כדי לבחור עם מי לבצע החלפה, יש לבחור את החניך דרך השדה חניך 1 או חניך 2.");
+      return;
+    }
+    if (decision.kind === "AMBIGUOUS" || decision.kind === "UNAVAILABLE") {
+      setInlineError(moveSwapUnavailableMessage());
+      return;
+    }
+    // NO_CHANGE / LOCAL_SELECTION: nothing to do (draft untouched).
+  }
+
+  // A saved-pair dropdown occupied-select: the destination seat is explicit.
+  function handleOccupiedDropdownSelect(slot: TraineeSlot, candidateTraineeId: string) {
+    if (!plan || inlineEdit?.kind !== "pair") return;
+    const index = currentPlacementIndex();
+    if (!index) return;
+    const decision = decideTraineeSelection({
+      index,
+      blockId: inlineEdit.blockId,
+      candidateTraineeId,
+      destinationPairId: inlineEdit.pairId,
+      destinationSlot: slot,
+      expectedVersion: plan.version,
+    });
+    dispatchTraineeDecision(decision, candidateTraineeId);
+  }
+
+  // A saved-pair full-list occupied click: the seat is resolved by the core.
+  function handleOccupiedListClick(candidateTraineeId: string) {
+    if (!plan || inlineEdit?.kind !== "pair") return;
+    const index = currentPlacementIndex();
+    if (!index) return;
+    const decision = decideFullListTraineeClick({
+      index,
+      blockId: inlineEdit.blockId,
+      candidateTraineeId,
+      destinationPairId: inlineEdit.pairId,
+      expectedVersion: plan.version,
+    });
+    dispatchTraineeDecision(decision, candidateTraineeId);
+  }
+
+  // The ONE authoritative reload-and-close path for a Move/Swap outcome that
+  // discards the pair dialog (APPLIED / STALE_RELOAD / STALE_TARGET): reload via
+  // the committed reader, close the proposal + pair dialog, clear the now-stale
+  // draft, and surface an optional board notice. Never auto-retries.
+  function reloadPlanAndClosePairUI(notice: string | null) {
+    setMoveSwapProposal(null);
+    setMoveSwapError(null);
+    setInlineEdit(null);
+    setInlineError(null);
+    setBoardNotice(notice);
+    readComplexPlan(actor, ridingSlotId)
+      .then((result) => {
+        if (result) refreshPlan(result.plan);
+      })
+      .catch(() => {
+        // A failed reload leaves the dialog closed and the existing plan in
+        // place; the user can refresh manually. No retry.
+      });
+  }
+
+  // Confirm the pending proposal: protected against double-submit, calls exactly
+  // one actor-routed Move/Swap action with the command produced by Stage 3C.1
+  // UNCHANGED, then maps the result via decideProposalActionResult. Never
+  // constructs a second command; never auto-retries.
+  function confirmMoveSwapProposal() {
+    if (!moveSwapProposal || isApplyingMoveSwapRef.current) return;
+    const command = moveSwapProposal.command;
+    isApplyingMoveSwapRef.current = true;
+    setMoveSwapError(null);
+    startMoveSwapTransition(async () => {
+      const result = await applyComplexMoveSwap(actor, ridingSlotId, command);
+      isApplyingMoveSwapRef.current = false;
+      const directive = decideProposalActionResult({ success: result.success, reason: result.reason });
+      if (directive.outcome === "APPLIED") {
+        reloadPlanAndClosePairUI(null);
+        return;
+      }
+      if (directive.outcome === "STALE_RELOAD") {
+        reloadPlanAndClosePairUI("התכנון עודכן בינתיים. רעננו ונסו שוב.");
+        return;
+      }
+      // FAILED: keep the proposal open with a generic message; never retry.
+      setMoveSwapError(result.error ?? "אירעה שגיאה. נסו שוב.");
+    });
+  }
+
+  // Cancel the pending proposal: zero action, zero write, no draft mutation -
+  // returns to the pair dialog / selector exactly as it was.
+  function cancelMoveSwapProposal() {
+    if (isApplyingMoveSwapRef.current) return;
+    setMoveSwapProposal(null);
+    setMoveSwapError(null);
   }
 
   function saveInlineBlockTime() {
@@ -3137,6 +3451,12 @@ export function RidingComplexPlanEditor({
               />
             )}
 
+            {boardView && boardNotice && (
+              <p className="shrink-0 rounded-lg border border-warning/40 bg-warning-muted/30 p-2.5 text-sm text-warning">
+                {boardNotice}
+              </p>
+            )}
+
             {boardView && (
               <ComplexPlanScheduleBoard
                 plan={plan}
@@ -3377,6 +3697,16 @@ export function RidingComplexPlanEditor({
           onSave={saveInlinePair}
           onRemove={activePairEdit.pairId === null ? undefined : removeInlinePair}
           onClose={cancelInlineEdit}
+          // Move/Swap affordances are EDIT-mode only (a saved pair). In CREATE
+          // mode an occupied trainee stays unavailable (disabled) - never
+          // auto-saved then moved.
+          onOccupiedTraineeSelect={activePairEdit.pairId === null ? undefined : handleOccupiedDropdownSelect}
+          onOccupiedListClick={activePairEdit.pairId === null ? undefined : handleOccupiedListClick}
+          proposal={moveSwapProposal}
+          proposalSubmitting={isApplyingMoveSwap}
+          proposalError={moveSwapError}
+          onConfirmProposal={confirmMoveSwapProposal}
+          onCancelProposal={cancelMoveSwapProposal}
         />
       )}
     </Modal>

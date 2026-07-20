@@ -37,11 +37,25 @@ import {
   type RidingSlotComplexPlanActionResult,
 } from "@/lib/actions/riding-slot-complex";
 import { ComplexPlanScheduleBoard } from "@/lib/components/ComplexPlanScheduleBoard";
+import { boardEditTargetExists } from "@/lib/riding-complex-schedule-board/edit-navigation";
 import {
-  boardEditTargetExists,
-  resolveScheduleEditReturn,
-  type EditOrigin,
-} from "@/lib/riding-complex-schedule-board/edit-navigation";
+  canOpenInlineTarget,
+  initialBoardView,
+  isEditorActionBlocked,
+  stationPairExists,
+  canSaveBlockTimes,
+  pairRowToFields,
+  pairFieldsToInput,
+  buildStationSavePayload,
+  buildPairSaveSnapshotPairs,
+  appendPairToStationSnapshot,
+  removePairFromStationSnapshot,
+  toggleTraineeSelection,
+  initialTraineeSelection,
+  applyTraineeSelectionToDraft,
+  type StationSavePairInput,
+  type PairSnapshotResult,
+} from "@/lib/riding-complex-schedule-board/inline-edit";
 import {
   getComplexRidingPlanPublicationStatusForAdmin,
   getComplexRidingPlanPublicationStatusForInstructor,
@@ -301,6 +315,7 @@ function PublicationStatusPanel({
   canPublish,
   canUnpublish,
   hasBlocks,
+  blockedByEdit,
   onOpenPublish,
   onOpenUnpublish,
 }: {
@@ -310,6 +325,11 @@ function PublicationStatusPanel({
   canPublish: boolean;
   canUnpublish: boolean;
   hasBlocks: boolean;
+  // True while an inline block/station/pair draft is active/saving (which also
+  // covers the trainee selector being open) or a publication action is pending.
+  // Publish/Unpublish are disabled and a short explanation is shown, so a draft
+  // is never silently discarded to publish. Never carries any id.
+  blockedByEdit: boolean;
   onOpenPublish: () => void;
   onOpenUnpublish: () => void;
 }) {
@@ -335,7 +355,12 @@ function PublicationStatusPanel({
         {canPublish && status && status.status !== "CURRENT" && (
           <>
             {hasBlocks ? (
-              <Button variant="secondary" className="!px-2 !py-1 !text-xs" onClick={onOpenPublish}>
+              <Button
+                variant="secondary"
+                className="!px-2 !py-1 !text-xs"
+                onClick={onOpenPublish}
+                disabled={blockedByEdit}
+              >
                 {status.status === "UNPUBLISHED" ? "פרסום לחניכים" : "עדכון הפרסום לחניכים"}
               </Button>
             ) : (
@@ -351,10 +376,18 @@ function PublicationStatusPanel({
       </div>
       {canUnpublish && status && status.status !== "UNPUBLISHED" && (
         <div className="flex justify-end">
-          <Button variant="ghost" className="!px-2 !py-1 !text-xs text-danger" onClick={onOpenUnpublish}>
+          <Button
+            variant="ghost"
+            className="!px-2 !py-1 !text-xs text-danger"
+            onClick={onOpenUnpublish}
+            disabled={blockedByEdit}
+          >
             ביטול פרסום לחניכים
           </Button>
         </div>
+      )}
+      {blockedByEdit && (canPublish || canUnpublish) && (
+        <p className="text-[11px] text-muted-foreground">יש לשמור או לבטל את העריכה לפני פרסום.</p>
       )}
       {error && <p className="text-xs text-danger">{error}</p>}
     </div>
@@ -503,11 +536,18 @@ function TraineePicker({
   value,
   onChange,
   placeholder,
+  disabledStudentIds,
 }: {
   candidates: RidingSlotComplexTraineeCandidate[];
   value: string;
   onChange: (studentId: string) => void;
   placeholder: string;
+  // Optional (schedule-board pair dialog): trainees already assigned elsewhere
+  // in the overlapping session are unavailable and cannot be picked - the SAME
+  // availability rule ContextualPairPicker applies. The currently-selected value
+  // is never disabled (so it can be kept/seen). Omitted in the legacy editor,
+  // whose dropdowns stay fully enabled (validation still guards duplicates).
+  disabledStudentIds?: Set<string>;
 }) {
   const [isOpen, setIsOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -583,28 +623,36 @@ function TraineePicker({
                 </p>
                 {section.subgroups.map((sub) => (
                   <div key={sub.subgroupNumber ?? "__none__"}>
-                    {sub.items.map((c) => (
-                      <button
-                        key={c.studentId}
-                        type="button"
-                        onMouseDown={(e) => e.preventDefault()}
-                        onClick={() => {
-                          onChange(c.studentId);
-                          setIsOpen(false);
-                          setSearch("");
-                        }}
-                        className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-right text-sm hover:bg-muted ${
-                          c.studentId === value ? "bg-primary/10" : ""
-                        }`}
-                      >
-                        <span className="min-w-0 flex-1 truncate font-medium text-card-foreground">
-                          {c.studentName}
-                        </span>
-                        <span className="shrink-0 text-xs text-muted-foreground">
-                          {sub.subgroupNumber != null ? `תת-קבוצה ${sub.subgroupNumber}` : ""}
-                        </span>
-                      </button>
-                    ))}
+                    {sub.items.map((c) => {
+                      const isUnavailable = c.studentId !== value && Boolean(disabledStudentIds?.has(c.studentId));
+                      return (
+                        <button
+                          key={c.studentId}
+                          type="button"
+                          disabled={isUnavailable}
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => {
+                            onChange(c.studentId);
+                            setIsOpen(false);
+                            setSearch("");
+                          }}
+                          className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-right text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent ${
+                            c.studentId === value ? "bg-primary/10" : ""
+                          }`}
+                        >
+                          <span className="min-w-0 flex-1 truncate font-medium text-card-foreground">
+                            {c.studentName}
+                          </span>
+                          <span className="shrink-0 text-xs text-muted-foreground">
+                            {isUnavailable
+                              ? "כבר בשיבוץ"
+                              : sub.subgroupNumber != null
+                                ? `תת-קבוצה ${sub.subgroupNumber}`
+                                : ""}
+                          </span>
+                        </button>
+                      );
+                    })}
                   </div>
                 ))}
               </div>
@@ -723,14 +771,23 @@ function newPairDraftFrom(trainee1Id: string, trainee2Id: string, horseName: str
 }
 function pairDraftFromRow(row: RidingSlotComplexPairRow): PairDraft {
   pairDraftKeySeq += 1;
-  return {
-    key: pairDraftKeySeq,
-    trainee1Id: row.trainee1Id ?? "",
-    trainee2Id: row.trainee2Id ?? "",
-    horseName: row.horseName ?? "",
-    note: row.note ?? "",
-  };
+  // pairRowToFields is the single, pure row -> editable-fields projection shared
+  // with the Stage 2B pair dialog, so both initialize a pair identically.
+  return { key: pairDraftKeySeq, ...pairRowToFields(row) };
 }
+
+// RIDING-COMPLEX-SCHEDULE-BOARD (Stage 2B) - the single active inline edit
+// target plus its live draft (see the inlineEdit state comment). blockTime and
+// stationMeta are edited inline on the board; pair is edited in a focused
+// sub-dialog. The *Id fields are source identity used only for lookup/save
+// routing and are never rendered.
+type InlineEditState =
+  | null
+  | { kind: "blockTime"; blockId: string; startTime: string; endTime: string }
+  | { kind: "stationMeta"; blockId: string; stationId: string; instructorId: string; arena: string }
+  // pairId null = CREATE (append a new pair); a string = EDIT/REMOVE an existing
+  // pair. draft holds the live trainee/horse/note edit for either mode.
+  | { kind: "pair"; blockId: string; stationId: string; pairId: string | null; draft: PairDraft };
 
 // Compact per-station summary of every OTHER station already in the block -
 // exactly the data computeStationClientIssues needs to mirror the server's
@@ -926,6 +983,7 @@ function ContextualPairPicker({
   usedTraineeIds,
   earlierAssignedTraineeIds,
   stationInstructorName,
+  initialSelectedIds,
   onConfirm,
   onCancel,
 }: {
@@ -937,19 +995,19 @@ function ContextualPairPicker({
   // scheduled" clutter on the very first block.
   earlierAssignedTraineeIds: { ids: Set<string>; hasEarlierBlocks: boolean };
   stationInstructorName: string | null;
+  // Trainees to pre-select when opened (the pair's current trainees when
+  // editing an existing pair). Omitted / empty for a brand-new pair. Purely the
+  // selector's own temporary UI state - Confirm is what copies it outward.
+  initialSelectedIds?: string[];
   onConfirm: (trainee1Id: string, trainee2Id: string | null, prefillHorse: string) => void;
   onCancel: () => void;
 }) {
   const [search, setSearch] = useState("");
-  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [selectedIds, setSelectedIds] = useState<string[]>(() => initialSelectedIds ?? []);
   const confirmedRef = useRef(false);
 
   function toggle(studentId: string) {
-    setSelectedIds((current) => {
-      if (current.includes(studentId)) return current.filter((id) => id !== studentId);
-      if (current.length >= 2) return current;
-      return [...current, studentId];
-    });
+    setSelectedIds((current) => toggleTraineeSelection(current, studentId));
   }
 
   function handleConfirm() {
@@ -1107,12 +1165,27 @@ function PairRowEditor({
   knownHorseNames,
   onChange,
   onRemove,
+  onPickFromList,
+  disabledTraineeIds,
 }: {
   pair: PairDraft;
   candidates: RidingSlotComplexTraineeCandidate[];
   knownHorseNames: string[];
   onChange: (next: PairDraft) => void;
-  onRemove: () => void;
+  // Optional: the legacy station editor passes it (a pair can be removed there);
+  // the Stage 2B pair sub-dialog omits it (it edits fields only), so no remove
+  // control is shown in that context.
+  onRemove?: () => void;
+  // Optional (schedule-board pair dialog): when provided, a secondary
+  // "בחירה מרשימה" button is shown ALONGSIDE the two searchable trainee
+  // dropdowns, opening the shared grouped ContextualPairPicker. Both methods
+  // edit the same pair draft. Omitted in the legacy editor, whose dropdowns are
+  // unchanged. Horse/note editing is identical in both.
+  onPickFromList?: () => void;
+  // Optional (schedule-board pair dialog): trainees assigned elsewhere in the
+  // overlapping session, disabled in BOTH dropdowns so they follow the same
+  // availability rule as the full selector. Omitted in the legacy editor.
+  disabledTraineeIds?: Set<string>;
 }) {
   const [showNote, setShowNote] = useState(Boolean(pair.note));
   const horseInputRef = useRef<{ focus: () => void } | null>(null);
@@ -1129,6 +1202,7 @@ function PairRowEditor({
           value={pair.trainee1Id}
           onChange={(id) => onChange({ ...pair, trainee1Id: id })}
           placeholder="חניכ/ה 1"
+          disabledStudentIds={disabledTraineeIds}
         />
         <span className="hidden shrink-0 text-muted-foreground sm:inline">+</span>
         <TraineePicker
@@ -1136,8 +1210,16 @@ function PairRowEditor({
           value={pair.trainee2Id}
           onChange={(id) => onChange({ ...pair, trainee2Id: id })}
           placeholder="חניכ/ה 2 (אופציונלי)"
+          disabledStudentIds={disabledTraineeIds}
         />
       </div>
+      {onPickFromList && (
+        <div className="flex justify-start">
+          <Button type="button" variant="ghost" className="!px-2 !py-1 !text-xs" onClick={onPickFromList}>
+            בחירה מרשימה
+          </Button>
+        </div>
+      )}
       <PairContextInfo pair={pair} candidates={candidates} />
       {(horseChoices.length > 0 || pair.trainee1Id) && (
         <div className="flex flex-wrap items-center gap-1.5">
@@ -1175,9 +1257,11 @@ function PairRowEditor({
         <Button type="button" variant="ghost" className="!px-2 !py-1 !text-xs" onClick={() => setShowNote((v) => !v)}>
           {showNote ? "הסתרת הערה" : "הוספת הערה"}
         </Button>
-        <Button type="button" variant="ghost" className="!px-2 !py-1 !text-xs text-danger" onClick={onRemove}>
-          הסרת זוג
-        </Button>
+        {onRemove && (
+          <Button type="button" variant="ghost" className="!px-2 !py-1 !text-xs text-danger" onClick={onRemove}>
+            הסרת זוג
+          </Button>
+        )}
       </div>
       {showNote && (
         <input
@@ -1219,7 +1303,7 @@ function BlockTimeEditorForm({
   const [isSaving, startSaveTransition] = useTransition();
   const isSavingRef = useRef(false);
 
-  const canSave = Boolean(startTime) && Boolean(endTime) && timeToMinutes(endTime) > timeToMinutes(startTime);
+  const canSave = canSaveBlockTimes(startTime, endTime);
 
   function handleSave() {
     if (!canSave || isSavingRef.current) return;
@@ -1355,19 +1439,17 @@ function StationEditorForm({
     isSavingRef.current = true;
     setSaveError(null);
     startSaveTransition(async () => {
-      const result = await saveComplexStation(actor, {
-        ridingSlotId,
-        blockId,
-        stationId: station ? station.id : undefined,
-        instructorId: instructorId || null,
-        arena: arena || null,
-        pairs: pairs.map((p) => ({
-          trainee1Id: p.trainee1Id,
-          trainee2Id: p.trainee2Id || null,
-          horseName: p.horseName || null,
-          note: p.note || null,
-        })),
-      });
+      const result = await saveComplexStation(
+        actor,
+        buildStationSavePayload({
+          ridingSlotId,
+          blockId,
+          stationId: station ? station.id : undefined,
+          instructorId: instructorId || null,
+          arena: arena || null,
+          pairs: pairs.map(pairFieldsToInput),
+        })
+      );
       isSavingRef.current = false;
       if (!result.success || !result.plan) {
         setSaveError(result.error ?? "אירעה שגיאה בשמירה");
@@ -1770,6 +1852,268 @@ function StationOverviewCard({
   );
 }
 
+// RIDING-COMPLEX-SCHEDULE-BOARD (Stage 2B) - inline time-range editor injected
+// into a schedule-board block header. Presentational only: the parent owns the
+// draft (value), the save/cancel handlers, and the single saveComplexBlock
+// call. Reuses the exact canSaveBlockTimes rule the legacy block editor uses.
+function InlineBlockTimeEditor({
+  startTime,
+  endTime,
+  saving,
+  error,
+  onChange,
+  onSave,
+  onCancel,
+}: {
+  startTime: string;
+  endTime: string;
+  saving: boolean;
+  error: string | null;
+  onChange: (patch: { startTime?: string; endTime?: string }) => void;
+  onSave: () => void;
+  onCancel: () => void;
+}) {
+  const canSave = canSaveBlockTimes(startTime, endTime);
+  return (
+    <div className="flex w-full flex-col gap-1.5">
+      <div className="flex flex-wrap items-end gap-2">
+        <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+          שעת התחלה
+          <input
+            type="time"
+            value={startTime}
+            onChange={(e) => onChange({ startTime: e.target.value })}
+            className="rounded-lg border border-border px-2 py-1 text-sm text-card-foreground"
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+          שעת סיום
+          <input
+            type="time"
+            value={endTime}
+            onChange={(e) => onChange({ endTime: e.target.value })}
+            className="rounded-lg border border-border px-2 py-1 text-sm text-card-foreground"
+          />
+        </label>
+        <Button type="button" className="!px-2 !py-1 !text-xs" disabled={!canSave || saving} onClick={onSave}>
+          {saving ? "שומר..." : "שמירה"}
+        </Button>
+        <Button
+          type="button"
+          variant="secondary"
+          className="!px-2 !py-1 !text-xs"
+          disabled={saving}
+          onClick={onCancel}
+        >
+          ביטול
+        </Button>
+      </div>
+      {error && <p className="text-xs text-danger">{error}</p>}
+    </div>
+  );
+}
+
+// RIDING-COMPLEX-SCHEDULE-BOARD (Stage 2B) - inline station metadata (instructor
+// + arena) editor injected into a schedule-board station card. Presentational
+// only: the parent owns the draft and the single full-snapshot saveComplexStation
+// call. Reuses the shared StationCoachPicker; `issues` are the exact
+// computeStationClientIssues warnings (e.g. duplicate instructor in the block),
+// computed by the parent, that gate Save.
+function InlineStationMetaEditor({
+  instructors,
+  instructorId,
+  arena,
+  issues,
+  saving,
+  error,
+  onChangeInstructor,
+  onChangeArena,
+  onSave,
+  onCancel,
+}: {
+  instructors: InstructorOption[];
+  instructorId: string;
+  arena: string;
+  issues: string[];
+  saving: boolean;
+  error: string | null;
+  onChangeInstructor: (instructorId: string) => void;
+  onChangeArena: (arena: string) => void;
+  onSave: () => void;
+  onCancel: () => void;
+}) {
+  const canSave = issues.length === 0;
+  return (
+    <div className="flex w-full flex-col gap-2">
+      <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+        מאמן/ת
+        <StationCoachPicker instructors={instructors} value={instructorId} onChange={onChangeInstructor} />
+      </label>
+      <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+        מגרש
+        <input
+          type="text"
+          value={arena}
+          onChange={(e) => onChangeArena(e.target.value)}
+          placeholder="למשל: מגרש 1"
+          className="rounded-lg border border-border px-3 py-2 text-sm text-card-foreground"
+        />
+      </label>
+      {issues.length > 0 && (
+        <div className="rounded-lg border border-warning/40 bg-warning-muted/30 p-2 text-xs text-warning">
+          {issues.map((issue) => (
+            <p key={issue}>{issue}</p>
+          ))}
+        </div>
+      )}
+      {error && <p className="text-xs text-danger">{error}</p>}
+      <div className="flex justify-end gap-2">
+        <Button
+          type="button"
+          variant="secondary"
+          className="!px-2 !py-1 !text-xs"
+          disabled={saving}
+          onClick={onCancel}
+        >
+          ביטול
+        </Button>
+        <Button type="button" className="!px-2 !py-1 !text-xs" disabled={!canSave || saving} onClick={onSave}>
+          {saving ? "שומר..." : "שמירה"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+// RIDING-COMPLEX-SCHEDULE-BOARD (Stage 2B) - focused pair sub-dialog. A nested
+// Modal (the same nested-Modal pattern this file already uses for the publish/
+// unpublish confirmations), reusing the exact PairRowEditor field editors
+// (trainee 1, trainee 2, horse, note) - no field control is duplicated. The
+// parent owns the draft and the single full-snapshot saveComplexStation call;
+// `issues` are the exact computeStationClientIssues warnings for the whole
+// station (with this pair's edit applied) that gate Save. Cancel/backdrop/X
+// perform zero write; a failed save keeps the dialog and draft open.
+// RIDING-COMPLEX-SCHEDULE-BOARD (Stage 2B) - focused pair editor sub-dialog for
+// CREATE (mode "create") and EDIT (mode "edit"). Trainees can be chosen TWO
+// ways, both editing the SAME parent draft: (1) the two fast searchable
+// TraineePicker dropdowns in the reused PairRowEditor, and (2) a secondary
+// "בחירה מרשימה" button that opens the EXISTING shared grouped selector
+// (ContextualPairPicker), which temporarily replaces the dialog body (no third
+// nested Modal) and returns on Confirm/Cancel - Confirm copies the choice into
+// the parent draft (onConfirmTrainees, seeded from the current draft so it
+// reflects any dropdown changes), Cancel leaves the draft untouched. Horse/note
+// are edited in the same PairRowEditor. The parent owns the draft and the single
+// saveComplexStation write; this component holds only the selector-open toggle.
+// Save is disabled without a first trainee. Remove (edit mode) delegates to the
+// parent's confirm+save.
+function InlinePairDialog({
+  mode,
+  draft,
+  candidates,
+  knownHorseNames,
+  usedTraineeIds,
+  earlierAssignedTraineeIds,
+  stationInstructorName,
+  issues,
+  saving,
+  error,
+  onChange,
+  onConfirmTrainees,
+  onSave,
+  onRemove,
+  onClose,
+}: {
+  mode: "create" | "edit";
+  draft: PairDraft;
+  candidates: RidingSlotComplexTraineeCandidate[];
+  knownHorseNames: string[];
+  usedTraineeIds: Set<string>;
+  earlierAssignedTraineeIds: { ids: Set<string>; hasEarlierBlocks: boolean };
+  stationInstructorName: string | null;
+  issues: string[];
+  saving: boolean;
+  error: string | null;
+  onChange: (next: PairDraft) => void;
+  onConfirmTrainees: (trainee1Id: string, trainee2Id: string | null, prefillHorse: string) => void;
+  onSave: () => void;
+  onRemove?: () => void;
+  onClose: () => void;
+}) {
+  const [selectorOpen, setSelectorOpen] = useState(false);
+  const canSave = Boolean(draft.trainee1Id) && issues.length === 0;
+
+  return (
+    <Modal
+      open
+      title={mode === "create" ? "הוספת זוג" : "עריכת זוג"}
+      size="wide"
+      onClose={() => {
+        // Never dismiss mid-save via backdrop click or the header X. While the
+        // selector is open, the X/backdrop closes only the selector.
+        if (saving) return;
+        if (selectorOpen) {
+          setSelectorOpen(false);
+          return;
+        }
+        onClose();
+      }}
+    >
+      {selectorOpen ? (
+        <div className="flex max-h-[70vh] min-h-0 flex-1 flex-col">
+          <ContextualPairPicker
+            candidates={candidates}
+            usedTraineeIds={usedTraineeIds}
+            earlierAssignedTraineeIds={earlierAssignedTraineeIds}
+            stationInstructorName={stationInstructorName}
+            initialSelectedIds={initialTraineeSelection(draft.trainee1Id, draft.trainee2Id)}
+            onConfirm={(t1, t2, prefillHorse) => {
+              onConfirmTrainees(t1, t2, prefillHorse);
+              setSelectorOpen(false);
+            }}
+            onCancel={() => setSelectorOpen(false)}
+          />
+        </div>
+      ) : (
+        <div className="flex flex-col gap-3">
+          <PairRowEditor
+            pair={draft}
+            candidates={candidates}
+            knownHorseNames={knownHorseNames}
+            onChange={onChange}
+            onPickFromList={() => setSelectorOpen(true)}
+            disabledTraineeIds={usedTraineeIds}
+          />
+          {issues.length > 0 && (
+            <div className="rounded-lg border border-warning/40 bg-warning-muted/30 p-2.5 text-sm text-warning">
+              {issues.map((issue) => (
+                <p key={issue}>{issue}</p>
+              ))}
+            </div>
+          )}
+          {error && <p className="text-sm text-danger">{error}</p>}
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              {mode === "edit" && onRemove && (
+                <Button type="button" variant="danger" className="!text-xs" disabled={saving} onClick={onRemove}>
+                  הסרת זוג
+                </Button>
+              )}
+            </div>
+            <div className="flex gap-2">
+              <Button type="button" variant="secondary" disabled={saving} onClick={onClose}>
+                ביטול
+              </Button>
+              <Button type="button" disabled={!canSave || saving} onClick={onSave}>
+                {saving ? "שומר..." : "שמירה"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
 // Shared complex-session editor, opened as its own Modal exactly like
 // RidingHorseListEditor - entirely self-contained (fetches on open, saves
 // via the P5b actions routed through the actor prop) so the caller only
@@ -1798,24 +2142,25 @@ export function RidingComplexPlanEditor({
   const [status, setStatus] = useState<LoadStatus>("loading");
   const [editing, setEditing] = useState<RidingSlotComplexPlanForEditing | null>(null);
   const [view, setView] = useState<EditorView>({ type: "blockList" });
-  // RIDING-COMPLEX-SCHEDULE-BOARD - read-only presentation switch. When true,
-  // the whole plan is shown at once as a schedule board (ComplexPlanScheduleBoard);
-  // when false (the default), the existing step-by-step editor renders unchanged.
-  // This flag only chooses which presentation is visible - it never touches the
-  // `view` state machine, any draft, or any save path, so the editor's behavior
-  // is identical whenever the board is off.
-  const [boardView, setBoardView] = useState(false);
-  // RIDING-COMPLEX-SCHEDULE-BOARD (edit access) - when a block/station editor
-  // is opened from the schedule board, this records that origin so Save/Cancel
-  // returns to the board (focused on the just-edited card) instead of the
-  // step-by-step list. "list" is the default and preserves every existing
-  // return transition unchanged. This only steers navigation - it never touches
-  // any draft or the one save path. boardFocus* tell the board which card to
-  // bring back into view; they are source ids used only for that lookup and are
-  // never rendered.
-  const [editOrigin, setEditOrigin] = useState<EditOrigin>("list");
-  const [boardFocusBlockId, setBoardFocusBlockId] = useState<string | null>(null);
-  const [boardFocusStationId, setBoardFocusStationId] = useState<string | null>(null);
+  // RIDING-COMPLEX-SCHEDULE-BOARD - presentation switch. When true (the Stage 2B
+  // default, initialBoardView), the whole plan is shown at once as an editable
+  // schedule board (ComplexPlanScheduleBoard); when false, the legacy
+  // step-by-step editor ("עריכה קיימת") renders unchanged as a fallback. This
+  // flag only chooses which presentation is visible - it never touches the
+  // `view` state machine, any draft, or any save path.
+  const [boardView, setBoardView] = useState(initialBoardView);
+  // RIDING-COMPLEX-SCHEDULE-BOARD (Stage 2B - inline editing) - the single
+  // active inline edit target opened from the schedule board (block time,
+  // station metadata, or one pair), together with its draft. This is the ONE
+  // draft authority for board editing; at most one target is ever set (enforced
+  // by canOpenInlineTarget + the board's editLocked). null when nothing is
+  // being edited inline. inlineError/inlineSaving are the shared save state for
+  // whichever target is active. Source ids inside the target are used only for
+  // routing/lookup and are never rendered.
+  const [inlineEdit, setInlineEdit] = useState<InlineEditState>(null);
+  const [inlineError, setInlineError] = useState<string | null>(null);
+  const [isInlineSaving, startInlineSaveTransition] = useTransition();
+  const isInlineSavingRef = useRef(false);
   const [lastOverlapWarning, setLastOverlapWarning] = useState<string | null>(null);
   const [lastStationWarnings, setLastStationWarnings] = useState<RidingSlotComplexSaveWarnings | null>(null);
   const [listError, setListError] = useState<string | null>(null);
@@ -1874,10 +2219,10 @@ export function RidingComplexPlanEditor({
     setStatus("loading");
     setEditing(null);
     setView({ type: "blockList" });
-    setBoardView(false);
-    setEditOrigin("list");
-    setBoardFocusBlockId(null);
-    setBoardFocusStationId(null);
+    // Every open / ridingSlot change resets to the default schedule board.
+    setBoardView(initialBoardView());
+    setInlineEdit(null);
+    setInlineError(null);
     setLastOverlapWarning(null);
     setLastStationWarnings(null);
     setListError(null);
@@ -1967,40 +2312,283 @@ export function RidingComplexPlanEditor({
     loadPublicationStatus(false);
   }
 
-  // RIDING-COMPLEX-SCHEDULE-BOARD (edit access) - return to the schedule board
-  // after a board-originated Save/Cancel, bringing the just-edited card back
-  // into view. Clears the origin so the next edit defaults to list behavior.
-  // Never calls a server action - pure navigation state.
-  function returnToBoard(focusBlockId: string | null, focusStationId: string | null) {
-    setEditOrigin("list");
-    setBoardFocusBlockId(focusBlockId);
-    setBoardFocusStationId(focusStationId);
-    setView({ type: "blockList" });
-    setBoardView(true);
+  // RIDING-COMPLEX-SCHEDULE-BOARD (Stage 2B - inline editing) ------------------
+  // Every handler below mutates ONLY local inline-edit state, or routes a save
+  // through the existing saveComplexBlock / saveComplexStation writers (the same
+  // authoritative path the legacy editor uses - no second, weaker writer).
+  // Opening or cancelling performs zero query/write. Every station/pair save
+  // resubmits the FULL station snapshot (the writer is full-replace, see audit),
+  // so unedited pairs and untouched metadata are always preserved.
+
+  // Any inline editor or the pair dialog is active - the board hides every other
+  // edit control (editLocked), so only one target is ever open and switching
+  // away always requires an explicit Cancel first (no silent draft discard).
+  const inlineEditActive = inlineEdit !== null || isInlineSaving;
+  // Switching between the schedule board and the legacy editor is blocked while
+  // an inline draft is active/saving or a publication action is pending.
+  const viewSwitchBlocked = isEditorActionBlocked(inlineEditActive, isPublishing || isUnpublishing);
+
+  // A validation-only PairDraft for a pair NOT being edited (keys are negative
+  // and render-stable, never colliding with the live editing draft's positive
+  // key; only the field values matter to computeStationClientIssues / the
+  // payload). Reuses the shared pairRowToFields projection.
+  function otherPairDraft(row: RidingSlotComplexPairRow, index: number): PairDraft {
+    return { key: -1 - index, ...pairRowToFields(row) };
   }
 
-  // Open the EXISTING block-time editor from a schedule-board card. Guards a
-  // stale card (block vanished from a background refresh) rather than opening
-  // an editor onto a missing target. Records the board as the return origin.
-  function handleBoardEditBlock(blockId: string) {
-    if (!plan || !boardEditTargetExists(plan.blocks, blockId, null)) return;
-    setListError(null);
+  // Adapt a full-station-snapshot pairs payload (built by the shared
+  // buildPairSaveSnapshotPairs) back into PairDraft[] purely so the EXISTING
+  // computeStationClientIssues validator can run over it. Validation-only:
+  // keys are throwaway negatives and nulls coalesce to "" (the validator reads
+  // string fields); this performs no pair replacement itself - the single
+  // authoritative replacement lives in the pure helper.
+  function snapshotToValidationDrafts(pairs: StationSavePairInput[]): PairDraft[] {
+    return pairs.map((p, index) => ({
+      key: -1 - index,
+      trainee1Id: p.trainee1Id,
+      trainee2Id: p.trainee2Id ?? "",
+      horseName: p.horseName ?? "",
+      note: p.note ?? "",
+    }));
+  }
+
+  // Generic, non-PII Hebrew message for a failed pair-snapshot build - never a
+  // raw id, and the same wording whether it surfaces during create, edit, or
+  // remove.
+  function pairSnapshotErrorMessage(reason: Extract<PairSnapshotResult, { ok: false }>["reason"]): string {
+    switch (reason) {
+      case "NO_TRAINEE":
+        return "יש לבחור לפחות חניכ/ה אחת לזוג.";
+      case "DUPLICATE_TARGET":
+        return "אירעה שגיאה בזיהוי הזוג. רעננו ונסו שוב.";
+      default:
+        return "הזוג כבר לא קיים. רעננו ונסו שוב.";
+    }
+  }
+
+  // Resolve a pair draft's trainee display NAMES (never ids) for the remove
+  // confirmation copy.
+  function pairTraineeNames(draft: PairDraft): string {
+    const names = [draft.trainee1Id, draft.trainee2Id]
+      .filter(Boolean)
+      .map((id) => editing?.candidates.find((c) => c.studentId === id)?.studentName ?? "חניכ/ה");
+    return names.length > 0 ? names.join(" ו-") : "ללא חניכים";
+  }
+
+  function openInlineBlockTime(blockId: string) {
+    if (!plan || !canOpenInlineTarget(inlineEdit) || !boardEditTargetExists(plan.blocks, blockId, null)) return;
+    const block = plan.blocks.find((b) => b.id === blockId);
+    if (!block) return;
+    setInlineError(null);
     setLastOverlapWarning(null);
-    setEditOrigin("board");
-    setBoardView(false);
-    setView({ type: "editBlock", blockId });
+    setInlineEdit({ kind: "blockTime", blockId, startTime: block.startTime, endTime: block.endTime });
   }
 
-  // Open the EXISTING station editor from a schedule-board card (covers coach,
-  // arena, and every pair field). Same stale-target guard and board-origin
-  // recording as handleBoardEditBlock.
-  function handleBoardEditStation(blockId: string, stationId: string) {
-    if (!plan || !boardEditTargetExists(plan.blocks, blockId, stationId)) return;
-    setStationListError(null);
+  function openInlineStationMeta(blockId: string, stationId: string) {
+    if (!plan || !canOpenInlineTarget(inlineEdit) || !boardEditTargetExists(plan.blocks, blockId, stationId)) return;
+    const station = plan.blocks.find((b) => b.id === blockId)?.stations.find((s) => s.id === stationId);
+    if (!station) return;
+    setInlineError(null);
     setLastStationWarnings(null);
-    setEditOrigin("board");
-    setBoardView(false);
-    setView({ type: "editStation", blockId, stationId });
+    setInlineEdit({
+      kind: "stationMeta",
+      blockId,
+      stationId,
+      instructorId: station.instructorId ?? "",
+      arena: station.arena ?? "",
+    });
+  }
+
+  function openInlinePair(blockId: string, stationId: string, pairId: string) {
+    if (!plan || !canOpenInlineTarget(inlineEdit) || !stationPairExists(plan.blocks, blockId, stationId, pairId)) return;
+    const pairRow = plan.blocks
+      .find((b) => b.id === blockId)
+      ?.stations.find((s) => s.id === stationId)
+      ?.pairs.find((p) => p.id === pairId);
+    if (!pairRow) return;
+    setInlineError(null);
+    setLastStationWarnings(null);
+    setInlineEdit({ kind: "pair", blockId, stationId, pairId, draft: pairDraftFromRow(pairRow) });
+  }
+
+  // CREATE mode: open the pair editor on a fresh empty pair (pairId null). The
+  // station must still exist (fail closed on a stale card).
+  function openInlineCreatePair(blockId: string, stationId: string) {
+    if (!plan || !canOpenInlineTarget(inlineEdit) || !boardEditTargetExists(plan.blocks, blockId, stationId)) return;
+    setInlineError(null);
+    setLastStationWarnings(null);
+    setInlineEdit({ kind: "pair", blockId, stationId, pairId: null, draft: newPairDraftFrom("", "", "") });
+  }
+
+  // Copy a confirmed trainee selection into the active pair draft (trainees +
+  // contextual horse prefill only when the horse is still blank; note left
+  // untouched). Local draft only - no server write.
+  function applyInlineTraineeSelection(trainee1Id: string, trainee2Id: string | null, prefillHorse: string) {
+    setInlineEdit((prev) =>
+      prev?.kind === "pair"
+        ? { ...prev, draft: { ...prev.draft, ...applyTraineeSelectionToDraft(prev.draft, trainee1Id, trainee2Id, prefillHorse) } }
+        : prev
+    );
+  }
+
+  function cancelInlineEdit() {
+    // Never abandon a save that is already in flight.
+    if (isInlineSavingRef.current) return;
+    setInlineEdit(null);
+    setInlineError(null);
+  }
+
+  function saveInlineBlockTime() {
+    if (inlineEdit?.kind !== "blockTime" || isInlineSavingRef.current) return;
+    const { blockId, startTime, endTime } = inlineEdit;
+    if (!canSaveBlockTimes(startTime, endTime)) return;
+    if (!plan || !boardEditTargetExists(plan.blocks, blockId, null)) {
+      setInlineError("טווח השעות כבר לא קיים. רעננו ונסו שוב.");
+      return;
+    }
+    isInlineSavingRef.current = true;
+    setInlineError(null);
+    startInlineSaveTransition(async () => {
+      const result = await saveComplexBlock(actor, { ridingSlotId, blockId, startTime, endTime });
+      isInlineSavingRef.current = false;
+      if (!result.success || !result.plan) {
+        setInlineError(result.error ?? "אירעה שגיאה בשמירה");
+        return;
+      }
+      refreshPlan(result.plan);
+      setLastOverlapWarning(result.overlapWarning ?? null);
+      setInlineEdit(null);
+    });
+  }
+
+  function saveInlineStationMeta() {
+    if (inlineEdit?.kind !== "stationMeta" || isInlineSavingRef.current) return;
+    const { blockId, stationId, instructorId, arena } = inlineEdit;
+    if (!plan) return;
+    const block = plan.blocks.find((b) => b.id === blockId);
+    const station = block?.stations.find((s) => s.id === stationId);
+    if (!block || !station) {
+      setInlineError("התחנה כבר לא קיימת. רעננו ונסו שוב.");
+      return;
+    }
+    // Full-station snapshot: new instructor/arena + EVERY existing pair unchanged.
+    const pairDrafts = station.pairs.map((row, index) => otherPairDraft(row, index));
+    const issues = computeStationClientIssues(pairDrafts, instructorId || null, summarizeOtherStations(block, stationId));
+    if (issues.length > 0) {
+      setInlineError(issues.join(" · "));
+      return;
+    }
+    isInlineSavingRef.current = true;
+    setInlineError(null);
+    startInlineSaveTransition(async () => {
+      const result = await saveComplexStation(
+        actor,
+        buildStationSavePayload({
+          ridingSlotId,
+          blockId,
+          stationId,
+          instructorId: instructorId || null,
+          arena: arena || null,
+          pairs: pairDrafts.map(pairFieldsToInput),
+        })
+      );
+      isInlineSavingRef.current = false;
+      if (!result.success || !result.plan) {
+        setInlineError(result.error ?? "אירעה שגיאה בשמירה");
+        return;
+      }
+      refreshPlan(result.plan);
+      if (result.warnings) setLastStationWarnings(result.warnings);
+      setInlineEdit(null);
+    });
+  }
+
+  function saveInlinePair() {
+    if (inlineEdit?.kind !== "pair" || isInlineSavingRef.current) return;
+    const { blockId, stationId, pairId, draft } = inlineEdit;
+    if (!plan) return;
+    const block = plan.blocks.find((b) => b.id === blockId);
+    const station = block?.stations.find((s) => s.id === stationId);
+    if (!block || !station) {
+      setInlineError("הזוג כבר לא קיים. רעננו ונסו שוב.");
+      return;
+    }
+    // Full-station snapshot from the single authoritative pure helper: CREATE
+    // (pairId null) appends one pair at the end; EDIT replaces exactly the
+    // target pair. Both forward every other pair unchanged, in order, with no
+    // ids. Fails closed (no write) with a generic non-PII message, keeping the
+    // dialog and draft open.
+    const snapshot =
+      pairId === null
+        ? appendPairToStationSnapshot(station.pairs, draft)
+        : buildPairSaveSnapshotPairs(station.pairs, pairId, draft);
+    if (!snapshot.ok) {
+      setInlineError(pairSnapshotErrorMessage(snapshot.reason));
+      return;
+    }
+    const issues = computeStationClientIssues(
+      snapshotToValidationDrafts(snapshot.pairs),
+      station.instructorId || null,
+      summarizeOtherStations(block, stationId)
+    );
+    if (issues.length > 0) {
+      setInlineError(issues.join(" · "));
+      return;
+    }
+    savePairStationSnapshot(blockId, stationId, station.instructorId || null, station.arena || null, snapshot.pairs);
+  }
+
+  // Remove the pair currently being edited: an explicit confirmation showing the
+  // pair's trainee NAMES (never ids), then a full-station snapshot with exactly
+  // that pair omitted. Reuses the one saveComplexStation write; fails closed on
+  // a missing/duplicate target. Only valid in EDIT mode (pairId set).
+  function removeInlinePair() {
+    if (inlineEdit?.kind !== "pair" || inlineEdit.pairId === null || isInlineSavingRef.current) return;
+    const { blockId, stationId, pairId } = inlineEdit;
+    if (!plan) return;
+    const block = plan.blocks.find((b) => b.id === blockId);
+    const station = block?.stations.find((s) => s.id === stationId);
+    if (!block || !station) {
+      setInlineError("הזוג כבר לא קיים. רעננו ונסו שוב.");
+      return;
+    }
+    const names = pairTraineeNames(inlineEdit.draft);
+    if (!window.confirm(`להסיר את הזוג ${names}? לא ניתן לשחזר את הפעולה.`)) return;
+    const snapshot = removePairFromStationSnapshot(station.pairs, pairId);
+    if (!snapshot.ok) {
+      setInlineError(pairSnapshotErrorMessage(snapshot.reason));
+      return;
+    }
+    savePairStationSnapshot(blockId, stationId, station.instructorId || null, station.arena || null, snapshot.pairs);
+  }
+
+  // Shared write tail for every pair create/edit/remove: submits the complete
+  // station snapshot through the one saveComplexStation path, refreshes the
+  // authoritative plan, and closes the dialog. A failed save keeps the dialog
+  // and draft open with the existing error behavior.
+  function savePairStationSnapshot(
+    blockId: string,
+    stationId: string,
+    instructorId: string | null,
+    arena: string | null,
+    pairs: StationSavePairInput[]
+  ) {
+    isInlineSavingRef.current = true;
+    setInlineError(null);
+    startInlineSaveTransition(async () => {
+      const result = await saveComplexStation(
+        actor,
+        buildStationSavePayload({ ridingSlotId, blockId, stationId, instructorId, arena, pairs })
+      );
+      isInlineSavingRef.current = false;
+      if (!result.success || !result.plan) {
+        setInlineError(result.error ?? "אירעה שגיאה בשמירה");
+        return;
+      }
+      refreshPlan(result.plan);
+      if (result.warnings) setLastStationWarnings(result.warnings);
+      setInlineEdit(null);
+    });
   }
 
   function handleBlockTimeSaved(
@@ -2013,14 +2601,6 @@ export function RidingComplexPlanEditor({
     setLastOverlapWarning(overlapWarning ?? null);
     setStationListError(null);
     setLastStationWarnings(null);
-    // Board-originated block edits are always an existing block, so savedBlockId
-    // is its id - return to the board focused on it. The existing list-origin
-    // transitions below are untouched.
-    const ret = resolveScheduleEditReturn(editOrigin, { blockId: savedBlockId, stationId: null });
-    if (ret.kind === "board") {
-      returnToBoard(ret.focusBlockId, ret.focusStationId);
-      return;
-    }
     if (savedBlockId) {
       setView({ type: "stationList", blockId: savedBlockId });
       return;
@@ -2033,12 +2613,6 @@ export function RidingComplexPlanEditor({
   }
 
   function handleCancelBlockEdit() {
-    const blockId = view.type === "editBlock" ? view.blockId : null;
-    const ret = resolveScheduleEditReturn(editOrigin, { blockId, stationId: null });
-    if (ret.kind === "board") {
-      returnToBoard(ret.focusBlockId, ret.focusStationId);
-      return;
-    }
     setView({ type: "blockList" });
   }
 
@@ -2107,26 +2681,12 @@ export function RidingComplexPlanEditor({
   function handleStationSaved(plan: RidingSlotComplexPlanRow, warnings: RidingSlotComplexSaveWarnings) {
     refreshPlan(plan);
     setLastStationWarnings(warnings);
-    const target =
-      view.type === "editStation" ? { blockId: view.blockId, stationId: view.stationId } : { blockId: null, stationId: null };
-    const ret = resolveScheduleEditReturn(editOrigin, target);
-    if (ret.kind === "board") {
-      returnToBoard(ret.focusBlockId, ret.focusStationId);
-      return;
-    }
     if (view.type === "editStation") {
       setView({ type: "stationList", blockId: view.blockId });
     }
   }
 
   function handleCancelStationEdit() {
-    const target =
-      view.type === "editStation" ? { blockId: view.blockId, stationId: view.stationId } : { blockId: null, stationId: null };
-    const ret = resolveScheduleEditReturn(editOrigin, target);
-    if (ret.kind === "board") {
-      returnToBoard(ret.focusBlockId, ret.focusStationId);
-      return;
-    }
     if (view.type === "editStation") {
       setView({ type: "stationList", blockId: view.blockId });
     } else {
@@ -2299,6 +2859,112 @@ export function RidingComplexPlanEditor({
       ? (activeBlock.stations.find((s) => s.id === view.stationId) ?? null)
       : null;
 
+  // RIDING-COMPLEX-SCHEDULE-BOARD (Stage 2B) - live client validation for
+  // whichever inline target is active, computed with the SAME
+  // computeStationClientIssues the legacy editor uses (full-station snapshot),
+  // so an inline Save is gated identically. Empty unless a station/pair target
+  // is active. Also builds the inline editor nodes injected into the board's
+  // header/card slots (the board only decides placement).
+  let inlineStationMetaIssues: string[] = [];
+  let inlinePairIssues: string[] = [];
+  if (plan && inlineEdit?.kind === "stationMeta") {
+    const block = plan.blocks.find((b) => b.id === inlineEdit.blockId);
+    const station = block?.stations.find((s) => s.id === inlineEdit.stationId);
+    if (block && station) {
+      const pairDrafts = station.pairs.map((row, index) => otherPairDraft(row, index));
+      inlineStationMetaIssues = computeStationClientIssues(
+        pairDrafts,
+        inlineEdit.instructorId || null,
+        summarizeOtherStations(block, station.id)
+      );
+    }
+  } else if (plan && inlineEdit?.kind === "pair") {
+    const block = plan.blocks.find((b) => b.id === inlineEdit.blockId);
+    const station = block?.stations.find((s) => s.id === inlineEdit.stationId);
+    if (block && station) {
+      // Same single authoritative snapshot builders the save uses (CREATE
+      // appends, EDIT replaces), so the dialog's Save gate and the save path
+      // never diverge. A missing/ambiguous target fails closed to a generic
+      // non-PII issue that disables Save; a NO_TRAINEE empty create draft shows
+      // no warning box (the dialog's Save stays disabled until a trainee is
+      // chosen).
+      const snapshot =
+        inlineEdit.pairId === null
+          ? appendPairToStationSnapshot(station.pairs, inlineEdit.draft)
+          : buildPairSaveSnapshotPairs(station.pairs, inlineEdit.pairId, inlineEdit.draft);
+      if (snapshot.ok) {
+        inlinePairIssues = computeStationClientIssues(
+          snapshotToValidationDrafts(snapshot.pairs),
+          station.instructorId || null,
+          summarizeOtherStations(block, station.id)
+        );
+      } else if (snapshot.reason !== "NO_TRAINEE") {
+        inlinePairIssues = ["לא ניתן לשמור זוג זה. רעננו ונסו שוב."];
+      }
+    }
+  }
+
+  const inlineBlockTimeNode =
+    inlineEdit?.kind === "blockTime" ? (
+      <InlineBlockTimeEditor
+        startTime={inlineEdit.startTime}
+        endTime={inlineEdit.endTime}
+        saving={isInlineSaving}
+        error={inlineError}
+        onChange={(patch) => setInlineEdit((prev) => (prev?.kind === "blockTime" ? { ...prev, ...patch } : prev))}
+        onSave={saveInlineBlockTime}
+        onCancel={cancelInlineEdit}
+      />
+    ) : null;
+
+  const inlineStationMetaNode =
+    inlineEdit?.kind === "stationMeta" ? (
+      <InlineStationMetaEditor
+        instructors={instructors}
+        instructorId={inlineEdit.instructorId}
+        arena={inlineEdit.arena}
+        issues={inlineStationMetaIssues}
+        saving={isInlineSaving}
+        error={inlineError}
+        onChangeInstructor={(id) =>
+          setInlineEdit((prev) => (prev?.kind === "stationMeta" ? { ...prev, instructorId: id } : prev))
+        }
+        onChangeArena={(a) => setInlineEdit((prev) => (prev?.kind === "stationMeta" ? { ...prev, arena: a } : prev))}
+        onSave={saveInlineStationMeta}
+        onCancel={cancelInlineEdit}
+      />
+    ) : null;
+
+  const activePairEdit = inlineEdit?.kind === "pair" ? inlineEdit : null;
+
+  // Grouped-selector inputs for the active pair dialog, computed with the exact
+  // legacy helpers (availability, earlier-block, coach-match). The edited pair's
+  // own trainees are excluded from "used" so they can stay selected; for a new
+  // pair (pairId null) every existing pair of the station counts as used.
+  let pairSelectorContext: {
+    usedTraineeIds: Set<string>;
+    earlierAssignedTraineeIds: { ids: Set<string>; hasEarlierBlocks: boolean };
+    stationInstructorName: string | null;
+  } | null = null;
+  if (plan && activePairEdit) {
+    const block = plan.blocks.find((b) => b.id === activePairEdit.blockId);
+    const station = block?.stations.find((s) => s.id === activePairEdit.stationId);
+    if (block && station) {
+      const otherPairs = station.pairs
+        .filter((p) => activePairEdit.pairId === null || p.id !== activePairEdit.pairId)
+        .map((row, index) => otherPairDraft(row, index));
+      const earlierBlocks = plan.blocks.filter((b) => b.sortOrder < block.sortOrder);
+      pairSelectorContext = {
+        usedTraineeIds: computeUsedTraineeIds(block, station.id, otherPairs),
+        earlierAssignedTraineeIds: {
+          ids: computeEarlierAssignedTraineeIds(earlierBlocks),
+          hasEarlierBlocks: earlierBlocks.length > 0,
+        },
+        stationInstructorName: instructors.find((i) => i.id === station.instructorId)?.fullName ?? null,
+      };
+    }
+  }
+
   return (
     <Modal
       open={open}
@@ -2341,6 +3007,11 @@ export function RidingComplexPlanEditor({
                 <Button
                   variant={boardView ? "secondary" : "ghost"}
                   aria-pressed={!boardView}
+                  // Disabled while an inline draft is active/saving or a
+                  // publication action is pending, so switching presentation can
+                  // never silently orphan an unsaved draft - the user must Save
+                  // or Cancel first.
+                  disabled={viewSwitchBlocked}
                   className={`!flex-1 !py-1 !text-xs ${boardView ? "" : "!bg-card !shadow-sm"}`}
                   onClick={() => setBoardView(false)}
                 >
@@ -2349,18 +3020,33 @@ export function RidingComplexPlanEditor({
                 <Button
                   variant={boardView ? "ghost" : "secondary"}
                   aria-pressed={boardView}
+                  disabled={viewSwitchBlocked}
                   className={`!flex-1 !py-1 !text-xs ${boardView ? "!bg-card !shadow-sm" : ""}`}
-                  onClick={() => {
-                    // Manual switch to the board should not auto-scroll to a
-                    // previously-edited card; only a post-edit return does.
-                    setBoardFocusBlockId(null);
-                    setBoardFocusStationId(null);
-                    setBoardView(true);
-                  }}
+                  onClick={() => setBoardView(true)}
                 >
                   תצוגת לוז
                 </Button>
               </div>
+            )}
+
+            {/* RIDING-COMPLEX-PUBLICATION - editor-level status/publish toolbar,
+                the ONE publication control, shown in both "תצוגת לוז" and the
+                legacy "עריכה קיימת" root. Uses the exact same state, handlers,
+                confirmation modals, and server actions as before; blockedByEdit
+                disables Publish/Unpublish (with an explanation) while an inline
+                draft/selector/save or a publication action is in flight. */}
+            {(boardView || view.type === "blockList") && (
+              <PublicationStatusPanel
+                status={publicationStatus}
+                loading={publicationStatusLoading}
+                error={publicationStatusError}
+                canPublish={canEdit}
+                canUnpublish={actor.type === "admin"}
+                hasBlocks={plan.blocks.length > 0}
+                blockedByEdit={inlineEditActive}
+                onOpenPublish={openPublishModal}
+                onOpenUnpublish={openUnpublishModal}
+              />
             )}
 
             {boardView && (
@@ -2368,26 +3054,22 @@ export function RidingComplexPlanEditor({
                 plan={plan}
                 candidates={editing.candidates}
                 canEdit={canEdit}
-                onEditBlock={handleBoardEditBlock}
-                onEditStation={handleBoardEditStation}
-                focusBlockId={boardFocusBlockId}
-                focusStationId={boardFocusStationId}
+                editLocked={inlineEditActive}
+                inlineBlockTimeId={inlineEdit?.kind === "blockTime" ? inlineEdit.blockId : null}
+                renderBlockTimeEditor={() => inlineBlockTimeNode}
+                inlineStationMetaId={inlineEdit?.kind === "stationMeta" ? inlineEdit.stationId : null}
+                renderStationMetaEditor={() => inlineStationMetaNode}
+                onEditBlockTime={openInlineBlockTime}
+                onEditStationMeta={openInlineStationMeta}
+                onEditPair={openInlinePair}
+                onAddPair={openInlineCreatePair}
               />
             )}
 
             {!boardView && view.type === "blockList" && (
               <>
-                <PublicationStatusPanel
-                  status={publicationStatus}
-                  loading={publicationStatusLoading}
-                  error={publicationStatusError}
-                  canPublish={canEdit}
-                  canUnpublish={actor.type === "admin"}
-                  hasBlocks={plan.blocks.length > 0}
-                  onOpenPublish={openPublishModal}
-                  onOpenUnpublish={openUnpublishModal}
-                />
-
+                {/* Publication status/toolbar is now rendered once at editor
+                    level above (shared by board + legacy root) - not here. */}
                 <div className="flex shrink-0 items-center justify-between gap-2">
                   <p className="text-sm font-semibold text-card-foreground">טווחי שעות</p>
                   {canEdit && (
@@ -2582,6 +3264,31 @@ export function RidingComplexPlanEditor({
         onConfirm={handleConfirmUnpublish}
         onClose={closeUnpublishModal}
       />
+      {/* RIDING-COMPLEX-SCHEDULE-BOARD (Stage 2B) - the pair sub-dialog, opened
+          only from the schedule board (openInlinePair). Reuses the exact
+          PairRowEditor + computeStationClientIssues; Save routes through the one
+          full-snapshot saveComplexStation path. */}
+      {activePairEdit && (
+        <InlinePairDialog
+          mode={activePairEdit.pairId === null ? "create" : "edit"}
+          draft={activePairEdit.draft}
+          candidates={editing?.candidates ?? []}
+          knownHorseNames={editing?.knownHorseNames ?? []}
+          usedTraineeIds={pairSelectorContext?.usedTraineeIds ?? new Set<string>()}
+          earlierAssignedTraineeIds={
+            pairSelectorContext?.earlierAssignedTraineeIds ?? { ids: new Set<string>(), hasEarlierBlocks: false }
+          }
+          stationInstructorName={pairSelectorContext?.stationInstructorName ?? null}
+          issues={inlinePairIssues}
+          saving={isInlineSaving}
+          error={inlineError}
+          onChange={(next) => setInlineEdit((prev) => (prev?.kind === "pair" ? { ...prev, draft: next } : prev))}
+          onConfirmTrainees={applyInlineTraineeSelection}
+          onSave={saveInlinePair}
+          onRemove={activePairEdit.pairId === null ? undefined : removeInlinePair}
+          onClose={cancelInlineEdit}
+        />
+      )}
     </Modal>
   );
 }

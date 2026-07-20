@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef } from "react";
+import { useMemo, type ReactNode } from "react";
 import { Button } from "@/lib/components/Button";
 import {
   projectScheduleBoard,
@@ -17,15 +17,19 @@ import { showsBoardEditControl } from "@/lib/riding-complex-schedule-board/edit-
 // file) and lays the result out as time-block sections with coach-station
 // lanes, so the entire plan is visible at once.
 //
-// Edit access (additive, permission-gated): when the parent passes canEdit
-// plus onEditBlock/onEditStation, each block/station card gains a labeled edit
-// control. Clicking it does NOT mutate anything here - it calls back with the
-// card's source block/station id so the parent opens its EXISTING, trusted
-// block/station editor (one draft authority, one write path). A read-only
-// viewer (canEdit false, or no callbacks) sees no edit control. The source ids
-// used by those callbacks come from the projection's internal blockId/stationId
-// fields and are used ONLY in the click handlers/focus ref - never rendered
-// into text, attributes, accessible labels, or React keys.
+// Stage 2B inline editing (additive, permission-gated): when the parent passes
+// canEdit plus the edit callbacks, each block header, station card, and pair
+// row gains a labeled edit control. Clicking a control does NOT mutate anything
+// here - it calls back so the PARENT (the sole draft + save owner) either opens
+// an inline editor whose UI it injects via renderBlockTimeEditor /
+// renderStationMetaEditor (placed here, inside the header/card), or opens its
+// own pair sub-dialog. While any edit is active the parent sets editLocked,
+// which hides every other edit control so only one target is ever open and an
+// in-progress draft is never silently discarded. A read-only viewer (canEdit
+// false, or no callbacks) sees no edit control at all. The block/station/pair
+// source ids used by the callbacks come from the projection's internal
+// blockId/stationId/pairId fields and are used ONLY in click handlers - never
+// rendered into text, attributes, accessible labels, or React keys.
 //
 // Layout: time blocks stack vertically in chronological order (the primary
 // structure). Within a block, stations flow as responsive cards - a single
@@ -38,51 +42,96 @@ import { showsBoardEditControl } from "@/lib/riding-complex-schedule-board/edit-
 
 function StationLane({
   station,
-  onEdit,
-  focusRef,
+  metaEditing,
+  renderMetaEditor,
+  onEditMeta,
+  onEditPair,
+  onAddPair,
+  editLocked,
+  canEdit,
 }: {
   station: ScheduleBoardStationVM;
-  // Provided only when the station may be edited; undefined for a read-only
-  // viewer or a station without a routable id (see showsBoardEditControl).
-  onEdit?: () => void;
-  focusRef?: (el: HTMLDivElement | null) => void;
+  // True when THIS station's metadata (instructor + arena) is being edited
+  // inline - the parent-injected editor replaces the static header/arena.
+  metaEditing: boolean;
+  renderMetaEditor?: () => ReactNode;
+  // Provided only when the station's metadata may be edited (editable actor,
+  // nothing else open, station has a routable id).
+  onEditMeta?: () => void;
+  // Provided per pair only when that pair may be edited; called with the pair's
+  // source id (never rendered) so the parent opens its pair sub-dialog.
+  onEditPair?: (pairId: string) => void;
+  // Provided only when a pair may be added to this station; opens the parent's
+  // pair dialog in CREATE mode.
+  onAddPair?: () => void;
+  editLocked: boolean;
+  canEdit: boolean;
 }) {
   return (
-    <div ref={focusRef} className="flex flex-col gap-2 rounded-xl border-2 border-border bg-card p-3">
-      <div className="flex flex-wrap items-center justify-between gap-1.5">
-        <h4 className="text-base font-bold text-card-foreground">
-          {station.instructorName ?? "לא הוגדר מאמן"}
-        </h4>
-        <div className="flex items-center gap-1.5">
-          <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-            {station.pairs.length} זוגות
-          </span>
-          {onEdit && (
-            <Button
-              variant="secondary"
-              className="!px-2 !py-1 !text-xs"
-              onClick={onEdit}
-              aria-label={`עריכת תחנה של ${station.instructorName ?? "מאמן שלא הוגדר"}`}
-            >
-              עריכה
-            </Button>
-          )}
-        </div>
-      </div>
-      <p className="text-sm text-card-foreground">מגרש: {station.arena ?? "לא הוגדר מגרש"}</p>
+    <div className="flex flex-col gap-2 rounded-xl border-2 border-border bg-card p-3">
+      {metaEditing ? (
+        renderMetaEditor?.()
+      ) : (
+        <>
+          <div className="flex flex-wrap items-center justify-between gap-1.5">
+            <h4 className="text-base font-bold text-card-foreground">
+              {station.instructorName ?? "לא הוגדר מאמן"}
+            </h4>
+            <div className="flex items-center gap-1.5">
+              <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                {station.pairs.length} זוגות
+              </span>
+              {onEditMeta && (
+                <Button
+                  variant="secondary"
+                  className="!px-2 !py-1 !text-xs"
+                  onClick={onEditMeta}
+                  aria-label={`עריכת מאמן ומגרש של ${station.instructorName ?? "תחנה ללא מאמן"}`}
+                >
+                  עריכה
+                </Button>
+              )}
+            </div>
+          </div>
+          <p className="text-sm text-card-foreground">מגרש: {station.arena ?? "לא הוגדר מגרש"}</p>
+        </>
+      )}
       {station.pairs.length === 0 ? (
         <p className="text-sm text-muted-foreground">אין זוגות בתחנה זו</p>
       ) : (
         <div className="flex flex-col gap-1.5">
-          {station.pairs.map((pair) => (
-            <div key={pair.key} className="rounded-lg bg-muted/50 p-2 text-xs">
-              <p className="font-medium text-card-foreground">
-                {pair.traineeNames.length > 0 ? pair.traineeNames.join(" + ") : "לא נבחרו חניכים"}
-              </p>
-              <p className="text-muted-foreground">סוס: {pair.horseName ?? "לא הוגדר סוס"}</p>
-              {pair.note && <p className="text-muted-foreground">הערה: {pair.note}</p>}
-            </div>
-          ))}
+          {station.pairs.map((pair) => {
+            const canEditPair =
+              showsBoardEditControl(canEdit, pair.pairId) && !editLocked && Boolean(onEditPair);
+            return (
+              <div key={pair.key} className="flex items-start justify-between gap-2 rounded-lg bg-muted/50 p-2 text-xs">
+                <div className="min-w-0 flex-1">
+                  <p className="font-medium text-card-foreground">
+                    {pair.traineeNames.length > 0 ? pair.traineeNames.join(" + ") : "לא נבחרו חניכים"}
+                  </p>
+                  <p className="text-muted-foreground">סוס: {pair.horseName ?? "לא הוגדר סוס"}</p>
+                  {pair.note && <p className="text-muted-foreground">הערה: {pair.note}</p>}
+                </div>
+                {canEditPair && pair.pairId && (
+                  <Button
+                    variant="ghost"
+                    className="!px-2 !py-1 !text-xs"
+                    onClick={() => onEditPair?.(pair.pairId as string)}
+                    aria-label={`עריכת זוג: ${pair.traineeNames.length > 0 ? pair.traineeNames.join(" ו-") : "ללא חניכים"}`}
+                  >
+                    עריכת זוג
+                  </Button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {onAddPair && (
+        <div className="flex justify-end">
+          <Button variant="secondary" className="!px-2 !py-1 !text-xs" onClick={onAddPair}>
+            + הוספת זוג
+          </Button>
         </div>
       )}
     </div>
@@ -93,32 +142,39 @@ export function ComplexPlanScheduleBoard({
   plan,
   candidates,
   canEdit = false,
-  onEditBlock,
-  onEditStation,
-  focusBlockId = null,
-  focusStationId = null,
+  editLocked = false,
+  inlineBlockTimeId = null,
+  renderBlockTimeEditor,
+  inlineStationMetaId = null,
+  renderStationMetaEditor,
+  onEditBlockTime,
+  onEditStationMeta,
+  onEditPair,
+  onAddPair,
 }: {
   plan: ScheduleBoardPlanInput;
   candidates: readonly ScheduleBoardCandidateInput[];
-  // Edit access is fully additive and opt-in: without canEdit + the callbacks
-  // the board renders exactly as before (read-only). No control here ever
-  // mutates - the callbacks hand the source id to the parent's existing editor.
+  // Inline editing is fully additive and opt-in: without canEdit + the
+  // callbacks the board renders exactly as before (read-only). No control here
+  // ever mutates.
   canEdit?: boolean;
-  onEditBlock?: (blockId: string) => void;
-  onEditStation?: (blockId: string, stationId: string) => void;
-  // After returning from an editor the parent asks the board to bring the
-  // just-edited card back into view. Matched against the internal
-  // blockId/stationId (never rendered); a station focus wins over a block one.
-  focusBlockId?: string | null;
-  focusStationId?: string | null;
+  // Any inline editor / pair dialog is open in the parent - hide every other
+  // edit control so exactly one target is active at a time.
+  editLocked?: boolean;
+  // The block whose time range is being edited inline, plus the parent-injected
+  // editor UI to place inside that block's header.
+  inlineBlockTimeId?: string | null;
+  renderBlockTimeEditor?: () => ReactNode;
+  // The station whose metadata is being edited inline, plus its editor UI.
+  inlineStationMetaId?: string | null;
+  renderStationMetaEditor?: () => ReactNode;
+  // Edit intents - the parent opens the corresponding inline editor / dialog.
+  onEditBlockTime?: (blockId: string) => void;
+  onEditStationMeta?: (blockId: string, stationId: string) => void;
+  onEditPair?: (blockId: string, stationId: string, pairId: string) => void;
+  onAddPair?: (blockId: string, stationId: string) => void;
 }) {
   const board = useMemo(() => projectScheduleBoard(plan, candidates), [plan, candidates]);
-
-  const focusRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (!focusBlockId && !focusStationId) return;
-    focusRef.current?.scrollIntoView?.({ block: "nearest" });
-  }, [focusBlockId, focusStationId]);
 
   if (board.blocks.length === 0) {
     return (
@@ -131,33 +187,33 @@ export function ComplexPlanScheduleBoard({
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto ps-1">
       {board.blocks.map((block) => {
-        const canEditBlock = showsBoardEditControl(canEdit, block.blockId) && Boolean(onEditBlock);
-        // A block-level focus only applies when there is no more specific
-        // station focus (a station edit brings its own card, and its block,
-        // into view). blockId is compared internally and never rendered.
-        const isFocusedBlock =
-          !focusStationId && Boolean(focusBlockId) && block.blockId === focusBlockId;
+        const blockTimeEditing = Boolean(inlineBlockTimeId) && block.blockId === inlineBlockTimeId;
+        const canEditBlockTime =
+          showsBoardEditControl(canEdit, block.blockId) && !editLocked && Boolean(onEditBlockTime);
         return (
           <section key={block.key} className="flex flex-col gap-2">
-            <div
-              ref={isFocusedBlock ? focusRef : undefined}
-              className="sticky top-0 z-10 -mx-1 flex flex-wrap items-center gap-2 bg-background px-1 py-1"
-            >
-              <h3 className="text-base font-bold text-card-foreground">
-                {block.startTime}–{block.endTime}
-              </h3>
-              <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-                {block.stations.length} תחנות
-              </span>
-              {canEditBlock && block.blockId && (
-                <Button
-                  variant="secondary"
-                  className="!px-2 !py-1 !text-xs"
-                  onClick={() => onEditBlock?.(block.blockId as string)}
-                  aria-label={`עריכת שעות של טווח ${block.startTime}–${block.endTime}`}
-                >
-                  עריכת שעות
-                </Button>
+            <div className="sticky top-0 z-10 -mx-1 flex flex-wrap items-center gap-2 bg-background px-1 py-1">
+              {blockTimeEditing ? (
+                renderBlockTimeEditor?.()
+              ) : (
+                <>
+                  <h3 className="text-base font-bold text-card-foreground">
+                    {block.startTime}–{block.endTime}
+                  </h3>
+                  <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                    {block.stations.length} תחנות
+                  </span>
+                  {canEditBlockTime && block.blockId && (
+                    <Button
+                      variant="secondary"
+                      className="!px-2 !py-1 !text-xs"
+                      onClick={() => onEditBlockTime?.(block.blockId as string)}
+                      aria-label={`עריכת שעות של טווח ${block.startTime}–${block.endTime}`}
+                    >
+                      עריכת שעות
+                    </Button>
+                  )}
+                </>
               )}
             </div>
             {block.stations.length === 0 ? (
@@ -167,26 +223,39 @@ export function ComplexPlanScheduleBoard({
             ) : (
               <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
                 {block.stations.map((station) => {
-                  const canEditStation =
+                  const metaEditing =
+                    Boolean(inlineStationMetaId) && station.stationId === inlineStationMetaId;
+                  const canEditMeta =
                     showsBoardEditControl(canEdit, station.stationId) &&
-                    Boolean(onEditStation) &&
+                    !editLocked &&
+                    Boolean(onEditStationMeta) &&
                     Boolean(block.blockId);
-                  const isFocusedStation =
-                    Boolean(focusStationId) && station.stationId === focusStationId;
+                  const canAddPair =
+                    showsBoardEditControl(canEdit, station.stationId) &&
+                    !editLocked &&
+                    Boolean(onAddPair) &&
+                    Boolean(block.blockId);
                   return (
                     <StationLane
                       key={station.key}
                       station={station}
-                      onEdit={
-                        canEditStation
-                          ? () => onEditStation?.(block.blockId as string, station.stationId as string)
+                      canEdit={canEdit}
+                      editLocked={editLocked}
+                      metaEditing={metaEditing}
+                      renderMetaEditor={metaEditing ? renderStationMetaEditor : undefined}
+                      onEditMeta={
+                        canEditMeta
+                          ? () => onEditStationMeta?.(block.blockId as string, station.stationId as string)
                           : undefined
                       }
-                      focusRef={
-                        isFocusedStation
-                          ? (el) => {
-                              focusRef.current = el;
-                            }
+                      onEditPair={
+                        block.blockId && station.stationId
+                          ? (pairId) => onEditPair?.(block.blockId as string, station.stationId as string, pairId)
+                          : undefined
+                      }
+                      onAddPair={
+                        canAddPair
+                          ? () => onAddPair?.(block.blockId as string, station.stationId as string)
                           : undefined
                       }
                     />

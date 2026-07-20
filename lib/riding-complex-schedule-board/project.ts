@@ -20,6 +20,10 @@
 // never database ids.
 
 export interface ScheduleBoardPairInput {
+  // Source pair id, carried only for internal edit-routing (see the VM's pairId
+  // below). Optional so read-only/test callers may omit it; the real
+  // RidingSlotComplexPairRow supplies it. NEVER rendered.
+  id?: string;
   trainee1Id: string | null;
   trainee1Name: string | null;
   trainee2Id: string | null;
@@ -64,8 +68,15 @@ export interface ScheduleBoardCandidateInput {
 // display-ready names actually present (0, 1, or 2 entries) - "who rides with
 // whom". horseName/note are trimmed to null when blank so the renderer can
 // apply a single "missing value" fallback rather than showing empty strings.
+//
+// pairId is the source pair's database id, carried ONLY so the board's
+// (optional) "עריכת זוג" control can route to the parent's pair sub-dialog. It
+// is used exclusively in React click handlers and MUST NEVER be rendered into
+// text, attributes, accessible labels, or keys - the rendering `key` stays the
+// index-derived value. null when the source row omitted an id.
 export interface ScheduleBoardPairVM {
   key: string;
+  pairId: string | null;
   traineeNames: string[];
   horseName: string | null;
   note: string | null;
@@ -143,7 +154,7 @@ function projectPair(
   const horseName = pair.horseName?.trim() || null;
   const note = pair.note?.trim() || null;
 
-  return { key, traineeNames, horseName, note };
+  return { key, pairId: pair.id ?? null, traineeNames, horseName, note };
 }
 
 function projectStation(

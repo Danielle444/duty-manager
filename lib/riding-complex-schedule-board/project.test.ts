@@ -272,6 +272,32 @@ test("source block/station ids are carried through for internal edit-routing", (
   assert.equal(vm.blocks[1].stations[0].stationId, null);
 });
 
+test("source pair ids are carried through for internal pair-dialog routing", () => {
+  const vm = projectScheduleBoard(
+    {
+      blocks: [
+        block({
+          id: "block-9",
+          stations: [
+            station({
+              id: "station-1",
+              instructor: { fullName: "רוני" },
+              pairs: [
+                pair({ id: "pair-a", sortOrder: 1, trainee1Id: "s1" }),
+                // an id-less pair resolves to null -> no "עריכת זוג" control
+                pair({ sortOrder: 2, trainee1Id: "s2" }),
+              ],
+            }),
+          ],
+        }),
+      ],
+    },
+    candidates
+  );
+  assert.equal(vm.blocks[0].stations[0].pairs[0].pairId, "pair-a");
+  assert.equal(vm.blocks[0].stations[0].pairs[1].pairId, null);
+});
+
 test("null array elements are skipped defensively", () => {
   const vm = projectScheduleBoard(
     {

@@ -1571,5 +1571,11 @@ export async function deleteRidingSlotComplexPlanAsAdmin(ridingSlotId: string): 
 
   revalidatePath("/admin/weekly-schedule");
   revalidatePath("/instructor");
+  // Deleting a plan cascades away its RidingSlotComplexPublication too (schema
+  // onDelete: Cascade), so - exactly like unpublishComplexRidingPlanInternal in
+  // riding-slot-complex-publications.ts - the trainee-facing surface must be
+  // revalidated as well, otherwise a deleted PUBLISHED plan can linger in a
+  // trainee's /student view.
+  revalidatePath("/student");
   return { success: true };
 }

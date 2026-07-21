@@ -266,6 +266,12 @@ test("whole-plan delete is admin-only, now takes the advisory lock, and has NO v
   assert.ok(!/expectedVersion/.test(r), "must NOT gain an expectedVersion gate (delete-whatever-exists semantics)");
   assert.ok(!/version:\s*\{\s*increment/.test(r), "must NOT bump the version");
   assert.ok(r.includes(".delete({"), "still performs the destructive delete");
+  // The delete cascades away any RidingSlotComplexPublication too, so - like the
+  // unpublish path - it must revalidate the trainee-facing surface, otherwise a
+  // deleted PUBLISHED plan can linger in a trainee's /student view.
+  assert.ok(r.includes('revalidatePath("/admin/weekly-schedule")'), "revalidates the admin surface");
+  assert.ok(r.includes('revalidatePath("/instructor")'), "revalidates the instructor surface");
+  assert.ok(r.includes('revalidatePath("/student")'), "revalidates the trainee-facing surface");
 });
 
 // -------------------------------------------------------------------------

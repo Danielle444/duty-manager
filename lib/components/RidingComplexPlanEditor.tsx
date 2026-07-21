@@ -104,6 +104,11 @@ import {
 import { ComplexPlanScheduleBoard, formatBoardStationLabel } from "@/lib/components/ComplexPlanScheduleBoard";
 import { boardEditTargetExists } from "@/lib/riding-complex-schedule-board/edit-navigation";
 import {
+  decideReturnToNormal,
+  canDeleteFromReturnToNormalDecision,
+  type ReturnToNormalDecision,
+} from "@/lib/riding-complex-schedule-board/return-to-normal";
+import {
   canOpenInlineTarget,
   canUnpublishComplexPlan,
   initialBoardView,
@@ -652,6 +657,99 @@ function UnpublishConfirmModal({
           <Button type="button" variant="danger" onClick={onConfirm} disabled={isPending}>
             {isPending ? "מבטל..." : "ביטול פרסום"}
           </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// RIDING-COMPLEX-SCHEDULE-BOARD - state-aware confirmation for the admin-only
+// "return this riding session to a normal session" recovery. The decision comes
+// from the pure decideReturnToNormal core (fail-closed); this component only
+// renders the matching copy and wires the buttons:
+//   - blocked-published: no delete; a single CTA hands off to the existing
+//     unpublish flow (block-until-unpublished).
+//   - blocked-unknown: no delete; asks the admin to refresh and retry.
+//   - confirm-empty: deletable; states there is no complex content.
+//   - confirm-draft: deletable; enumerates exactly what is permanently removed.
+// The delete button is only ever present for a deletable decision, and even then
+// the parent re-checks the decision before writing.
+function ReturnToNormalConfirmModal({
+  open,
+  decision,
+  isPending,
+  error,
+  onConfirm,
+  onGoToUnpublish,
+  onClose,
+}: {
+  open: boolean;
+  decision: ReturnToNormalDecision;
+  isPending: boolean;
+  error: string | null;
+  onConfirm: () => void;
+  onGoToUnpublish: () => void;
+  onClose: () => void;
+}) {
+  const deletable = canDeleteFromReturnToNormalDecision(decision);
+  const lines =
+    decision.kind === "confirm-empty"
+      ? [
+          "ברכיבה זו לא הוגדר תוכן מורכב (אין טווחי שעות)",
+          "פעולה זו תמחק את התכנון המורכב והרכיבה תחזור למצב רגיל",
+        ]
+      : decision.kind === "confirm-draft"
+        ? [
+            "פעולה זו תמחק את התכנון המורכב של הרכיבה",
+            "כל טווחי השעות, תחנות המאמנים, הזוגות והסוסים המשובצים יימחקו",
+            "כל השיבוצים המורכבים יימחקו לצמיתות",
+            "לא ניתן לשחזר את הפעולה",
+          ]
+        : decision.kind === "blocked-published"
+          ? [
+              "התכנון המורכב מפורסם כעת והחניכים רואים גרסה מפורסמת",
+              "יש לבטל את הפרסום לחניכים לפני החזרת הרכיבה למצב רגיל",
+            ]
+          : [
+              "לא ניתן לקבוע כרגע את מצב הפרסום של התכנון",
+              "רעננו את העמוד ונסו שוב",
+            ];
+
+  return (
+    <Modal
+      open={open}
+      title="החזרת הרכיבה למצב רגיל"
+      onClose={() => {
+        // Never dismiss mid-delete; otherwise closing performs no write.
+        if (isPending) return;
+        onClose();
+      }}
+    >
+      <div className="flex flex-col gap-3">
+        <ul className="flex flex-col gap-1 text-sm text-card-foreground">
+          {lines.map((line) => (
+            <li key={line} className="flex gap-1.5">
+              <span className="text-muted-foreground">·</span>
+              <span>{line}</span>
+            </li>
+          ))}
+        </ul>
+
+        {error && <p className="text-sm text-danger">{error}</p>}
+
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="secondary" onClick={onClose} disabled={isPending}>
+            ביטול
+          </Button>
+          {decision.kind === "blocked-published" ? (
+            <Button type="button" onClick={onGoToUnpublish} disabled={isPending}>
+              ביטול פרסום לחניכים
+            </Button>
+          ) : deletable ? (
+            <Button type="button" variant="danger" onClick={onConfirm} disabled={isPending}>
+              {isPending ? "מוחק..." : "החזרת הרכיבה למצב רגיל"}
+            </Button>
+          ) : null}
         </div>
       </div>
     </Modal>
@@ -2606,6 +2704,12 @@ export function RidingComplexPlanEditor({
   const [isDeletingStation, startDeleteStationTransition] = useTransition();
   const [isDeletingPlan, startDeletePlanTransition] = useTransition();
   const [deletePlanError, setDeletePlanError] = useState<string | null>(null);
+  // RIDING-COMPLEX-SCHEDULE-BOARD - "return to a normal riding session" recovery
+  // confirmation modal. Opening it performs NO write; the actual delete only
+  // fires from its confirm button (handleConfirmReturnToNormal), and only in a
+  // deletable state (see decideReturnToNormal). Admin-only, like the delete
+  // action it wraps.
+  const [recoverModalOpen, setRecoverModalOpen] = useState(false);
 
   // RIDING-COMPLEX-PUBLICATION P7B - publication status/publish/unpublish
   // state. Kept entirely separate from the `status`/`editing` load-state
@@ -2660,6 +2764,7 @@ export function RidingComplexPlanEditor({
     setListError(null);
     setStationListError(null);
     setDeletePlanError(null);
+    setRecoverModalOpen(false);
     setShowAllStations(false);
 
     readComplexPlan(actor, ridingSlotId)
@@ -3863,19 +3968,30 @@ export function RidingComplexPlanEditor({
     });
   }
 
-  // Admin-only regardless of canEdit - an instructor actor never reaches
-  // this (the button itself is never rendered for actor.type === "instructor",
-  // see the render below), but the guard is kept here too since the server
-  // action itself has no instructor variant to call by mistake.
-  function handleDeletePlan() {
+  // Admin-only regardless of canEdit. Opening the modal performs NO write - it
+  // only surfaces the state-aware confirmation. An instructor actor never
+  // reaches this (the control is never rendered for actor.type === "instructor",
+  // see the render below), and the server action itself has no instructor
+  // variant to call by mistake.
+  function openRecoverModal() {
     if (actor.type !== "admin" || isDeletingPlan) return;
-    if (
-      !window.confirm(
-        "למחוק את כל תכנון הרכיבה המורכב? כל טווחי השעות, התחנות והזוגות בתכנון זה יימחקו לצמיתות. לא ניתן לשחזר את הפעולה."
-      )
-    ) {
-      return;
-    }
+    setDeletePlanError(null);
+    setRecoverModalOpen(true);
+  }
+
+  function closeRecoverModal() {
+    // Never dismiss mid-delete; cancelling/closing otherwise performs no write.
+    if (isDeletingPlan) return;
+    setRecoverModalOpen(false);
+  }
+
+  // The ONLY place the destructive delete fires. Re-checks the decision at
+  // confirm time so a status that changed while the modal was open (e.g. the
+  // plan got published in another tab) still fails closed rather than deleting a
+  // now-published plan.
+  function handleConfirmReturnToNormal() {
+    if (actor.type !== "admin" || isDeletingPlan) return;
+    if (!canDeleteFromReturnToNormalDecision(returnToNormalDecision)) return;
     setDeletePlanError(null);
     startDeletePlanTransition(async () => {
       const result = await deleteRidingSlotComplexPlanAsAdmin(ridingSlotId);
@@ -3885,6 +4001,14 @@ export function RidingComplexPlanEditor({
       }
       onDeleted();
     });
+  }
+
+  // Block-until-unpublished handoff: from the blocked-published state, close the
+  // recovery modal and open the EXISTING unpublish confirmation. No delete is
+  // performed here.
+  function goToUnpublishFromRecover() {
+    setRecoverModalOpen(false);
+    openUnpublishModal();
   }
 
   // RIDING-COMPLEX-PUBLICATION P7B - publish/republish. canEdit already
@@ -3968,6 +4092,16 @@ export function RidingComplexPlanEditor({
   }
 
   const plan = editing?.plan ?? null;
+  // The live recovery decision (fail-closed): computed from the plan's current
+  // publication status + block count. Declared here (after `plan`) so it is in
+  // scope for both the confirm handler and the modal render. Recomputed on every
+  // render, so once the admin unpublishes a currently-published plan (via the
+  // handoff below) and the status refreshes to UNPUBLISHED, reopening the flow
+  // becomes deletable - we never combine unpublish + delete into one hidden step.
+  const returnToNormalDecision: ReturnToNormalDecision = decideReturnToNormal(
+    publicationStatus?.status ?? null,
+    plan?.blocks.length ?? 0
+  );
   const scheduleMeta = editing?.scheduleMeta ?? null;
   // Server-returned, never a client-side assumption - always true for admin
   // (see getRidingSlotComplexPlanForAdmin), reflects canEditRidingNotes for
@@ -4201,6 +4335,30 @@ export function RidingComplexPlanEditor({
               />
             )}
 
+            {/* RIDING-COMPLEX-SCHEDULE-BOARD - admin-only "return this session to
+                a normal riding session" recovery control. Rendered at the editor
+                root of BOTH presentations (board "תצוגת לוז" and legacy list),
+                using the exact same (boardView || view.type === "blockList")
+                gate as the publication toolbar - so an admin who accidentally
+                enabled complex mode finds it in the default board view without
+                switching to the legacy list or scrolling. It only opens the
+                state-aware confirmation modal; it never deletes on click. */}
+            {actor.type === "admin" && (boardView || view.type === "blockList") && (
+              <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-card p-2.5">
+                <p className="min-w-0 text-xs text-muted-foreground">
+                  פעולה זו תמחק את התכנון המורכב של הרכיבה.
+                </p>
+                <Button
+                  variant="ghost"
+                  className="!px-2 !py-1 !text-xs text-danger"
+                  onClick={openRecoverModal}
+                  disabled={isDeletingPlan || inlineEditActive}
+                >
+                  החזרת הרכיבה למצב רגיל
+                </Button>
+              </div>
+            )}
+
             {boardView && boardNotice && (
               <p className="shrink-0 rounded-lg border border-warning/40 bg-warning-muted/30 p-2.5 text-sm text-warning">
                 {boardNotice}
@@ -4305,15 +4463,10 @@ export function RidingComplexPlanEditor({
                     ))
                   )}
                 </div>
-
-                {actor.type === "admin" && (
-                  <div className="shrink-0 border-t border-border pt-3">
-                    {deletePlanError && <p className="mb-2 text-sm text-danger">{deletePlanError}</p>}
-                    <Button variant="danger" className="!text-xs" onClick={handleDeletePlan} disabled={isDeletingPlan}>
-                      {isDeletingPlan ? "מוחק..." : "מחיקת התכנון המורכב"}
-                    </Button>
-                  </div>
-                )}
+                {/* The whole-plan recovery control now lives once at the editor
+                    root (see the admin-only "החזרת הרכיבה למצב רגיל" panel above),
+                    shared by the board and legacy presentations - no duplicate
+                    delete button is rendered here. */}
               </>
             )}
 
@@ -4449,6 +4602,15 @@ export function RidingComplexPlanEditor({
         error={unpublishError}
         onConfirm={handleConfirmUnpublish}
         onClose={closeUnpublishModal}
+      />
+      <ReturnToNormalConfirmModal
+        open={recoverModalOpen}
+        decision={returnToNormalDecision}
+        isPending={isDeletingPlan}
+        error={deletePlanError}
+        onConfirm={handleConfirmReturnToNormal}
+        onGoToUnpublish={goToUnpublishFromRecover}
+        onClose={closeRecoverModal}
       />
       {/* RIDING-COMPLEX-SCHEDULE-BOARD (Stage 2B) - the pair sub-dialog, opened
           only from the schedule board (openInlinePair). Reuses the exact

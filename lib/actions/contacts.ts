@@ -5,6 +5,7 @@ import { getCurrentInstructor, getCurrentTrainee } from "@/lib/auth/actor";
 import { mayAccessInstructorContactDirectory } from "@/lib/auth/contact-directory-access";
 import { resolveCurrentCourseOffering } from "@/lib/course/current-offering";
 import { getCurrentCourseEnrollmentRoster } from "@/lib/course/current-enrollments";
+import { getEffectiveCapabilities } from "@/lib/course/capabilities/offering-capabilities";
 import { loadStudentContactsWithDeps } from "./contacts-student-directory";
 
 // StudentContactRow is declared directly in this module (as it was before W5B1)
@@ -42,6 +43,7 @@ export async function getStudentContacts(): Promise<StudentContactRow[]> {
   return loadStudentContactsWithDeps({
     getCurrentInstructor,
     resolveCurrentCourseOffering,
+    getEffectiveCapabilities,
     getCurrentCourseEnrollmentRoster,
     now: () => new Date(),
   });

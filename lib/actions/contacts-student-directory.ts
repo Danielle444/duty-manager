@@ -17,6 +17,8 @@
  */
 import { mayAccessStudentContactDirectory } from "@/lib/auth/contact-directory-access";
 import type { EnrollmentRosterResult } from "@/lib/course/current-enrollments";
+import type { CapabilityKey } from "@/lib/course/capabilities/capability-keys";
+import type { EffectiveCapabilityStatus } from "@/lib/course/capabilities/effective-capability-core";
 import type { StudentContactRow } from "./contacts";
 
 /**
@@ -84,6 +86,9 @@ export function toStudentContactRows(roster: EnrollmentRosterResult): StudentCon
 export interface StudentContactsDeps {
   getCurrentInstructor: () => Promise<{ id: string } | null>;
   resolveCurrentCourseOffering: () => Promise<{ id: string }>;
+  getEffectiveCapabilities: (
+    courseOfferingId: string,
+  ) => Promise<Record<CapabilityKey, EffectiveCapabilityStatus>>;
   getCurrentCourseEnrollmentRoster: (
     courseOfferingId: string,
     options: { asOf: Date },
@@ -115,6 +120,19 @@ export async function loadStudentContactsWithDeps(
   // throws from resolveCurrentCourseOffering and is allowed to propagate; a
   // single captured asOf drives the membership-validity decision.
   const offering = await deps.resolveCurrentCourseOffering();
+  // Multi-Course Stage 2: enforce the CONTACTS capability of the resolved
+  // offering AFTER the actor gate and AFTER trusted offering resolution, and
+  // BEFORE any roster read. The offering id is server-owned (from the singleton
+  // resolver), never client-supplied. This is an ADDITIONAL restriction on top
+  // of the existing authorization, never a replacement. Only DISABLED blocks:
+  // for this read-only surface READ_ONLY is behaviourally identical to ENABLED,
+  // so both serve the roster. A failure inside getEffectiveCapabilities
+  // propagates (like the resolver/DAL failures) and never falls open to serving
+  // the directory.
+  const capabilities = await deps.getEffectiveCapabilities(offering.id);
+  if (capabilities.CONTACTS === "DISABLED") {
+    return [];
+  }
   const asOf = deps.now();
   const roster = await deps.getCurrentCourseEnrollmentRoster(offering.id, { asOf });
   return toStudentContactRows(roster);

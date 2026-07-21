@@ -38,6 +38,8 @@ import type {
   EnrollmentMembershipAnomaly,
 } from "@/lib/course/enrollment-view";
 import { AmbiguousCourseOfferingError } from "@/lib/course/current-offering";
+import { CAPABILITY_KEYS, type CapabilityKey } from "@/lib/course/capabilities/capability-keys";
+import type { EffectiveCapabilityStatus } from "@/lib/course/capabilities/effective-capability-core";
 
 const AS_OF = new Date("2026-07-19T12:00:00.000Z");
 
@@ -69,10 +71,42 @@ function roster(
   return { rows, anomalies };
 }
 
+// Exhaustive all-ENABLED effective map, written as an explicit object literal
+// annotated Record<CapabilityKey, EffectiveCapabilityStatus>. TypeScript rejects
+// this literal at COMPILE TIME if any canonical key is missing, so it is a
+// genuinely exhaustive fixture with NO `as any` / partial / suppressing cast (an
+// Object.fromEntries build over CAPABILITY_KEYS does not type-check here: its
+// index-signature result is not assignable to the specific-key Record — TS2740).
+// This mirrors the app's own exhaustive-per-key pattern (INITIAL_CAPABILITY_LABELS).
+// The "fixture is exhaustive over CAPABILITY_KEYS" test below is the runtime
+// tripwire that keeps this literal in lock-step with the canonical key set.
+const ALL_ENABLED_CAPABILITIES: Record<CapabilityKey, EffectiveCapabilityStatus> = {
+  SCHEDULE: "ENABLED",
+  CONTACTS: "ENABLED",
+  MESSAGES: "ENABLED",
+  ATTENDANCE: "ENABLED",
+  DUTIES: "ENABLED",
+  RIDING: "ENABLED",
+  PROGRESS_RIDING: "ENABLED",
+  RIDING_HORSE_ASSIGNMENTS: "ENABLED",
+  ADVANCED_INSTRUCTION: "ENABLED",
+  TEACHING_PRACTICE: "ENABLED",
+};
+
+// Every capability defaults to ENABLED so the pre-existing tests keep exercising
+// their prior behaviour unchanged; each capability test overrides only the single
+// key it exercises (e.g. { CONTACTS: "DISABLED" }).
+function effectiveCapabilities(
+  overrides: Partial<Record<CapabilityKey, EffectiveCapabilityStatus>> = {},
+): Record<CapabilityKey, EffectiveCapabilityStatus> {
+  return { ...ALL_ENABLED_CAPABILITIES, ...overrides };
+}
+
 function makeDeps(overrides: Partial<StudentContactsDeps> = {}): StudentContactsDeps {
   return {
     getCurrentInstructor: async () => ({ id: "instructor-1" }),
     resolveCurrentCourseOffering: async () => ({ id: "offering-1" }),
+    getEffectiveCapabilities: async () => effectiveCapabilities(),
     getCurrentCourseEnrollmentRoster: async () => roster([]),
     now: () => AS_OF,
     ...overrides,
@@ -272,6 +306,179 @@ test("a DAL failure propagates (not swallowed into [])", async () => {
       ),
     /simulated Prisma failure/,
   );
+});
+
+// --- capability enforcement (Multi-Course Stage 2: CONTACTS) ----------------
+
+test("fixture: the default capability map is exhaustive over CAPABILITY_KEYS", () => {
+  // Runtime tripwire tying the compile-time-checked literal to the canonical key
+  // set: if a capability key is ever added/removed, this fails until the fixture
+  // is updated, so the "exhaustive map" guarantee cannot silently drift.
+  assert.deepEqual(Object.keys(ALL_ENABLED_CAPABILITIES).sort(), [...CAPABILITY_KEYS].sort());
+  for (const key of CAPABILITY_KEYS) {
+    assert.equal(ALL_ENABLED_CAPABILITIES[key], "ENABLED");
+  }
+});
+
+test("capability: unauthorized actor returns [] and calls neither resolver, caps, nor roster", async () => {
+  let resolverCalled = false;
+  let capsCalled = false;
+  let rosterCalled = false;
+  const rows = await loadStudentContactsWithDeps(
+    makeDeps({
+      getCurrentInstructor: async () => null,
+      resolveCurrentCourseOffering: async () => {
+        resolverCalled = true;
+        return { id: "offering-1" };
+      },
+      getEffectiveCapabilities: async () => {
+        capsCalled = true;
+        return effectiveCapabilities();
+      },
+      getCurrentCourseEnrollmentRoster: async () => {
+        rosterCalled = true;
+        return roster([]);
+      },
+    }),
+  );
+  assert.deepEqual(rows, []);
+  assert.equal(resolverCalled, false, "must not resolve an offering when unauthorized");
+  assert.equal(capsCalled, false, "must not read capabilities when unauthorized");
+  assert.equal(rosterCalled, false, "must not read the roster when unauthorized");
+});
+
+test("capability: ENABLED passes the trusted offering.id to caps + roster and returns the full roster", async () => {
+  let capsOfferingId: string | null = null;
+  let rosterOfferingId: string | null = null;
+  let rosterAsOf: Date | null = null;
+  const rows = await loadStudentContactsWithDeps(
+    makeDeps({
+      resolveCurrentCourseOffering: async () => ({ id: "offering-ENABLED" }),
+      now: () => AS_OF,
+      getEffectiveCapabilities: async (offeringId) => {
+        capsOfferingId = offeringId;
+        return effectiveCapabilities({ CONTACTS: "ENABLED" });
+      },
+      getCurrentCourseEnrollmentRoster: async (offeringId, options) => {
+        rosterOfferingId = offeringId;
+        rosterAsOf = options.asOf;
+        return roster([
+          traineeView("s1", "א", 1, "אבן", "050-1111111"),
+          traineeView("s2", "ב", 2, "כהן", null),
+        ]);
+      },
+    }),
+  );
+  // The capability lookup and the roster read both receive EXACTLY the trusted
+  // offering.id from resolveCurrentCourseOffering, with the existing asOf.
+  assert.equal(capsOfferingId, "offering-ENABLED");
+  assert.equal(rosterOfferingId, "offering-ENABLED");
+  assert.equal(rosterAsOf, AS_OF);
+  assert.deepEqual(rows, [
+    { id: "s1", fullName: "full s1", lastName: "אבן", groupName: "א", subgroupNumber: 1, phone: "050-1111111" },
+    { id: "s2", fullName: "full s2", lastName: "כהן", groupName: "ב", subgroupNumber: 2, phone: null },
+  ]);
+});
+
+test("capability: READ_ONLY behaves exactly like ENABLED (roster served, not blocked)", async () => {
+  let rosterCalled = false;
+  const rows = await loadStudentContactsWithDeps(
+    makeDeps({
+      getEffectiveCapabilities: async () => effectiveCapabilities({ CONTACTS: "READ_ONLY" }),
+      getCurrentCourseEnrollmentRoster: async () => {
+        rosterCalled = true;
+        return roster([traineeView("s1", "א", 1, "אבן")]);
+      },
+    }),
+  );
+  assert.equal(rosterCalled, true, "READ_ONLY must NOT be blocked on a read-only surface");
+  assert.deepEqual(rows.map((r: StudentContactRow) => r.id), ["s1"]);
+});
+
+test("capability: DISABLED returns [] and never reads the roster", async () => {
+  let rosterCalled = false;
+  const rows = await loadStudentContactsWithDeps(
+    makeDeps({
+      getEffectiveCapabilities: async () => effectiveCapabilities({ CONTACTS: "DISABLED" }),
+      getCurrentCourseEnrollmentRoster: async () => {
+        rosterCalled = true;
+        return roster([traineeView("s1", "א", 1, "אבן", "050-1111111")]);
+      },
+    }),
+  );
+  assert.deepEqual(rows, []);
+  assert.equal(rosterCalled, false, "DISABLED must block before any roster / PII read");
+});
+
+test("capability: an offering-resolution failure propagates before caps or roster", async () => {
+  let capsCalled = false;
+  let rosterCalled = false;
+  await assert.rejects(
+    () =>
+      loadStudentContactsWithDeps(
+        makeDeps({
+          resolveCurrentCourseOffering: async () => {
+            throw new AmbiguousCourseOfferingError(["offering-1", "offering-2"]);
+          },
+          getEffectiveCapabilities: async () => {
+            capsCalled = true;
+            return effectiveCapabilities();
+          },
+          getCurrentCourseEnrollmentRoster: async () => {
+            rosterCalled = true;
+            return roster([]);
+          },
+        }),
+      ),
+    /Ambiguous current CourseOffering/,
+  );
+  assert.equal(capsCalled, false, "offering failure must abort before the capability lookup");
+  assert.equal(rosterCalled, false, "offering failure must abort before any roster read");
+});
+
+test("capability: a capability-reader failure propagates and never falls open to the roster", async () => {
+  let rosterCalled = false;
+  await assert.rejects(
+    () =>
+      loadStudentContactsWithDeps(
+        makeDeps({
+          getEffectiveCapabilities: async () => {
+            throw new Error("simulated capability-reader failure");
+          },
+          getCurrentCourseEnrollmentRoster: async () => {
+            rosterCalled = true;
+            return roster([traineeView("s1", "א", 1, "אבן")]);
+          },
+        }),
+      ),
+    /simulated capability-reader failure/,
+  );
+  assert.equal(rosterCalled, false, "a capability-reader failure must not fail open to the roster");
+});
+
+test("capability: strict call order actor -> offering -> capability -> roster", async () => {
+  const calls: string[] = [];
+  await loadStudentContactsWithDeps(
+    makeDeps({
+      getCurrentInstructor: async () => {
+        calls.push("actor");
+        return { id: "instructor-1" };
+      },
+      resolveCurrentCourseOffering: async () => {
+        calls.push("offering");
+        return { id: "offering-1" };
+      },
+      getEffectiveCapabilities: async () => {
+        calls.push("capability");
+        return effectiveCapabilities();
+      },
+      getCurrentCourseEnrollmentRoster: async () => {
+        calls.push("roster");
+        return roster([]);
+      },
+    }),
+  );
+  assert.deepEqual(calls, ["actor", "offering", "capability", "roster"]);
 });
 
 // --- surrounding contract unchanged ----------------------------------------

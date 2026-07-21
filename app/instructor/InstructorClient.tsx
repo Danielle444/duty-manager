@@ -190,11 +190,19 @@ async function detectScheduleRidingSlotMode(
 }
 
 export function InstructorClient({
+  authenticated,
   students,
   dutyTypes,
   instructors,
   studentHorseInfo,
 }: {
+  // E0 - server-owned truth about whether this browser holds a valid signed
+  // instructor session (page.tsx, via the Actor DAL). It is NOT derived from
+  // localStorage and never round-trips through the client: when it is false the
+  // sensitive props above are empty by construction, so restoring a stale
+  // stored session would render the authenticated shell over no data. This flag
+  // is a render/teardown signal only - it authorizes nothing on its own.
+  authenticated: boolean;
   students: StudentOption[];
   dutyTypes: DutyTypeOption[];
   instructors: InstructorOption[];
@@ -412,17 +420,36 @@ export function InstructorClient({
   const versionGate = useVersionGate();
 
   useEffect(() => {
+    // E0 - the SERVER decides whether a valid signed instructor session exists;
+    // stale localStorage must never override it. When the server says no, the
+    // stored identity is torn down BEFORE any session state is set (and before
+    // `hydrated` flips, since nothing renders until then), so the authenticated
+    // shell never flashes over the empty payload - the login form renders
+    // instead. When the server says yes, the stored session is restored exactly
+    // as before: a valid instructor is never logged out by this branch.
+    if (!authenticated) {
+      const hadStoredSession = window.localStorage.getItem(STORAGE_KEY) !== null;
+      window.localStorage.removeItem(STORAGE_KEY);
+      if (hadStoredSession) {
+        // Only after clearing something real - a first-time visitor should see
+        // a clean login screen, not an error.
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        setSessionInvalidMessage("פג תוקף החיבור - יש להתחבר מחדש");
+      }
+      setSession(null);
+      setHydrated(true);
+      return;
+    }
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (raw) {
       try {
-        // eslint-disable-next-line react-hooks/set-state-in-effect
         setSession(JSON.parse(raw));
       } catch {
         window.localStorage.removeItem(STORAGE_KEY);
       }
     }
     setHydrated(true);
-  }, []);
+  }, [authenticated]);
 
   useEffect(() => {
     // Refresh the profile fields from the DB whenever a session is active -

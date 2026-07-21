@@ -1527,24 +1527,31 @@ export async function reorderRidingSlotComplexBlocksAsInstructor(
   return reorderComplexBlocksInternal(ridingSlotId, orderedBlockIds, expectedVersion, instructorActor(instructor));
 }
 
-// ---------- Delete plan (admin only) ----------
+// ---------- Delete plan (return complex session to normal) ----------
 //
 // RIDING-COMPLEX-SCHEDULE-BOARD Stage 3B.1 - deliberately NOT given an
-// expectedVersion gate. This is an admin-only, destructive "delete the entire
-// complex plan, whatever it currently contains" action; gating it on a version
-// would be a silent semantic change (an admin who means to wipe the plan should
-// not be blocked because a station moved since the page loaded). Its business
-// contract is unchanged.
+// expectedVersion gate. This is a destructive "delete the entire complex plan,
+// whatever it currently contains" recovery; gating it on a version would be a
+// silent semantic change (someone who means to wipe the plan should not be
+// blocked because a station moved since the page loaded). Its business contract
+// is unchanged.
 //
-// It IS now wrapped in one interactive transaction whose FIRST statement takes
-// the same per-slot advisory lock every cooperating structural writer / the
+// It IS wrapped in one interactive transaction whose FIRST statement takes the
+// same per-slot advisory lock every cooperating structural writer / the
 // Move/Swap action uses, so a whole-plan delete can never interleave with an
 // in-flight targeted mutation for the same slot: the delete either fully
 // precedes or fully follows it, never lands mid-mutation. No version is read or
 // bumped - the plan (and its cascade) simply goes away.
-export async function deleteRidingSlotComplexPlanAsAdmin(ridingSlotId: string): Promise<ActionResult> {
-  await requireAdmin();
-
+//
+// Shared core of deleteRidingSlotComplexPlanAs{Admin,Instructor} - the single
+// destructive delete mutation (advisory lock, transaction, cascade, P2028 error
+// mapping, and the three-path revalidation), identical to the publish/unpublish
+// internal/thin-wrapper split in riding-slot-complex-publications.ts. The two
+// wrappers differ ONLY in how they authorize the caller; once authorized, both
+// remove exactly the same plan here, so the two trust tiers can never drift into
+// two different delete behaviors. Kept module-private (never exported) so it is
+// not a client-callable "use server" endpoint that bypasses authorization.
+async function deleteRidingSlotComplexPlanInternal(ridingSlotId: string): Promise<ActionResult> {
   try {
     const txResult = await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${ridingSlotId}))`;
@@ -1578,4 +1585,31 @@ export async function deleteRidingSlotComplexPlanAsAdmin(ridingSlotId: string): 
   // trainee's /student view.
   revalidatePath("/student");
   return { success: true };
+}
+
+export async function deleteRidingSlotComplexPlanAsAdmin(ridingSlotId: string): Promise<ActionResult> {
+  await requireAdmin();
+  return deleteRidingSlotComplexPlanInternal(ridingSlotId);
+}
+
+// Same server-authoritative capability tier as
+// createRidingSlotComplexPlanAsInstructor / the *AsInstructor writers /
+// unpublishComplexRidingPlanAsInstructor (isActive && canEditRidingNotes,
+// re-read from the DB on every call - instructors have no NextAuth session, so
+// no client flag is ever trusted). Product decision: an instructor authorized to
+// create/manage a complex plan may also return it to a normal session under
+// exactly those same requirements; a read-only or inactive instructor is denied
+// via the same generic NO_PERMISSION contract, carrying no id/PII. Both wrappers
+// then run the one shared deleteRidingSlotComplexPlanInternal above, so the admin
+// path and its return contract are unchanged, and the destructive logic is never
+// duplicated - no new permission introduced.
+export async function deleteRidingSlotComplexPlanAsInstructor(
+  instructorId: string,
+  ridingSlotId: string
+): Promise<ActionResult> {
+  const instructor = await prisma.instructor.findUnique({ where: { id: instructorId } });
+  if (!instructor || !instructor.isActive || !instructor.canEditRidingNotes) {
+    return { success: false, error: NO_PERMISSION };
+  }
+  return deleteRidingSlotComplexPlanInternal(ridingSlotId);
 }

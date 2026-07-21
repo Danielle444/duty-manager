@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 
 import {
   canOpenInlineTarget,
+  canReturnComplexPlanToNormal,
   canUnpublishComplexPlan,
   initialBoardView,
   isEditorActionBlocked,
@@ -42,6 +43,19 @@ test("unpublish capability: admin always may; instructor only when server-checke
   // Unknown / no actor collapses to the same "not admin, cannot edit" inputs,
   // so it too resolves to false - never an actionable control.
   assert.equal(canUnpublishComplexPlan(false, false), false);
+});
+
+test("return-to-normal capability: admin always may; instructor only when server-checked canEdit is true", () => {
+  // Admin: may return to normal regardless of the canEdit value (admin is never
+  // gated on canEditRidingNotes).
+  assert.equal(canReturnComplexPlanToNormal(true, true), true);
+  assert.equal(canReturnComplexPlanToNormal(true, false), true);
+  // Active, editable instructor (canEdit === true, the server read of
+  // isActive && canEditRidingNotes): may return to normal.
+  assert.equal(canReturnComplexPlanToNormal(false, true), true);
+  // Read-only / inactive instructor (canEdit === false): denied - never sees an
+  // enabled recovery action.
+  assert.equal(canReturnComplexPlanToNormal(false, false), false);
 });
 
 test("only one active target: opening is allowed only when nothing is active", () => {

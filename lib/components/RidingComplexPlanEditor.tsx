@@ -90,6 +90,7 @@ import {
   reorderRidingSlotComplexBlocksAsAdmin,
   reorderRidingSlotComplexBlocksAsInstructor,
   deleteRidingSlotComplexPlanAsAdmin,
+  deleteRidingSlotComplexPlanAsInstructor,
   type RidingSlotComplexPlanForEditing,
   type RidingSlotComplexPlanRow,
   type RidingSlotComplexBlockRow,
@@ -110,6 +111,7 @@ import {
 } from "@/lib/riding-complex-schedule-board/return-to-normal";
 import {
   canOpenInlineTarget,
+  canReturnComplexPlanToNormal,
   canUnpublishComplexPlan,
   initialBoardView,
   isEditorActionBlocked,
@@ -313,6 +315,22 @@ function unpublishComplexPlan(
   return actor.type === "admin"
     ? unpublishComplexRidingPlanAsAdmin(ridingSlotId)
     : unpublishComplexRidingPlanAsInstructor(actor.instructorId, ridingSlotId);
+}
+
+// RIDING-COMPLEX-SCHEDULE-BOARD - the "return this riding session to a normal
+// session" delete routes by actor exactly like publish/unpublish above (admin
+// vs instructor variant, instructorId first for the instructor one). Both server
+// actions re-check the caller's capability independently (requireAdmin, or the
+// fresh isActive && canEditRidingNotes read); the wrapper only picks which one to
+// call for the actor already rendering this editor, and never routes an
+// instructor through the admin-only action.
+function deleteComplexPlan(
+  actor: RidingComplexPlanEditorActor,
+  ridingSlotId: string
+): ReturnType<typeof deleteRidingSlotComplexPlanAsAdmin> {
+  return actor.type === "admin"
+    ? deleteRidingSlotComplexPlanAsAdmin(ridingSlotId)
+    : deleteRidingSlotComplexPlanAsInstructor(actor.instructorId, ridingSlotId);
 }
 
 type LoadStatus = "loading" | "loaded" | "not-found" | "error";
@@ -2616,7 +2634,8 @@ function InlinePairDialog({
 // Reused unchanged by both the admin RidingSlotModal and the instructor
 // screen - every operation routes through the eight small private helpers
 // above; canEdit (server-returned) gates every mutating control, and
-// whole-plan deletion stays admin-only regardless of canEdit.
+// whole-plan deletion (return to a normal session) is gated by the same
+// admin-or-editable-instructor capability (canReturnComplexPlanToNormal).
 export function RidingComplexPlanEditor({
   open,
   onClose,
@@ -2707,8 +2726,9 @@ export function RidingComplexPlanEditor({
   // RIDING-COMPLEX-SCHEDULE-BOARD - "return to a normal riding session" recovery
   // confirmation modal. Opening it performs NO write; the actual delete only
   // fires from its confirm button (handleConfirmReturnToNormal), and only in a
-  // deletable state (see decideReturnToNormal). Admin-only, like the delete
-  // action it wraps.
+  // deletable state (see decideReturnToNormal). Available to an admin or an
+  // authorized instructor (canReturnComplexPlanToNormal), like the delete
+  // actions it wraps.
   const [recoverModalOpen, setRecoverModalOpen] = useState(false);
 
   // RIDING-COMPLEX-PUBLICATION P7B - publication status/publish/unpublish
@@ -3968,13 +3988,15 @@ export function RidingComplexPlanEditor({
     });
   }
 
-  // Admin-only regardless of canEdit. Opening the modal performs NO write - it
-  // only surfaces the state-aware confirmation. An instructor actor never
-  // reaches this (the control is never rendered for actor.type === "instructor",
-  // see the render below), and the server action itself has no instructor
-  // variant to call by mistake.
+  // Available to an admin OR an authorized instructor (canEdit, the server-checked
+  // isActive && canEditRidingNotes read - see canReturnComplexPlanToNormal),
+  // matching the create/manage/unpublish trust tier. Opening the modal performs NO
+  // write - it only surfaces the state-aware confirmation. A read-only/inactive
+  // instructor never reaches this (the control is never rendered when the
+  // capability is false, see the render below), and the server actions re-check
+  // the capability regardless.
   function openRecoverModal() {
-    if (actor.type !== "admin" || isDeletingPlan) return;
+    if (!canReturnComplexPlanToNormal(actor.type === "admin", canEdit) || isDeletingPlan) return;
     setDeletePlanError(null);
     setRecoverModalOpen(true);
   }
@@ -3990,11 +4012,11 @@ export function RidingComplexPlanEditor({
   // plan got published in another tab) still fails closed rather than deleting a
   // now-published plan.
   function handleConfirmReturnToNormal() {
-    if (actor.type !== "admin" || isDeletingPlan) return;
+    if (!canReturnComplexPlanToNormal(actor.type === "admin", canEdit) || isDeletingPlan) return;
     if (!canDeleteFromReturnToNormalDecision(returnToNormalDecision)) return;
     setDeletePlanError(null);
     startDeletePlanTransition(async () => {
-      const result = await deleteRidingSlotComplexPlanAsAdmin(ridingSlotId);
+      const result = await deleteComplexPlan(actor, ridingSlotId);
       if (!result.success) {
         setDeletePlanError(result.error ?? "אירעה שגיאה במחיקת התכנון");
         return;
@@ -4335,15 +4357,21 @@ export function RidingComplexPlanEditor({
               />
             )}
 
-            {/* RIDING-COMPLEX-SCHEDULE-BOARD - admin-only "return this session to
-                a normal riding session" recovery control. Rendered at the editor
-                root of BOTH presentations (board "תצוגת לוז" and legacy list),
-                using the exact same (boardView || view.type === "blockList")
-                gate as the publication toolbar - so an admin who accidentally
-                enabled complex mode finds it in the default board view without
-                switching to the legacy list or scrolling. It only opens the
-                state-aware confirmation modal; it never deletes on click. */}
-            {actor.type === "admin" && (boardView || view.type === "blockList") && (
+            {/* RIDING-COMPLEX-SCHEDULE-BOARD - "return this session to a normal
+                riding session" recovery control, available to an admin OR an
+                authorized instructor (canReturnComplexPlanToNormal - the same
+                admin-or-editable-instructor capability as the publication
+                toolbar's Unpublish, driven by the server-returned canEdit, never
+                actor.type alone). Rendered at the editor root of BOTH
+                presentations (board "תצוגת לוז" and legacy list), using the exact
+                same (boardView || view.type === "blockList") gate as the
+                publication toolbar - so whoever accidentally enabled complex mode
+                finds it in the default board view without switching to the legacy
+                list or scrolling. A read-only/inactive instructor never sees it.
+                It only opens the state-aware confirmation modal; it never deletes
+                on click. */}
+            {canReturnComplexPlanToNormal(actor.type === "admin", canEdit) &&
+              (boardView || view.type === "blockList") && (
               <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-card p-2.5">
                 <p className="min-w-0 text-xs text-muted-foreground">
                   פעולה זו תמחק את התכנון המורכב של הרכיבה.

@@ -25,7 +25,8 @@ import {
   classifyActivityYear,
   classifyCourseOffering,
   classifyCourseGroups,
-  classifyCapabilities,
+  classifyCapabilityCatalog,
+  classifyOfferingCapabilities,
   classifyCourseSettingsSingleton,
   classifyActivityYearCardinality,
   classifyAggregateBootstrapState,
@@ -423,9 +424,9 @@ test("21. CourseGroup hierarchy exact reuse vs partial/absent conflict", () => {
 });
 
 // ===========================================================================
-// 22. Exact versus partial capability state
+// 22. Global catalog (per-key) vs offering-scoped (strict) classification
 // ===========================================================================
-test("22. capability state exact reuse vs partial/divergent conflict", () => {
+test("22. catalog per-key disposition vs offering-capability strict matching", () => {
   const cfg = parseOk(
     minimalConfigRaw({
       capabilities: [
@@ -436,33 +437,51 @@ test("22. capability state exact reuse vs partial/divergent conflict", () => {
   );
   const plan = buildBootstrapPlan(cfg);
 
-  assert.equal(classifyCapabilities(plan.capabilityCatalog, plan.offeringCapabilities, [], []).class, "ABSENT");
+  // catalog empty -> every requested key is missing (still "compatible")
+  const emptyCat = classifyCapabilityCatalog(plan.capabilityCatalog, []);
+  assert.equal(emptyCat.kind, "compatible");
+  if (emptyCat.kind === "compatible") {
+    assert.deepEqual(
+      emptyCat.dispositions.map((d) => [d.key, d.state]),
+      [["A", "missing"], ["B", "missing"]],
+    );
+  }
 
-  const catExact = [
+  // catalog exact + an UNRELATED global row -> all requested reuse, unrelated ignored
+  const cat = classifyCapabilityCatalog(plan.capabilityCatalog, [
     { key: "A", label: "la", isActive: true },
     { key: "B", label: "lb", isActive: true },
-  ];
+    { key: "UNRELATED", label: "u", isActive: true },
+  ]);
+  assert.equal(cat.kind, "compatible");
+  if (cat.kind === "compatible") {
+    assert.deepEqual(cat.dispositions.map((d) => [d.key, d.state]), [["A", "reuse"], ["B", "reuse"]]);
+  }
+
+  // a requested key with a divergent label -> catalog CONFLICT
+  assert.equal(
+    classifyCapabilityCatalog(plan.capabilityCatalog, [
+      { key: "A", label: "DIFFERENT", isActive: true },
+      { key: "B", label: "lb", isActive: true },
+    ]).kind,
+    "conflict",
+  );
+
+  // offering capabilities: absent / exact reuse / partial / divergent (strict)
+  assert.equal(classifyOfferingCapabilities(plan.offeringCapabilities, []).class, "ABSENT");
   const ocExact = [
     { key: "A", status: "ENABLED" as const },
     { key: "B", status: "READ_ONLY" as const },
   ];
-  assert.equal(classifyCapabilities(plan.capabilityCatalog, plan.offeringCapabilities, catExact, ocExact).class, "EXACT_REUSE");
-
-  // partial catalog -> CONFLICT
-  assert.equal(
-    classifyCapabilities(plan.capabilityCatalog, plan.offeringCapabilities, [catExact[0]], ocExact).class,
-    "CONFLICT",
-  );
-
-  // divergent offering status -> CONFLICT
+  assert.equal(classifyOfferingCapabilities(plan.offeringCapabilities, ocExact).class, "EXACT_REUSE");
+  // partial (missing one) -> CONFLICT
+  assert.equal(classifyOfferingCapabilities(plan.offeringCapabilities, [ocExact[0]]).class, "CONFLICT");
+  // divergent status -> CONFLICT
   const ocDiverge = [
     { key: "A", status: "READ_ONLY" as const },
     { key: "B", status: "READ_ONLY" as const },
   ];
-  assert.equal(
-    classifyCapabilities(plan.capabilityCatalog, plan.offeringCapabilities, catExact, ocDiverge).class,
-    "CONFLICT",
-  );
+  assert.equal(classifyOfferingCapabilities(plan.offeringCapabilities, ocDiverge).class, "CONFLICT");
 });
 
 // ===========================================================================
@@ -722,21 +741,27 @@ test("F5. groups exact but capabilities absent (mixed) or partial (conflict) -> 
   assert.equal(d1.kind, "STOP_CONFLICT");
   if (d1.kind === "STOP_CONFLICT") assert.equal(d1.reason, "MIXED_ABSENT_AND_REUSE");
 
-  // capabilities partial (catalog missing one row) -> entity conflict
+  // Full spine + offering-caps exact, but a REQUESTED catalog key still missing.
+  // Corrected global-catalog semantics: this is not an entity conflict on the
+  // catalog row (the observed row is fine) — it is an incomplete rerun.
   const capsPartial: ObservedStructuralState = { ...base, capabilityCatalog: [base.capabilityCatalog[0]] };
   const d2 = classifyAggregateBootstrapState(plan, capsPartial);
   assert.equal(d2.kind, "STOP_CONFLICT");
-  if (d2.kind === "STOP_CONFLICT") assert.equal(d2.reason, "ENTITY_CONFLICT");
+  if (d2.kind === "STOP_CONFLICT") assert.equal(d2.reason, "CATALOG_INCOMPLETE_ON_RERUN");
 });
 
 // --- F6 ---------------------------------------------------------------------
-test("F6. catalog exact but offering-capability rows absent -> STOP_CONFLICT (entity)", () => {
+// Corrected global-catalog semantics: the (global) catalog is exact, so it casts
+// no conflict; the offering-scoped capability rows are ABSENT while the rest of
+// the spine is EXACT_REUSE, so the spine is a partial mixture, not an entity
+// conflict. Still STOP_CONFLICT — now with the MIXED reason.
+test("F6. catalog exact but offering-capability rows absent -> STOP_CONFLICT (mixed)", () => {
   const plan = planWithHierarchy();
   const base = exactObservedFor(plan);
   const observed: ObservedStructuralState = { ...base, offeringCapabilities: [] };
   const d = classifyAggregateBootstrapState(plan, observed);
   assert.equal(d.kind, "STOP_CONFLICT");
-  if (d.kind === "STOP_CONFLICT") assert.equal(d.reason, "ENTITY_CONFLICT");
+  if (d.kind === "STOP_CONFLICT") assert.equal(d.reason, "MIXED_ABSENT_AND_REUSE");
 });
 
 // --- F7 ---------------------------------------------------------------------
@@ -868,16 +893,21 @@ test("G1. classifier-level exact matching is independent of observed row order",
 
   // groups: reversed order still EXACT_REUSE
   assert.equal(classifyCourseGroups(plan.courseGroups, [...exact.courseGroups].reverse()).class, "EXACT_REUSE");
-  // capabilities: reversed catalog + offering rows still EXACT_REUSE
+  // offering capabilities: reversed rows still EXACT_REUSE
   assert.equal(
-    classifyCapabilities(
-      plan.capabilityCatalog,
-      plan.offeringCapabilities,
-      [...exact.capabilityCatalog].reverse(),
-      [...exact.offeringCapabilities].reverse(),
-    ).class,
+    classifyOfferingCapabilities(plan.offeringCapabilities, [...exact.offeringCapabilities].reverse()).class,
     "EXACT_REUSE",
   );
+  // catalog: reversed observed rows -> dispositions still in planned order, all reuse
+  const cat = classifyCapabilityCatalog(plan.capabilityCatalog, [...exact.capabilityCatalog].reverse());
+  assert.equal(cat.kind, "compatible");
+  if (cat.kind === "compatible") {
+    assert.deepEqual(
+      cat.dispositions.map((d) => d.key),
+      plan.capabilityCatalog.map((c) => c.key),
+    );
+    assert.ok(cat.dispositions.every((d) => d.state === "reuse"));
+  }
 });
 
 test("G2. parse + build do not mutate the caller-supplied raw config", () => {
@@ -888,4 +918,248 @@ test("G2. parse + build do not mutate the caller-supplied raw config", () => {
   assert.equal(parsed.ok, true);
   if (parsed.ok) buildBootstrapPlan(parsed.config);
   assert.deepEqual(JSON.parse(JSON.stringify(raw)), snapshot);
+});
+
+// ===========================================================================
+// H. Global CapabilityCatalog policy correction
+// (MC-BOOTSTRAP-S1-CAPABILITY-SEMANTICS) — the catalog is a reusable GLOBAL
+// dependency; the CourseOfferingCapability set stays offering-scoped and strict.
+// ===========================================================================
+
+/** Exact observed catalog rows for the plan's requested keys (planned order). */
+function catalogRows(plan: BootstrapCreationPlan): { key: string; label: string; isActive: boolean }[] {
+  return plan.capabilityCatalog.map((c) => ({ key: c.key, label: c.label, isActive: c.isActive }));
+}
+
+// An unrelated GLOBAL catalog row whose key is never requested by any fixture plan.
+const UNRELATED_CATALOG_ROW = { key: "UNRELATED_GLOBAL_CAP", label: "unrelated", isActive: true };
+
+// --- H1 (req 2): spine absent, requested catalog fully pre-synced, off-caps absent
+test("H1. spine absent + requested catalog fully pre-synced exactly -> INITIAL_APPLY_ALLOWED", () => {
+  const plan = planWithHierarchy();
+  const observed: ObservedStructuralState = { ...EMPTY_OBSERVED, capabilityCatalog: catalogRows(plan) };
+  const d = classifyAggregateBootstrapState(plan, observed);
+  assert.equal(d.kind, "INITIAL_APPLY_ALLOWED");
+  if (d.kind === "INITIAL_APPLY_ALLOWED") {
+    assert.deepEqual([...d.catalog.reusableKeys], ["A", "B"]);
+    assert.deepEqual([...d.catalog.missingKeys], []);
+  }
+});
+
+// --- H2 (req 3): spine absent, some requested catalog exact + some missing
+test("H2. spine absent + partly-synced requested catalog -> INITIAL_APPLY_ALLOWED", () => {
+  const plan = planWithHierarchy();
+  const observed: ObservedStructuralState = { ...EMPTY_OBSERVED, capabilityCatalog: [catalogRows(plan)[0]] };
+  const d = classifyAggregateBootstrapState(plan, observed);
+  assert.equal(d.kind, "INITIAL_APPLY_ALLOWED");
+});
+
+// --- H3 (req 4): spine absent, only unrelated extra global catalog rows present
+test("H3. spine absent + only unrelated global catalog rows -> INITIAL_APPLY_ALLOWED", () => {
+  const plan = planWithHierarchy();
+  const observed: ObservedStructuralState = { ...EMPTY_OBSERVED, capabilityCatalog: [UNRELATED_CATALOG_ROW] };
+  const d = classifyAggregateBootstrapState(plan, observed);
+  assert.equal(d.kind, "INITIAL_APPLY_ALLOWED");
+  if (d.kind === "INITIAL_APPLY_ALLOWED") {
+    assert.deepEqual([...d.catalog.missingKeys], ["A", "B"]);
+    assert.deepEqual([...d.catalog.reusableKeys], []);
+  }
+});
+
+// --- H4 (req 5): spine absent, requested catalog exact + unrelated global rows
+test("H4. spine absent + requested catalog exact + unrelated global rows -> INITIAL_APPLY_ALLOWED", () => {
+  const plan = planWithHierarchy();
+  const observed: ObservedStructuralState = {
+    ...EMPTY_OBSERVED,
+    capabilityCatalog: [...catalogRows(plan), UNRELATED_CATALOG_ROW],
+  };
+  const d = classifyAggregateBootstrapState(plan, observed);
+  assert.equal(d.kind, "INITIAL_APPLY_ALLOWED");
+});
+
+// --- H5 (req 6): a requested catalog key with a different label -> STOP_CONFLICT
+test("H5. requested catalog key with a different label -> STOP_CONFLICT (entity)", () => {
+  const plan = planWithHierarchy();
+  const rows = catalogRows(plan);
+  const observed: ObservedStructuralState = {
+    ...EMPTY_OBSERVED,
+    capabilityCatalog: [{ ...rows[0], label: "DIFFERENT" }, rows[1]],
+  };
+  const d = classifyAggregateBootstrapState(plan, observed);
+  assert.equal(d.kind, "STOP_CONFLICT");
+  if (d.kind === "STOP_CONFLICT") assert.equal(d.reason, "ENTITY_CONFLICT");
+});
+
+// --- H6 (req 7): a requested catalog key with different isActive -> STOP_CONFLICT
+test("H6. requested catalog key with different isActive -> STOP_CONFLICT (entity)", () => {
+  const plan = planWithHierarchy();
+  const rows = catalogRows(plan);
+  const observed: ObservedStructuralState = {
+    ...EMPTY_OBSERVED,
+    capabilityCatalog: [{ ...rows[0], isActive: false }, rows[1]],
+  };
+  const d = classifyAggregateBootstrapState(plan, observed);
+  assert.equal(d.kind, "STOP_CONFLICT");
+  if (d.kind === "STOP_CONFLICT") assert.equal(d.reason, "ENTITY_CONFLICT");
+});
+
+// --- H7 (req 8): exact full rerun + unrelated extra global catalog rows
+test("H7. exact full rerun + unrelated global catalog rows -> EXACT_RERUN_NOOP", () => {
+  const plan = planWithHierarchy();
+  const exact = exactObservedFor(plan);
+  const observed: ObservedStructuralState = {
+    ...exact,
+    capabilityCatalog: [...exact.capabilityCatalog, UNRELATED_CATALOG_ROW],
+  };
+  assert.equal(classifyAggregateBootstrapState(plan, observed).kind, "EXACT_RERUN_NOOP");
+});
+
+// --- H8 (req 9): exact spine but one requested catalog entry missing
+test("H8. exact spine but one requested catalog entry missing -> STOP_CONFLICT (incomplete rerun)", () => {
+  const plan = planWithHierarchy();
+  const exact = exactObservedFor(plan);
+  const observed: ObservedStructuralState = { ...exact, capabilityCatalog: exact.capabilityCatalog.slice(0, 1) };
+  const d = classifyAggregateBootstrapState(plan, observed);
+  assert.equal(d.kind, "STOP_CONFLICT");
+  if (d.kind === "STOP_CONFLICT") assert.equal(d.reason, "CATALOG_INCOMPLETE_ON_RERUN");
+});
+
+// --- H9 (req 10): exact spine but only some requested catalog entries exist
+test("H9. exact spine but only some requested catalog entries exist -> STOP_CONFLICT", () => {
+  const plan = planWithHierarchy();
+  const exact = exactObservedFor(plan);
+  // keep only the SECOND requested key (order-independent incompleteness)
+  const observed: ObservedStructuralState = { ...exact, capabilityCatalog: exact.capabilityCatalog.slice(1) };
+  const d = classifyAggregateBootstrapState(plan, observed);
+  assert.equal(d.kind, "STOP_CONFLICT");
+  if (d.kind === "STOP_CONFLICT") assert.equal(d.reason, "CATALOG_INCOMPLETE_ON_RERUN");
+});
+
+// --- H10 (req 12): an unexpected offering-capability row still stops
+test("H10. unexpected offering-capability row -> STOP_CONFLICT (entity)", () => {
+  const plan = planWithHierarchy();
+  const exact = exactObservedFor(plan);
+  const observed: ObservedStructuralState = {
+    ...exact,
+    offeringCapabilities: [...exact.offeringCapabilities, { key: "GHOST", status: "ENABLED" }],
+  };
+  const d = classifyAggregateBootstrapState(plan, observed);
+  assert.equal(d.kind, "STOP_CONFLICT");
+  if (d.kind === "STOP_CONFLICT") assert.equal(d.reason, "ENTITY_CONFLICT");
+});
+
+// --- H11 (req 13): a partial offering-capability set still stops
+test("H11. partial offering-capability set -> STOP_CONFLICT (entity)", () => {
+  const plan = planWithHierarchy();
+  const exact = exactObservedFor(plan);
+  const observed: ObservedStructuralState = { ...exact, offeringCapabilities: exact.offeringCapabilities.slice(0, 1) };
+  const d = classifyAggregateBootstrapState(plan, observed);
+  assert.equal(d.kind, "STOP_CONFLICT");
+  if (d.kind === "STOP_CONFLICT") assert.equal(d.reason, "ENTITY_CONFLICT");
+});
+
+// --- H12 (req 14): a changed offering-capability status still stops
+test("H12. changed offering-capability status -> STOP_CONFLICT (entity)", () => {
+  const plan = planWithHierarchy();
+  const exact = exactObservedFor(plan);
+  const flipped = exact.offeringCapabilities.map((o, i) =>
+    i === 0 ? { ...o, status: o.status === "ENABLED" ? ("READ_ONLY" as const) : ("ENABLED" as const) } : o,
+  );
+  const observed: ObservedStructuralState = { ...exact, offeringCapabilities: flipped };
+  const d = classifyAggregateBootstrapState(plan, observed);
+  assert.equal(d.kind, "STOP_CONFLICT");
+  if (d.kind === "STOP_CONFLICT") assert.equal(d.reason, "ENTITY_CONFLICT");
+});
+
+// --- H13 (req 15+16): INITIAL_APPLY exposes exactly missing vs reusable keys
+test("H13. INITIAL_APPLY_ALLOWED exposes exact missing and reusable catalog keys", () => {
+  const plan = planWithHierarchy();
+  // only the FIRST requested key exists exactly; the second is missing
+  const observed: ObservedStructuralState = { ...EMPTY_OBSERVED, capabilityCatalog: [catalogRows(plan)[0]] };
+  const d = classifyAggregateBootstrapState(plan, observed);
+  assert.equal(d.kind, "INITIAL_APPLY_ALLOWED");
+  if (d.kind === "INITIAL_APPLY_ALLOWED") {
+    assert.deepEqual([...d.catalog.reusableKeys], ["A"]);
+    assert.deepEqual([...d.catalog.missingKeys], ["B"]);
+  }
+});
+
+// --- H14 (req 17): unrelated global rows never enter the planned write set
+test("H14. unrelated global catalog rows never appear in the write disposition", () => {
+  const plan = planWithHierarchy();
+  const observed: ObservedStructuralState = {
+    ...EMPTY_OBSERVED,
+    capabilityCatalog: [...catalogRows(plan), UNRELATED_CATALOG_ROW],
+  };
+  const d = classifyAggregateBootstrapState(plan, observed);
+  assert.equal(d.kind, "INITIAL_APPLY_ALLOWED");
+  if (d.kind === "INITIAL_APPLY_ALLOWED") {
+    const all = [...d.catalog.missingKeys, ...d.catalog.reusableKeys];
+    assert.equal(all.includes(UNRELATED_CATALOG_ROW.key), false);
+    // exactly the requested keys, nothing else
+    assert.deepEqual([...all].sort(), plan.capabilityCatalog.map((c) => c.key).sort());
+  }
+});
+
+// --- H15 (req 18): observed row order changes neither decision nor dispositions
+test("H15. observed catalog order does not change the decision or dispositions", () => {
+  const plan = planWithHierarchy();
+  const forward: ObservedStructuralState = { ...EMPTY_OBSERVED, capabilityCatalog: catalogRows(plan) };
+  const reversed: ObservedStructuralState = { ...EMPTY_OBSERVED, capabilityCatalog: [...catalogRows(plan)].reverse() };
+  assert.deepEqual(
+    classifyAggregateBootstrapState(plan, forward),
+    classifyAggregateBootstrapState(plan, reversed),
+  );
+});
+
+// --- H16 (req 19): classification mutates neither the plan nor the observed input
+test("H16. aggregate classification does not mutate plan or observed", () => {
+  const plan = planWithHierarchy();
+  const observed = exactObservedFor(plan);
+  const planSnap = JSON.parse(JSON.stringify(plan));
+  const obsSnap = JSON.parse(JSON.stringify(observed));
+  deepFreeze(plan);
+  deepFreeze(observed);
+  assert.equal(classifyAggregateBootstrapState(plan, observed).kind, "EXACT_RERUN_NOOP");
+  assert.deepEqual(JSON.parse(JSON.stringify(plan)), planSnap);
+  assert.deepEqual(JSON.parse(JSON.stringify(observed)), obsSnap);
+});
+
+// --- H17 (req 20): deeply-equal inputs yield deeply-equal decisions (new shape)
+test("H17. repeated deeply-equal inputs return deeply-equal INITIAL_APPLY decisions", () => {
+  const plan = planWithHierarchy();
+  const observed: ObservedStructuralState = { ...EMPTY_OBSERVED, capabilityCatalog: [catalogRows(plan)[0]] };
+  assert.deepEqual(
+    classifyAggregateBootstrapState(plan, observed),
+    classifyAggregateBootstrapState(plan, observed),
+  );
+});
+
+// --- H18 (req 21): catalog-driven STOP diagnostics stay redacted
+test("H18. catalog conflict + incomplete-rerun diagnostics do not echo keys/labels/values", () => {
+  const plan = buildBootstrapPlan(
+    parseOk(
+      minimalConfigRaw({
+        capabilities: [{ key: "KEY_ALPHA", label: "LABEL_ALPHA", isActive: true, offeringStatus: "ENABLED" }],
+      }),
+    ),
+  );
+
+  // a requested catalog key exists with a divergent label -> entity conflict
+  const conflictDec = classifyAggregateBootstrapState(plan, {
+    ...EMPTY_OBSERVED,
+    capabilityCatalog: [{ key: "KEY_ALPHA", label: "OTHER_LABEL", isActive: true }],
+  });
+  // exact spine but the requested catalog key is missing -> incomplete rerun
+  const exact = exactObservedFor(plan);
+  const incompleteDec = classifyAggregateBootstrapState(plan, { ...exact, capabilityCatalog: [] });
+
+  for (const d of [conflictDec, incompleteDec]) {
+    assert.equal(d.kind, "STOP_CONFLICT");
+    if (d.kind !== "STOP_CONFLICT") continue;
+    const json = JSON.stringify(d.issues);
+    for (const supplied of ["KEY_ALPHA", "LABEL_ALPHA", "OTHER_LABEL", "OFFERING-FIXTURE", "YEAR-FIXTURE", "2000-01-01", REF_A]) {
+      assert.equal(json.includes(supplied), false, `diagnostic must not echo "${supplied}"`);
+    }
+  }
 });

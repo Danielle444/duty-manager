@@ -911,40 +911,97 @@ export function classifyCourseGroups(
   return conflict("courseGroups", "groups.conflict", "observed group hierarchy differs from planned (partial/extra/changed)");
 }
 
+// ---------------------------------------------------------------------------
+// Global CapabilityCatalog vs offering-scoped CourseOfferingCapability
+// (MC-BOOTSTRAP-S1-CAPABILITY-SEMANTICS) — two DISTINCT ownership tiers.
+//
+// CapabilityCatalog is GLOBAL platform state (schema PK is `key`): it is shared
+// by every offering/instance and may legitimately be pre-synced independently of
+// this bootstrap. So it is classified PER REQUESTED KEY and unrelated rows are
+// ignored. CourseOfferingCapability is scoped to the single CourseOffering and
+// keeps STRICT exact-set matching (no unexpected/partial/changed row is hidden).
+// ---------------------------------------------------------------------------
+
+/** Per-requested-catalog-key disposition for a future writer (missing => create). */
+export type CatalogKeyState = "missing" | "reuse";
+export interface CatalogKeyDisposition {
+  readonly key: string;
+  readonly state: CatalogKeyState;
+}
+
 /**
- * Capability state (catalog + offering rows): EXACT_REUSE only when both the
- * catalog entries and the offering-capability rows match the plan exactly (keys,
- * labels, isActive, offering status). Empty observed on both -> ABSENT. Partial
- * or divergent state -> CONFLICT. Never calls capability-admin.
+ * Result of classifying the GLOBAL CapabilityCatalog against the REQUESTED keys:
+ *  - "compatible": every requested key is either missing (safe to create later) or
+ *    an exact reusable global row; `dispositions` (in deterministic planned order)
+ *    says which is which.
+ *  - "conflict":   a requested key exists with a divergent label/isActive, or a
+ *    requested key has more than one observed row.
  */
-export function classifyCapabilities(
+export type CatalogClassification =
+  | { readonly kind: "compatible"; readonly dispositions: readonly CatalogKeyDisposition[] }
+  | { readonly kind: "conflict"; readonly issues: readonly ValidationIssue[] };
+
+/**
+ * Classify the GLOBAL catalog PER REQUESTED KEY. Because CapabilityCatalog is
+ * platform-wide, a row whose key is NOT requested by this bootstrap plan is valid
+ * pre-existing global state: it is preserved in the supplied observed data but
+ * IGNORED here — never attributed to this offering, never a conflict, and never
+ * scheduled for creation. Only REQUESTED keys are judged: absent -> missing
+ * (create later), exact (label + isActive) -> reuse (skip), divergent or
+ * duplicated -> CONFLICT. Diagnostics never echo a key or a label. PURE.
+ */
+export function classifyCapabilityCatalog(
   plannedCatalog: readonly PlannedCapabilityCatalogEntry[],
-  plannedOfferingCaps: readonly PlannedOfferingCapability[],
   observedCatalog: readonly ObservedCapabilityCatalog[],
+): CatalogClassification {
+  const observedByKey = new Map<string, ObservedCapabilityCatalog>();
+  const duplicated = new Set<string>();
+  for (const c of observedCatalog) {
+    if (observedByKey.has(c.key)) duplicated.add(c.key);
+    else observedByKey.set(c.key, c);
+  }
+
+  const dispositions: CatalogKeyDisposition[] = [];
+  const issues: ValidationIssue[] = [];
+  for (const planned of plannedCatalog) {
+    if (duplicated.has(planned.key)) {
+      issues.push(
+        issue("capabilityCatalog", "catalog.duplicateObserved", "a requested catalog key has more than one observed row"),
+      );
+      continue;
+    }
+    const obs = observedByKey.get(planned.key);
+    if (obs === undefined) {
+      dispositions.push({ key: planned.key, state: "missing" });
+      continue;
+    }
+    if (obs.label !== planned.label || obs.isActive !== planned.isActive) {
+      issues.push(
+        issue("capabilityCatalog", "catalog.conflict", "a requested catalog key exists with a different label or active flag"),
+      );
+      continue;
+    }
+    dispositions.push({ key: planned.key, state: "reuse" });
+  }
+
+  if (issues.length > 0) return { kind: "conflict", issues };
+  return { kind: "compatible", dispositions };
+}
+
+/**
+ * Classify the OFFERING-SCOPED CourseOfferingCapability set — STRICT, matching the
+ * original bootstrap contract. Empty observed -> ABSENT. An observed set that
+ * equals the planned set exactly (same keys, same status) -> EXACT_REUSE. Anything
+ * else — a duplicate, a size/key difference (including unexpected rows while
+ * nothing is planned), or a status divergence -> CONFLICT. An unexpected offering-
+ * capability row is NEVER treated as a harmless global catalog row. PURE.
+ */
+export function classifyOfferingCapabilities(
+  plannedOfferingCaps: readonly PlannedOfferingCapability[],
   observedOfferingCaps: readonly ObservedOfferingCapability[],
 ): ConflictResult {
-  if (observedCatalog.length === 0 && observedOfferingCaps.length === 0) return absent();
+  if (observedOfferingCaps.length === 0) return absent();
 
-  // Catalog exact-match.
-  const plannedCatByKey = new Map(plannedCatalog.map((c) => [c.key, c]));
-  const observedCatByKey = new Map<string, ObservedCapabilityCatalog>();
-  for (const c of observedCatalog) {
-    if (observedCatByKey.has(c.key)) {
-      return conflict("capabilityCatalog", "catalog.duplicateObserved", "observed catalog contains duplicate keys");
-    }
-    observedCatByKey.set(c.key, c);
-  }
-  if (plannedCatByKey.size !== observedCatByKey.size) {
-    return conflict("capabilityCatalog", "catalog.conflict", "observed catalog set differs from planned");
-  }
-  for (const [key, planned] of plannedCatByKey) {
-    const obs = observedCatByKey.get(key);
-    if (!obs || obs.label !== planned.label || obs.isActive !== planned.isActive) {
-      return conflict("capabilityCatalog", "catalog.conflict", "observed catalog entry differs from planned");
-    }
-  }
-
-  // Offering-capability exact-match.
   const plannedOcByKey = new Map(plannedOfferingCaps.map((o) => [o.capabilityKey, o]));
   const observedOcByKey = new Map<string, ObservedOfferingCapability>();
   for (const o of observedOfferingCaps) {
@@ -1038,11 +1095,38 @@ export interface ObservedStructuralState {
 // C — Aggregate whole-bootstrap safety decision (pure)
 // ===========================================================================
 
-/** Typed reason for a STOP: a hard entity conflict, or an unsafe absent/reuse mix. */
-export type AggregateStopReason = "ENTITY_CONFLICT" | "MIXED_ABSENT_AND_REUSE";
+/**
+ * Typed reason for a STOP:
+ *  - ENTITY_CONFLICT              a hard conflict on any planned area — a divergent
+ *                                requested catalog key, a divergent/partial/extra
+ *                                offering-capability set, partial/extra/changed
+ *                                groups, a differing offering, or bad ActivityYear/
+ *                                CourseOffering cardinality.
+ *  - MIXED_ABSENT_AND_REUSE      the course-instance SPINE itself mixes ABSENT and
+ *                                EXACT_REUSE areas (a partially-present spine).
+ *  - CATALOG_INCOMPLETE_ON_RERUN the spine is a COMPLETE exact rerun, but one or
+ *                                more REQUESTED global catalog keys are still
+ *                                missing, so the plan is only partially in place.
+ */
+export type AggregateStopReason =
+  | "ENTITY_CONFLICT"
+  | "MIXED_ABSENT_AND_REUSE"
+  | "CATALOG_INCOMPLETE_ON_RERUN";
+
+/**
+ * The safe global-catalog write disposition surfaced ONLY on INITIAL_APPLY_ALLOWED,
+ * so a future S2 writer knows, per REQUESTED catalog key, which rows it must create
+ * (missing) and which already exist exactly and must be reused (skipped). Keys are
+ * in deterministic planned order. Unrelated global catalog rows never appear here,
+ * so they can never be scheduled for creation/update/deletion.
+ */
+export interface CatalogWriteDisposition {
+  readonly missingKeys: readonly string[];
+  readonly reusableKeys: readonly string[];
+}
 
 export type AggregateBootstrapDecision =
-  | { readonly kind: "INITIAL_APPLY_ALLOWED" }
+  | { readonly kind: "INITIAL_APPLY_ALLOWED"; readonly catalog: CatalogWriteDisposition }
   | { readonly kind: "EXACT_RERUN_NOOP" }
   | {
       readonly kind: "STOP_CONFLICT";
@@ -1050,7 +1134,7 @@ export type AggregateBootstrapDecision =
       readonly issues: readonly ValidationIssue[];
     };
 
-/** Per-area classification, incl. VACUOUS (nothing planned AND nothing observed). */
+/** Per-area classification of a SPINE area, incl. VACUOUS (nothing planned AND observed). */
 type AreaClass = "ABSENT" | "EXACT_REUSE" | "CONFLICT" | "VACUOUS";
 
 interface AreaOutcome {
@@ -1061,75 +1145,116 @@ interface AreaOutcome {
 
 /**
  * Combine the per-entity classifiers into ONE typed whole-bootstrap decision, so
- * the aggregate safety policy lives in pure S1 rather than being reimplemented
- * in S2. PURE: reads only the supplied plan + observed state, mutates neither,
+ * the aggregate safety policy lives in pure S1 rather than being reimplemented in
+ * S2. PURE: reads only the supplied plan + observed state, mutates neither,
  * performs no I/O.
+ *
+ * OWNERSHIP BOUNDARY (MC-BOOTSTRAP-S1-CAPABILITY-SEMANTICS):
+ *  - CapabilityCatalog is GLOBAL platform state. It is NOT a spine area and casts
+ *    NO absent/reuse vote. Per requested key it is missing / exact-reuse / conflict
+ *    (classifyCapabilityCatalog). A requested-key conflict stops; unrelated global
+ *    catalog rows are ignored and never block an apply or a rerun.
+ *  - The course-instance SPINE is ActivityYear + CourseOffering + CourseGroups +
+ *    CourseOfferingCapability (offering-scoped, strict). Only these vote.
  *
  * Contract for S2: perform NO writes unless this returns INITIAL_APPLY_ALLOWED.
  * EXACT_RERUN_NOOP means "already fully in place — write nothing". STOP_CONFLICT
  * means "stop".
  *
- * Decision rules:
- *  - ANY entity CONFLICT (incl. >1 ActivityYear, >1 CourseOffering, a differing
- *    offering, partial/extra/changed groups, partial/divergent capabilities,
- *    an offering-capability set that does not match its catalog) ->
- *    STOP_CONFLICT / ENTITY_CONFLICT.
- *  - every required area ABSENT      -> INITIAL_APPLY_ALLOWED.
- *  - every required area EXACT_REUSE  -> EXACT_RERUN_NOOP.
- *  - any ABSENT + EXACT_REUSE mix     -> STOP_CONFLICT / MIXED_ABSENT_AND_REUSE
- *    (covers "an offering without its complete dependencies" and "reused rows
- *    while another required area is absent").
+ * Decision:
+ *  1. ANY hard conflict (a requested catalog key, or any spine area) ->
+ *     STOP_CONFLICT / ENTITY_CONFLICT.
+ *  2. Spine consensus over the non-vacuous spine areas:
+ *       every spine area ABSENT      -> INITIAL_APPLY_ALLOWED. The global catalog
+ *         may be missing and/or exactly reusable; the writer creates the missing
+ *         catalog keys and reuses the rest. This is NOT an unsafe absent/reuse
+ *         mixture, because the catalog is a reusable global dependency, not spine.
+ *       every spine area EXACT_REUSE -> a complete rerun IFF every requested catalog
+ *         key already exists exactly; a still-missing requested key ->
+ *         STOP_CONFLICT / CATALOG_INCOMPLETE_ON_RERUN; otherwise EXACT_RERUN_NOOP.
+ *       a mix of ABSENT and EXACT_REUSE spine areas ->
+ *         STOP_CONFLICT / MIXED_ABSENT_AND_REUSE.
  *
- * A capability area with NOTHING planned and NOTHING observed is VACUOUS and
- * casts no vote, so an intentionally capability-less plan can still rerun
- * cleanly; an empty-planned capability area with unexpected observed rows is
- * already CONFLICT via classifyCapabilities. ActivityYear/CourseOffering/
- * CourseGroups are always planned, so at least those three always vote.
+ * A CourseOfferingCapability area with NOTHING planned and NOTHING observed is
+ * VACUOUS and casts no vote, so an intentionally capability-less plan can still
+ * rerun cleanly; an empty-planned offering-capability area with unexpected observed
+ * rows is already CONFLICT via classifyOfferingCapabilities. ActivityYear/
+ * CourseOffering/CourseGroups are always planned, so at least those three vote.
  */
 export function classifyAggregateBootstrapState(
   plan: BootstrapCreationPlan,
   observed: ObservedStructuralState,
 ): AggregateBootstrapDecision {
-  const outcomes: AreaOutcome[] = [];
+  // Global catalog — classified per requested key, never a spine vote.
+  const catalog = classifyCapabilityCatalog(plan.capabilityCatalog, observed.capabilityCatalog);
+
+  // Spine areas (offering-scoped / course-instance structure).
+  const spine: AreaOutcome[] = [];
 
   const yearRes = classifyActivityYearCardinality(plan.activityYear, observed.activityYears);
-  outcomes.push({ area: "activityYear", klass: yearRes.class, result: yearRes });
+  spine.push({ area: "activityYear", klass: yearRes.class, result: yearRes });
 
   const offeringRes = classifyCourseOffering(
     plan.courseOffering,
     plan.activityYear.name,
     observed.courseOfferings,
   );
-  outcomes.push({ area: "courseOffering", klass: offeringRes.class, result: offeringRes });
+  spine.push({ area: "courseOffering", klass: offeringRes.class, result: offeringRes });
 
   const groupsRes = classifyCourseGroups(plan.courseGroups, observed.courseGroups);
-  outcomes.push({ area: "courseGroups", klass: groupsRes.class, result: groupsRes });
+  spine.push({ area: "courseGroups", klass: groupsRes.class, result: groupsRes });
 
-  const capsPlannedEmpty = plan.capabilityCatalog.length === 0 && plan.offeringCapabilities.length === 0;
-  const capsObservedEmpty = observed.capabilityCatalog.length === 0 && observed.offeringCapabilities.length === 0;
-  const capsRes = classifyCapabilities(
-    plan.capabilityCatalog,
-    plan.offeringCapabilities,
-    observed.capabilityCatalog,
-    observed.offeringCapabilities,
-  );
-  const capsClass: AreaClass = capsPlannedEmpty && capsObservedEmpty ? "VACUOUS" : capsRes.class;
-  outcomes.push({ area: "capabilities", klass: capsClass, result: capsRes });
+  const offCapsPlannedEmpty = plan.offeringCapabilities.length === 0;
+  const offCapsObservedEmpty = observed.offeringCapabilities.length === 0;
+  const offCapsRes = classifyOfferingCapabilities(plan.offeringCapabilities, observed.offeringCapabilities);
+  const offCapsClass: AreaClass = offCapsPlannedEmpty && offCapsObservedEmpty ? "VACUOUS" : offCapsRes.class;
+  spine.push({ area: "offeringCapabilities", klass: offCapsClass, result: offCapsRes });
 
-  // 1) Any hard entity CONFLICT stops immediately.
-  const conflicts = outcomes.filter((o) => o.klass === "CONFLICT");
-  if (conflicts.length > 0) {
-    return { kind: "STOP_CONFLICT", reason: "ENTITY_CONFLICT", issues: conflicts.flatMap((o) => o.result.issues) };
+  // 1) Any hard conflict (catalog requested-key OR any spine area) stops.
+  const conflictIssues: ValidationIssue[] = [];
+  if (catalog.kind === "conflict") conflictIssues.push(...catalog.issues);
+  for (const o of spine) {
+    if (o.klass === "CONFLICT") conflictIssues.push(...o.result.issues);
+  }
+  if (conflictIssues.length > 0) {
+    return { kind: "STOP_CONFLICT", reason: "ENTITY_CONFLICT", issues: conflictIssues };
   }
 
-  // 2) Vote over the non-vacuous areas (year/offering/groups always contribute).
-  const votes = outcomes.filter((o) => o.klass !== "VACUOUS").map((o) => o.klass);
-  if (votes.every((k) => k === "ABSENT")) return { kind: "INITIAL_APPLY_ALLOWED" };
-  if (votes.every((k) => k === "EXACT_REUSE")) return { kind: "EXACT_RERUN_NOOP" };
+  // catalog is "compatible" from here on: split requested keys into create/reuse.
+  const missingKeys = catalog.kind === "compatible"
+    ? catalog.dispositions.filter((d) => d.state === "missing").map((d) => d.key)
+    : [];
+  const reusableKeys = catalog.kind === "compatible"
+    ? catalog.dispositions.filter((d) => d.state === "reuse").map((d) => d.key)
+    : [];
 
-  // 3) A mixture of ABSENT and EXACT_REUSE is unsafe. Report only counts (no values).
-  const absentCount = outcomes.filter((o) => o.klass === "ABSENT").length;
-  const reuseCount = outcomes.filter((o) => o.klass === "EXACT_REUSE").length;
+  // 2) Spine consensus over the non-vacuous spine areas.
+  const votes = spine.filter((o) => o.klass !== "VACUOUS").map((o) => o.klass);
+  if (votes.every((k) => k === "ABSENT")) {
+    // Initial apply: the catalog may be missing and/or exactly reusable.
+    return { kind: "INITIAL_APPLY_ALLOWED", catalog: { missingKeys, reusableKeys } };
+  }
+  if (votes.every((k) => k === "EXACT_REUSE")) {
+    // A complete spine rerun requires the global catalog to be complete too.
+    if (missingKeys.length > 0) {
+      return {
+        kind: "STOP_CONFLICT",
+        reason: "CATALOG_INCOMPLETE_ON_RERUN",
+        issues: [
+          issue(
+            "capabilityCatalog",
+            "catalog.incompleteOnRerun",
+            "the course spine already exists but one or more requested catalog keys are missing; refuse to partially apply",
+          ),
+        ],
+      };
+    }
+    return { kind: "EXACT_RERUN_NOOP" };
+  }
+
+  // 3) A mixture of ABSENT and EXACT_REUSE spine areas is unsafe. Counts only.
+  const absentCount = spine.filter((o) => o.klass === "ABSENT").length;
+  const reuseCount = spine.filter((o) => o.klass === "EXACT_REUSE").length;
   return {
     kind: "STOP_CONFLICT",
     reason: "MIXED_ABSENT_AND_REUSE",
@@ -1137,7 +1262,7 @@ export function classifyAggregateBootstrapState(
       issue(
         "aggregate",
         "aggregate.mixed",
-        `structural state mixes absent (${absentCount}) and reusable (${reuseCount}) areas; refuse to partially apply`,
+        `course-instance spine mixes absent (${absentCount}) and reusable (${reuseCount}) areas; refuse to partially apply`,
       ),
     ],
   };

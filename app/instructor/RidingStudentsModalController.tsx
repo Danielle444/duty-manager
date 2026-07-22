@@ -487,7 +487,6 @@ export interface StudentEditorHandle {
 function StudentEditor({
   row,
   ridingSlotId,
-  instructorId,
   canEdit,
   students,
   switchOptions,
@@ -502,7 +501,6 @@ function StudentEditor({
 }: {
   row: RidingSlotStudentRow;
   ridingSlotId: string;
-  instructorId: string;
   canEdit: boolean;
   students: RidingStudentOption[];
   // Trainees from the same subgroup as the currently opened row only (see
@@ -576,7 +574,12 @@ function StudentEditor({
     const nextTaughtStudentIds = options?.overrideTaughtStudentIds ?? taughtStudentIds;
     startSaveTransition(async () => {
       const ratingHalfPoints = rating ? Number(rating) : null;
-      const result = await upsertRidingLessonNoteAsInstructor(instructorId, ridingSlotId, row.studentId, {
+      // RS-SEC-1I-W: the acting instructor is derived from the signed session
+      // server-side; this no longer passes instructorId. StudentEditor used its
+      // instructorId prop only for this note write, so that prop is dropped; the
+      // parent controller keeps its own instructorId for the complex-plan reads
+      // and the assignment-tier display, which are unaffected.
+      const result = await upsertRidingLessonNoteAsInstructor(ridingSlotId, row.studentId, {
         note,
         ratingHalfPoints,
         sessionHorseName,
@@ -1138,7 +1141,6 @@ export function RidingStudentsModalController({
               ref={studentEditorRef}
               row={editingStudent}
               ridingSlotId={openActivity!.ridingSlot!.id}
-              instructorId={instructorId}
               canEdit={canEdit}
               students={students}
               switchOptions={(slotStudents ?? [])

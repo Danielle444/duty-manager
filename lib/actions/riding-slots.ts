@@ -24,6 +24,7 @@ import {
   loadRidingSlotStudentNotesWithDeps,
   loadStudentRidingHistoryForInstructorWithDeps,
 } from "@/lib/actions/riding-slots-read-auth";
+import { upsertRidingLessonNoteWithDeps } from "@/lib/actions/riding-slots-write-auth";
 
 const NOT_FOUND_SCHEDULE_ITEM = 'פריט הלו"ז לא נמצא. נסי לרענן את העמוד.';
 const NOT_FOUND_RIDING_SLOT = "ניהול הרכיבה לא נמצא. נסי לרענן את העמוד.";
@@ -1020,22 +1021,20 @@ export interface RidingLessonNoteActionResult extends ActionResult {
   updatedAt?: string | null;
 }
 
-// Instructors have no NextAuth session in this app, so the permission check
-// re-reads canEditRidingNotes from the DB by instructorId on every call - it
-// never trusts a client-supplied boolean. This is the only gate; UI hiding
-// of edit controls is not relied upon. Viewing (getRidingSlotStudentNotes
-// above) has no such gate - matches the attendance pattern exactly.
-export async function upsertRidingLessonNoteAsInstructor(
-  instructorId: string,
+// RS-SEC-1I-W: private post-authorization note mutator - the existing
+// validate-then-upsert body, unchanged except that the authorship name now
+// arrives as an already-server-derived `updatedByName` parameter (never a
+// client value). Not exported, so it is never a client-callable "use server"
+// endpoint that could bypass the session gate in
+// upsertRidingLessonNoteAsInstructor below. Note identity/upsert stays keyed on
+// (ridingSlotId, studentId) - instructor identity is not part of note
+// uniqueness.
+async function writeRidingLessonNote(
   ridingSlotId: string,
   studentId: string,
-  input: RidingLessonNoteInput
+  input: RidingLessonNoteInput,
+  updatedByName: string
 ): Promise<RidingLessonNoteActionResult> {
-  const instructor = await prisma.instructor.findUnique({ where: { id: instructorId } });
-  if (!instructor || !instructor.isActive || !instructor.canEditRidingNotes) {
-    return { success: false, error: "אין הרשאה לערוך הערות הדרכת מתקדמים" };
-  }
-
   const ridingSlot = await prisma.ridingSlot.findUnique({ where: { id: ridingSlotId } });
   if (!ridingSlot) {
     return { success: false, error: NOT_FOUND_RIDING_SLOT };
@@ -1074,7 +1073,7 @@ export async function upsertRidingLessonNoteAsInstructor(
   const saved = await prisma.$transaction(async (tx) => {
     const savedNote = await tx.ridingLessonNote.upsert({
       where: { ridingSlotId_studentId: { ridingSlotId, studentId } },
-      update: { note, ratingHalfPoints, sessionHorseName, lessonTopic, updatedByName: instructor.fullName },
+      update: { note, ratingHalfPoints, sessionHorseName, lessonTopic, updatedByName },
       create: {
         ridingSlotId,
         studentId,
@@ -1082,7 +1081,7 @@ export async function upsertRidingLessonNoteAsInstructor(
         ratingHalfPoints,
         sessionHorseName,
         lessonTopic,
-        updatedByName: instructor.fullName,
+        updatedByName,
       },
     });
 
@@ -1103,6 +1102,33 @@ export async function upsertRidingLessonNoteAsInstructor(
 
   revalidatePath("/instructor");
   return { success: true, updatedByName: saved.updatedByName, updatedAt: saved.updatedAt.toISOString() };
+}
+
+// RS-SEC-1I-W: the acting instructor is now derived EXCLUSIVELY from the signed
+// session via the canonical Actor DAL (getCurrentInstructor). The public
+// signature no longer accepts an instructorId, so a caller can never select the
+// permission-bearing row, borrow another instructor's canEditRidingNotes, or
+// choose the persisted updatedByName. getCurrentInstructor returns null for every
+// unauthenticated/invalid/inactive/wrong-audience/subject-mismatched case (so the
+// active-status check is already enforced by the DAL), and a null actor OR an
+// actor whose canEditRidingNotes is false is rejected with the unchanged Hebrew
+// permission error BEFORE any slot/student read or the transaction (no DB write on
+// denial). Authorship (updatedByName) is the signed actor's fullName only. Note
+// identity/upsert (slot+student) is unchanged; no assignment-ownership or
+// CourseOffering check is introduced. ridingSlotId/studentId remain record
+// selectors only. The pure gate + delegation lives in ./riding-slots-write-auth
+// so it is unit-testable without a session or a database.
+export async function upsertRidingLessonNoteAsInstructor(
+  ridingSlotId: string,
+  studentId: string,
+  input: RidingLessonNoteInput
+): Promise<RidingLessonNoteActionResult> {
+  return upsertRidingLessonNoteWithDeps(
+    { getCurrentInstructor, writeNote: writeRidingLessonNote },
+    ridingSlotId,
+    studentId,
+    input
+  );
 }
 
 export interface RidingHistoryRow {

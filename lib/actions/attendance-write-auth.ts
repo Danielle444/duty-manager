@@ -33,12 +33,25 @@
  *    actor's fullName, never from client input.
  *
  * This stage protects WHO the instructor is and whether that instructor holds
- * the existing canEditAttendance permission. It deliberately does NOT add any
- * CourseOffering ATTENDANCE capability enforcement (ENABLED / READ_ONLY /
- * DISABLED) - that is a later stage (ATT-1).
+ * the existing canEditAttendance permission.
+ *
+ * ATT-3W EXTENSION: both write paths now carry an ADDITIONAL, later-ordered
+ * authorization condition — the current CourseOffering's ATTENDANCE capability
+ * must permit writes (canWrite === true). It is injected as
+ * `resolveAttendanceAccess` (a parameterless server-owned resolver whose real
+ * wiring is resolveCurrentAttendanceCapabilityAccess). It is a STRICT ADDITION:
+ * it runs ONLY AFTER the existing actor + canEditAttendance checks pass, so it
+ * never replaces or weakens them and is never consulted for a missing/invalid
+ * actor or an actor lacking canEditAttendance (that avoids needless capability
+ * work and guarantees the capability can never open an actor-level denial).
+ * READ_ONLY / DISABLED / any denied capability result yields the SAME unchanged
+ * permission error and the mutator is NEVER invoked; a resolver rejection
+ * (missing/ambiguous offering, or infrastructure failure) propagates unchanged
+ * and is never converted into allowed access.
  */
 import type { AttendanceInput, AttendanceActionResult } from "./attendance";
 import type { ActionResult } from "./students";
+import type { AttendanceCapabilityAccess } from "@/lib/course/capabilities/attendance-capability-policy-core";
 
 // The minimal server-derived actor shape each write path needs. Both are
 // structural subsets of InstructorActor (from lib/auth/actor-types), so the
@@ -71,6 +84,14 @@ const NO_PERMISSION_ERROR = "אין הרשאה לערוך נוכחות";
  */
 export interface InstructorAttendanceUpsertDeps {
   getCurrentInstructor: () => Promise<InstructorAttendanceWriteActor | null>;
+  /**
+   * ATT-3W: parameterless, server-owned current-offering ATTENDANCE capability
+   * resolver (real wiring: resolveCurrentAttendanceCapabilityAccess). Called
+   * ONLY after the actor + canEditAttendance checks pass; a rejection (missing/
+   * ambiguous offering or infrastructure failure) propagates and is never
+   * converted into allowed access.
+   */
+  resolveAttendanceAccess: () => Promise<AttendanceCapabilityAccess>;
   upsertRecord: (
     input: AttendanceInput,
     updatedByName: string,
@@ -86,10 +107,17 @@ export interface InstructorAttendanceUpsertDeps {
  * null actor (unauthenticated / invalid / inactive / wrong-audience) OR an actor
  * whose canEditAttendance is false is rejected with the unchanged permission
  * error and the mutator is NEVER invoked (so no DB write and no input
- * validation side effects occur on rejection). For an authorized actor the
- * mutator runs exactly as before - it performs the existing payload validation
- * and upsert - and authorship (updatedByName) is the actor's own fullName,
- * never a client-supplied value.
+ * validation side effects occur on rejection), and the capability resolver is
+ * NOT consulted (it can never open an actor-level denial).
+ *
+ * ATT-3W: only AFTER those actor checks pass is deps.resolveAttendanceAccess()
+ * called; the current CourseOffering's ATTENDANCE capability must yield
+ * canWrite === true. READ_ONLY / DISABLED / any denied capability result is
+ * rejected with the SAME unchanged permission error and the mutator is NEVER
+ * invoked; a resolver rejection propagates unchanged (never permissive). For an
+ * authorized actor whose offering permits writes the mutator runs exactly as
+ * before - it performs the existing payload validation and upsert - and
+ * authorship (updatedByName) is the actor's own fullName, never a client value.
  */
 export async function upsertInstructorAttendanceWithDeps(
   deps: InstructorAttendanceUpsertDeps,
@@ -97,6 +125,10 @@ export async function upsertInstructorAttendanceWithDeps(
 ): Promise<AttendanceActionResult> {
   const instructor = await deps.getCurrentInstructor();
   if (!instructor || !instructor.canEditAttendance) {
+    return { success: false, error: NO_PERMISSION_ERROR };
+  }
+  const access = await deps.resolveAttendanceAccess();
+  if (!access.canWrite) {
     return { success: false, error: NO_PERMISSION_ERROR };
   }
   return deps.upsertRecord(input, instructor.fullName);
@@ -111,6 +143,14 @@ export async function upsertInstructorAttendanceWithDeps(
  */
 export interface InstructorAttendanceClearDeps {
   getCurrentInstructor: () => Promise<InstructorAttendanceClearActor | null>;
+  /**
+   * ATT-3W: parameterless, server-owned current-offering ATTENDANCE capability
+   * resolver (real wiring: resolveCurrentAttendanceCapabilityAccess). Called
+   * ONLY after the actor + canEditAttendance checks pass; a rejection (missing/
+   * ambiguous offering or infrastructure failure) propagates and is never
+   * converted into allowed access.
+   */
+  resolveAttendanceAccess: () => Promise<AttendanceCapabilityAccess>;
   clearRecord: (
     studentId: string,
     dateKeyStr: string,
@@ -124,9 +164,16 @@ export interface InstructorAttendanceClearDeps {
  * Identity comes solely from deps.getCurrentInstructor(); there is no instructor
  * id parameter. A null actor OR an actor whose canEditAttendance is false is
  * rejected with the unchanged permission error and the mutator is NEVER invoked
- * (no DB delete). For an authorized actor the mutator runs exactly as before,
- * receiving the client-supplied target studentId + dateKey unchanged (the target
- * of the authorized operation, not actor identity).
+ * (no DB delete), and the capability resolver is NOT consulted.
+ *
+ * ATT-3W: only AFTER those actor checks pass is deps.resolveAttendanceAccess()
+ * called; the current CourseOffering's ATTENDANCE capability must yield
+ * canWrite === true. READ_ONLY / DISABLED / any denied capability result is
+ * rejected with the SAME unchanged permission error and the mutator is NEVER
+ * invoked; a resolver rejection propagates unchanged (never permissive). For an
+ * authorized actor whose offering permits writes the mutator runs exactly as
+ * before, receiving the client-supplied target studentId + dateKey unchanged
+ * (the target of the authorized operation, not actor identity).
  */
 export async function clearInstructorAttendanceWithDeps(
   deps: InstructorAttendanceClearDeps,
@@ -135,6 +182,10 @@ export async function clearInstructorAttendanceWithDeps(
 ): Promise<ActionResult> {
   const instructor = await deps.getCurrentInstructor();
   if (!instructor || !instructor.canEditAttendance) {
+    return { success: false, error: NO_PERMISSION_ERROR };
+  }
+  const access = await deps.resolveAttendanceAccess();
+  if (!access.canWrite) {
     return { success: false, error: NO_PERMISSION_ERROR };
   }
   return deps.clearRecord(studentId, dateKeyStr);

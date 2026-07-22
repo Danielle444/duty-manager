@@ -36,6 +36,7 @@ import {
   type InstructorAttendanceClearDeps,
 } from "./attendance-write-auth";
 import type { AttendanceInput, AttendanceActionResult } from "./attendance";
+import type { AttendanceCapabilityAccess } from "@/lib/course/capabilities/attendance-capability-policy-core";
 
 // --- fixtures ---------------------------------------------------------------
 
@@ -56,15 +57,53 @@ function sentinelUpsertResult(): AttendanceActionResult {
   return { success: true, row: undefined };
 }
 
+// --- ATT-3W capability access fixtures --------------------------------------
+// The exact shapes the ATT-1 policy / ATT-2 resolver produce, so the DI tests
+// exercise the real AttendanceCapabilityAccess contract (not an ad-hoc stub).
+
+function enabledAccess(): AttendanceCapabilityAccess {
+  return { status: "ENABLED", canView: true, canRead: true, canWrite: true, reason: "ENABLED" };
+}
+
+function readOnlyAccess(): AttendanceCapabilityAccess {
+  return { status: "READ_ONLY", canView: true, canRead: true, canWrite: false, reason: "READ_ONLY" };
+}
+
+function disabledAccess(): AttendanceCapabilityAccess {
+  return { status: "DISABLED", canView: false, canRead: false, canWrite: false, reason: "DISABLED" };
+}
+
+function deniedMissingContextAccess(): AttendanceCapabilityAccess {
+  return { status: null, canView: false, canRead: false, canWrite: false, reason: "DENIED_MISSING_CONTEXT" };
+}
+
+function deniedUnknownStatusAccess(): AttendanceCapabilityAccess {
+  return { status: null, canView: false, canRead: false, canWrite: false, reason: "DENIED_UNKNOWN_STATUS" };
+}
+
+// A resolveAttendanceAccess that MUST NOT be called (actor-level denial paths):
+// invoking it fails the test, proving the capability layer is never consulted
+// for a missing/invalid actor or an actor lacking canEditAttendance.
+function accessResolverThatMustNotBeCalled(): () => Promise<AttendanceCapabilityAccess> {
+  return async () => {
+    throw new Error("resolveAttendanceAccess must not be called after an actor-level denial");
+  };
+}
+
 // ===========================================================================
 // upsertInstructorAttendanceWithDeps
 // ===========================================================================
 
-test("upsert: authenticated active instructor with canEditAttendance performs the same mutation", async () => {
+test("upsert: authenticated active instructor with canEditAttendance + ENABLED performs the same mutation", async () => {
   let mutatorArgs: [AttendanceInput, string] | null = null;
+  let accessCalls = 0;
   const sentinel = sentinelUpsertResult();
   const deps: InstructorAttendanceUpsertDeps = {
     getCurrentInstructor: async () => ({ canEditAttendance: true, fullName: "Dana Instructor" }),
+    resolveAttendanceAccess: async () => {
+      accessCalls++;
+      return enabledAccess();
+    },
     upsertRecord: async (input, updatedByName) => {
       mutatorArgs = [input, updatedByName];
       return sentinel;
@@ -74,16 +113,111 @@ test("upsert: authenticated active instructor with canEditAttendance performs th
   const result = await upsertInstructorAttendanceWithDeps(deps, SAMPLE_INPUT);
 
   assert.equal(result, sentinel, "returns the mutator's result unchanged");
+  assert.equal(accessCalls, 1, "the capability resolver is called exactly once for an authorized actor");
   assert.ok(mutatorArgs, "mutator was invoked");
   assert.equal(mutatorArgs![0], SAMPLE_INPUT, "the exact attendance target/payload is forwarded");
   // Authorship is the SERVER-derived actor's fullName - never a client value.
   assert.equal(mutatorArgs![1], "Dana Instructor", "authorship is the server-derived actor's fullName");
 });
 
-test("upsert: unauthenticated access is rejected and performs no DB write", async () => {
+test("upsert: authorized actor + READ_ONLY capability denies the write, mutator not called", async () => {
+  let mutatorCalled = false;
+  const deps: InstructorAttendanceUpsertDeps = {
+    getCurrentInstructor: async () => ({ canEditAttendance: true, fullName: "Dana Instructor" }),
+    resolveAttendanceAccess: async () => readOnlyAccess(),
+    upsertRecord: async () => {
+      mutatorCalled = true;
+      return sentinelUpsertResult();
+    },
+  };
+
+  const result = await upsertInstructorAttendanceWithDeps(deps, SAMPLE_INPUT);
+
+  assert.deepEqual(result, { success: false, error: NO_PERMISSION_ERROR }, "safe permission denial returned");
+  assert.equal(mutatorCalled, false, "READ_ONLY blocks the write through this offering");
+});
+
+test("upsert: authorized actor + DISABLED capability denies the write, mutator not called", async () => {
+  let mutatorCalled = false;
+  const deps: InstructorAttendanceUpsertDeps = {
+    getCurrentInstructor: async () => ({ canEditAttendance: true, fullName: "Dana Instructor" }),
+    resolveAttendanceAccess: async () => disabledAccess(),
+    upsertRecord: async () => {
+      mutatorCalled = true;
+      return sentinelUpsertResult();
+    },
+  };
+
+  const result = await upsertInstructorAttendanceWithDeps(deps, SAMPLE_INPUT);
+
+  assert.deepEqual(result, { success: false, error: NO_PERMISSION_ERROR }, "safe permission denial returned");
+  assert.equal(mutatorCalled, false);
+});
+
+test("upsert: a denied capability result (DENIED_MISSING_CONTEXT / DENIED_UNKNOWN_STATUS) denies the write", async () => {
+  for (const access of [deniedMissingContextAccess(), deniedUnknownStatusAccess()]) {
+    let mutatorCalled = false;
+    const deps: InstructorAttendanceUpsertDeps = {
+      getCurrentInstructor: async () => ({ canEditAttendance: true, fullName: "Dana Instructor" }),
+      resolveAttendanceAccess: async () => access,
+      upsertRecord: async () => {
+        mutatorCalled = true;
+        return sentinelUpsertResult();
+      },
+    };
+
+    const result = await upsertInstructorAttendanceWithDeps(deps, SAMPLE_INPUT);
+
+    assert.deepEqual(result, { success: false, error: NO_PERMISSION_ERROR }, `${access.reason} yields a safe denial`);
+    assert.equal(mutatorCalled, false, `${access.reason} never reaches the mutator`);
+  }
+});
+
+test("upsert: a rejecting capability resolver propagates and the mutator is not called (no permissive fall-through)", async () => {
+  let mutatorCalled = false;
+  const boom = new Error("capability loader / offering resolution failed");
+  const deps: InstructorAttendanceUpsertDeps = {
+    getCurrentInstructor: async () => ({ canEditAttendance: true, fullName: "Dana Instructor" }),
+    resolveAttendanceAccess: async () => {
+      throw boom;
+    },
+    upsertRecord: async () => {
+      mutatorCalled = true;
+      return sentinelUpsertResult();
+    },
+  };
+
+  await assert.rejects(
+    () => upsertInstructorAttendanceWithDeps(deps, SAMPLE_INPUT),
+    (err) => err === boom,
+    "the resolver rejection propagates unchanged - never converted into allowed access",
+  );
+  assert.equal(mutatorCalled, false, "an infrastructure failure never opens the write");
+});
+
+test("upsert: mutation errors after full authorization follow existing behavior (propagate)", async () => {
+  const boom = new Error("db upsert failed");
+  const deps: InstructorAttendanceUpsertDeps = {
+    getCurrentInstructor: async () => ({ canEditAttendance: true, fullName: "Dana Instructor" }),
+    resolveAttendanceAccess: async () => enabledAccess(),
+    upsertRecord: async () => {
+      throw boom;
+    },
+  };
+
+  await assert.rejects(
+    () => upsertInstructorAttendanceWithDeps(deps, SAMPLE_INPUT),
+    (err) => err === boom,
+    "once fully authorized, a mutator error is unchanged by ATT-3W",
+  );
+});
+
+test("upsert: unauthenticated access is rejected, no DB write, capability resolver not called", async () => {
   let mutatorCalled = false;
   const deps: InstructorAttendanceUpsertDeps = {
     getCurrentInstructor: async () => null,
+    // Proves the capability layer is never consulted for a missing actor.
+    resolveAttendanceAccess: accessResolverThatMustNotBeCalled(),
     upsertRecord: async () => {
       mutatorCalled = true;
       return sentinelUpsertResult();
@@ -104,6 +238,7 @@ test("upsert: inactive/invalid instructor (canonical null actor) fails closed", 
   let mutatorCalled = false;
   const deps: InstructorAttendanceUpsertDeps = {
     getCurrentInstructor: async () => null,
+    resolveAttendanceAccess: accessResolverThatMustNotBeCalled(),
     upsertRecord: async () => {
       mutatorCalled = true;
       return sentinelUpsertResult();
@@ -116,10 +251,12 @@ test("upsert: inactive/invalid instructor (canonical null actor) fails closed", 
   assert.equal(mutatorCalled, false);
 });
 
-test("upsert: authenticated instructor with canEditAttendance=false is rejected, no DB write", async () => {
+test("upsert: authenticated instructor with canEditAttendance=false is rejected, no DB write, capability not called", async () => {
   let mutatorCalled = false;
   const deps: InstructorAttendanceUpsertDeps = {
     getCurrentInstructor: async () => ({ canEditAttendance: false, fullName: "No Perm" }),
+    // A capability that WOULD permit writes must not rescue an actor-level denial.
+    resolveAttendanceAccess: accessResolverThatMustNotBeCalled(),
     upsertRecord: async () => {
       mutatorCalled = true;
       return sentinelUpsertResult();
@@ -139,6 +276,7 @@ test("upsert: even malformed input never reaches the mutator when unauthorized",
   let mutatorCalled = false;
   const deps: InstructorAttendanceUpsertDeps = {
     getCurrentInstructor: async () => null,
+    resolveAttendanceAccess: accessResolverThatMustNotBeCalled(),
     upsertRecord: async () => {
       mutatorCalled = true;
       return sentinelUpsertResult();
@@ -157,6 +295,7 @@ test("upsert: caller cannot select or impersonate another instructor (no id para
   let observedAuthor: string | null = null;
   const deps: InstructorAttendanceUpsertDeps = {
     getCurrentInstructor: async () => ({ canEditAttendance: true, fullName: "real-actor" }),
+    resolveAttendanceAccess: async () => enabledAccess(),
     upsertRecord: async (_input, updatedByName) => {
       observedAuthor = updatedByName;
       return sentinelUpsertResult();
@@ -178,11 +317,16 @@ test("upsert: caller cannot select or impersonate another instructor (no id para
 // clearInstructorAttendanceWithDeps
 // ===========================================================================
 
-test("clear: authenticated active instructor with canEditAttendance clears as before", async () => {
+test("clear: authenticated active instructor with canEditAttendance + ENABLED clears as before", async () => {
   let clearArgs: [string, string] | null = null;
+  let accessCalls = 0;
   const sentinel = { success: true } as const;
   const deps: InstructorAttendanceClearDeps = {
     getCurrentInstructor: async () => ({ canEditAttendance: true }),
+    resolveAttendanceAccess: async () => {
+      accessCalls++;
+      return enabledAccess();
+    },
     clearRecord: async (studentId, dateKeyStr) => {
       clearArgs = [studentId, dateKeyStr];
       return sentinel;
@@ -192,13 +336,107 @@ test("clear: authenticated active instructor with canEditAttendance clears as be
   const result = await clearInstructorAttendanceWithDeps(deps, "student-9", "2026-07-05");
 
   assert.equal(result, sentinel, "returns the mutator's result unchanged");
+  assert.equal(accessCalls, 1, "the capability resolver is called exactly once for an authorized actor");
   assert.deepEqual(clearArgs, ["student-9", "2026-07-05"], "the exact target + date reach the mutator unchanged");
 });
 
-test("clear: unauthenticated access is rejected with no DB delete", async () => {
+test("clear: authorized actor + READ_ONLY capability denies the clear, mutator not called", async () => {
+  let clearCalled = false;
+  const deps: InstructorAttendanceClearDeps = {
+    getCurrentInstructor: async () => ({ canEditAttendance: true }),
+    resolveAttendanceAccess: async () => readOnlyAccess(),
+    clearRecord: async () => {
+      clearCalled = true;
+      return { success: true };
+    },
+  };
+
+  const result = await clearInstructorAttendanceWithDeps(deps, "student-9", "2026-07-05");
+
+  assert.deepEqual(result, { success: false, error: NO_PERMISSION_ERROR }, "safe permission denial returned");
+  assert.equal(clearCalled, false);
+});
+
+test("clear: authorized actor + DISABLED capability denies the clear, mutator not called", async () => {
+  let clearCalled = false;
+  const deps: InstructorAttendanceClearDeps = {
+    getCurrentInstructor: async () => ({ canEditAttendance: true }),
+    resolveAttendanceAccess: async () => disabledAccess(),
+    clearRecord: async () => {
+      clearCalled = true;
+      return { success: true };
+    },
+  };
+
+  const result = await clearInstructorAttendanceWithDeps(deps, "student-9", "2026-07-05");
+
+  assert.deepEqual(result, { success: false, error: NO_PERMISSION_ERROR }, "safe permission denial returned");
+  assert.equal(clearCalled, false);
+});
+
+test("clear: a denied capability result (DENIED_MISSING_CONTEXT / DENIED_UNKNOWN_STATUS) denies the clear", async () => {
+  for (const access of [deniedMissingContextAccess(), deniedUnknownStatusAccess()]) {
+    let clearCalled = false;
+    const deps: InstructorAttendanceClearDeps = {
+      getCurrentInstructor: async () => ({ canEditAttendance: true }),
+      resolveAttendanceAccess: async () => access,
+      clearRecord: async () => {
+        clearCalled = true;
+        return { success: true };
+      },
+    };
+
+    const result = await clearInstructorAttendanceWithDeps(deps, "student-9", "2026-07-05");
+
+    assert.deepEqual(result, { success: false, error: NO_PERMISSION_ERROR }, `${access.reason} yields a safe denial`);
+    assert.equal(clearCalled, false, `${access.reason} never reaches the mutator`);
+  }
+});
+
+test("clear: a rejecting capability resolver propagates and the mutator is not called (no permissive fall-through)", async () => {
+  let clearCalled = false;
+  const boom = new Error("capability loader / offering resolution failed");
+  const deps: InstructorAttendanceClearDeps = {
+    getCurrentInstructor: async () => ({ canEditAttendance: true }),
+    resolveAttendanceAccess: async () => {
+      throw boom;
+    },
+    clearRecord: async () => {
+      clearCalled = true;
+      return { success: true };
+    },
+  };
+
+  await assert.rejects(
+    () => clearInstructorAttendanceWithDeps(deps, "student-9", "2026-07-05"),
+    (err) => err === boom,
+    "the resolver rejection propagates unchanged - never converted into allowed access",
+  );
+  assert.equal(clearCalled, false, "an infrastructure failure never opens the delete");
+});
+
+test("clear: mutation errors after full authorization follow existing behavior (propagate)", async () => {
+  const boom = new Error("db delete failed");
+  const deps: InstructorAttendanceClearDeps = {
+    getCurrentInstructor: async () => ({ canEditAttendance: true }),
+    resolveAttendanceAccess: async () => enabledAccess(),
+    clearRecord: async () => {
+      throw boom;
+    },
+  };
+
+  await assert.rejects(
+    () => clearInstructorAttendanceWithDeps(deps, "student-9", "2026-07-05"),
+    (err) => err === boom,
+    "once fully authorized, a mutator error is unchanged by ATT-3W",
+  );
+});
+
+test("clear: unauthenticated access is rejected with no DB delete, capability resolver not called", async () => {
   let clearCalled = false;
   const deps: InstructorAttendanceClearDeps = {
     getCurrentInstructor: async () => null,
+    resolveAttendanceAccess: accessResolverThatMustNotBeCalled(),
     clearRecord: async () => {
       clearCalled = true;
       return { success: true };
@@ -211,10 +449,11 @@ test("clear: unauthenticated access is rejected with no DB delete", async () => 
   assert.equal(clearCalled, false, "the delete mutator is never invoked");
 });
 
-test("clear: canEditAttendance=false is rejected with no DB delete", async () => {
+test("clear: canEditAttendance=false is rejected with no DB delete, capability not called", async () => {
   let clearCalled = false;
   const deps: InstructorAttendanceClearDeps = {
     getCurrentInstructor: async () => ({ canEditAttendance: false }),
+    resolveAttendanceAccess: accessResolverThatMustNotBeCalled(),
     clearRecord: async () => {
       clearCalled = true;
       return { success: true };
@@ -231,6 +470,7 @@ test("clear: caller cannot select or impersonate another instructor (no id param
   let observedTarget: string | null = null;
   const deps: InstructorAttendanceClearDeps = {
     getCurrentInstructor: async () => ({ canEditAttendance: true }),
+    resolveAttendanceAccess: async () => enabledAccess(),
     clearRecord: async (studentId) => {
       observedTarget = studentId;
       return { success: true };

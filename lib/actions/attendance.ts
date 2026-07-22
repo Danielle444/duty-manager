@@ -16,6 +16,7 @@ import {
   upsertInstructorAttendanceWithDeps,
   clearInstructorAttendanceWithDeps,
 } from "@/lib/actions/attendance-write-auth";
+import { resolveCurrentAttendanceCapabilityAccess } from "@/lib/course/capabilities/current-attendance-capability";
 import type { ActionResult } from "@/lib/actions/students";
 
 const attendanceStatusSchema = z.enum(["PRESENT", "ABSENT", "PARTIAL"]);
@@ -386,12 +387,21 @@ export async function upsertAttendanceAsAdmin(input: AttendanceInput): Promise<A
 // payload validation + upsert (and its unchanged success/error contract) run
 // only for an authorized actor. The pure gate + delegation lives in
 // ./attendance-write-auth so it is unit-testable without a session or database.
-// This stage does NOT add CourseOffering ATTENDANCE capability enforcement.
+// ATT-3W: the write now ALSO requires the current CourseOffering's ATTENDANCE
+// capability to permit writes (canWrite === true), injected as the parameterless
+// server-owned resolveCurrentAttendanceCapabilityAccess. It is an ADDITIONAL
+// restriction checked only AFTER the actor + canEditAttendance gate, so it never
+// weakens the existing actor authorization and no client-supplied offering
+// identity is accepted.
 export async function upsertAttendanceAsInstructor(
   input: AttendanceInput
 ): Promise<AttendanceActionResult> {
   return upsertInstructorAttendanceWithDeps(
-    { getCurrentInstructor, upsertRecord: upsertAttendanceRecord },
+    {
+      getCurrentInstructor,
+      resolveAttendanceAccess: resolveCurrentAttendanceCapabilityAccess,
+      upsertRecord: upsertAttendanceRecord,
+    },
     input
   );
 }
@@ -449,14 +459,23 @@ async function clearAttendanceRecord(
 // or an actor whose canEditAttendance is false is rejected before any delete.
 // studentId/dateKeyStr remain the client-supplied TARGET of the authorized
 // clear (not actor identity) and are passed through unchanged. The pure gate +
-// delegation lives in ./attendance-write-auth. This stage does NOT add
-// CourseOffering ATTENDANCE capability enforcement.
+// delegation lives in ./attendance-write-auth. ATT-3W: the clear now ALSO
+// requires the current CourseOffering's ATTENDANCE capability to permit writes
+// (canWrite === true), injected as the parameterless server-owned
+// resolveCurrentAttendanceCapabilityAccess - an ADDITIONAL restriction checked
+// only AFTER the actor + canEditAttendance gate, so it never weakens the
+// existing actor authorization and no client-supplied offering identity is
+// accepted.
 export async function clearAttendanceAsInstructor(
   studentId: string,
   dateKeyStr: string
 ): Promise<ActionResult> {
   return clearInstructorAttendanceWithDeps(
-    { getCurrentInstructor, clearRecord: clearAttendanceRecord },
+    {
+      getCurrentInstructor,
+      resolveAttendanceAccess: resolveCurrentAttendanceCapabilityAccess,
+      clearRecord: clearAttendanceRecord,
+    },
     studentId,
     dateKeyStr
   );

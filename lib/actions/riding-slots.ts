@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { Prisma } from "@/app/generated/prisma/client";
 import { revalidatePath } from "next/cache";
 import { requireAdmin } from "@/lib/auth/require-admin";
+import { getCurrentInstructor } from "@/lib/auth/actor";
 import { dateKey, parseDateKey } from "@/lib/dates";
 import { buildScheduleSlots } from "@/lib/schedule-grouping";
 import { getHorseDisplayInfo } from "@/lib/horse-info";
@@ -18,6 +19,11 @@ import {
   getAssignmentInstructors,
   formatInstructorNames,
 } from "@/lib/riding-assignment-matching";
+import {
+  loadInstructorRidingSlotsWithDeps,
+  loadRidingSlotStudentNotesWithDeps,
+  loadStudentRidingHistoryForInstructorWithDeps,
+} from "@/lib/actions/riding-slots-read-auth";
 
 const NOT_FOUND_SCHEDULE_ITEM = 'פריט הלו"ז לא נמצא. נסי לרענן את העמוד.';
 const NOT_FOUND_RIDING_SLOT = "ניהול הרכיבה לא נמצא. נסי לרענן את העמוד.";
@@ -594,18 +600,20 @@ export async function getWeeklyRidingOverview(weeklyScheduleId: string): Promise
   return days;
 }
 
-// Instructors have no NextAuth session in this app - viewing riding slots is
-// intentionally unrestricted here, mirroring getAttendanceTrackingForInstructor
-// / getDutyAssignmentsForInstructor. Takes a plain date range (not a specific
-// WeeklySchedule id) since the instructor screen has its own day/week picker,
-// independent of any single uploaded schedule.
+// Private reader body - the actual date-range query, unchanged. Wrapped by the
+// authenticated getInstructorRidingSlots below and never called directly by a
+// client (not exported), so the session gate can never be bypassed.
+//
+// Takes a plain date range (not a specific WeeklySchedule id) since the
+// instructor screen has its own day/week picker, independent of any single
+// uploaded schedule.
 //
 // Operational view, not a setup view: unlike getWeeklyRidingOverview (which
 // admin uses to find/mark candidate activities and deliberately includes
 // every schedule item), this only ever returns activities that already have
 // a RidingSlot - an instructor's "כל הרכיבות" must mean "all riding slots
 // admin has defined," never "the entire weekly timetable."
-export async function getInstructorRidingSlots(
+async function buildInstructorRidingSlots(
   startDateKey: string,
   endDateKey: string
 ): Promise<WeeklyRidingDay[]> {
@@ -637,6 +645,32 @@ export async function getInstructorRidingSlots(
   }
 
   return days;
+}
+
+// RS-SEC-1IR: the instructor riding-slots read is now gated on a trustworthy
+// server-derived instructor actor via the canonical Actor DAL
+// (getCurrentInstructor) - it accepts NO client actor identity (it never took an
+// instructorId) and no longer relies on the parent page having authenticated the
+// caller. A missing/invalid/inactive/wrong-audience/subject-mismatched session
+// yields a null actor and this fails closed to [] (the same fail-closed
+// convention as getAttendanceTrackingForInstructor), so an unauthenticated caller
+// or a trainee/wrong-role actor receives nothing and buildInstructorRidingSlots
+// is never invoked. Viewing is intentionally NOT gated on canEditRidingNotes
+// (that flag gates editing only), so every active instructor keeps the committed
+// "all instructors may view" behaviour, and the returned DTO + date-range query
+// are unchanged for a valid active instructor. NO permission / ATTENDANCE
+// capability / offering / assigned-instructor restriction is added. The pure gate
+// + delegation lives in ./riding-slots-read-auth so it is unit-testable without a
+// session or a database.
+export async function getInstructorRidingSlots(
+  startDateKey: string,
+  endDateKey: string
+): Promise<WeeklyRidingDay[]> {
+  return loadInstructorRidingSlotsWithDeps(
+    { getCurrentInstructor, readSlots: buildInstructorRidingSlots },
+    startDateKey,
+    endDateKey
+  );
 }
 
 const bulkAssignmentInputSchema = z.object({
@@ -866,9 +900,11 @@ export interface RidingSlotStudentRow {
   attendanceNotes: string | null;
 }
 
-// Read-only, unrestricted view (same "all instructors can view" convention
-// as the riding slot itself) - never creates anything. Derives which
-// students are "relevant" to this slot from its own assignment splits:
+// Private reader body - the roster + note + attendance read, unchanged. Wrapped
+// by the authenticated getRidingSlotStudentNotes below (never exported, so the
+// session gate can never be bypassed). Read-only - never creates anything.
+// Derives which students are "relevant" to this slot from its own assignment
+// splits:
 // - a (groupName, subgroupNumber) split -> students matching both fields.
 // - a (groupName, null) split -> students matching that group, any subgroup.
 // - a whole-slot split (null, null), or no assignments at all yet -> falls
@@ -877,7 +913,7 @@ export interface RidingSlotStudentRow {
 //   (a "שתי הקבוצות" activity) - matching how the item is actually displayed.
 // Multiple splits are unioned (a student matching more than one split still
 // appears once - Prisma OR against one table never duplicates rows).
-export async function getRidingSlotStudentNotes(ridingSlotId: string): Promise<RidingSlotStudentRow[]> {
+async function buildRidingSlotStudentNotes(ridingSlotId: string): Promise<RidingSlotStudentRow[]> {
   const slot = await prisma.ridingSlot.findUnique({
     where: { id: ridingSlotId },
     include: {
@@ -943,6 +979,29 @@ export async function getRidingSlotStudentNotes(ridingSlotId: string): Promise<R
       attendanceNotes: attendance?.notes ?? null,
     };
   });
+}
+
+// RS-SEC-1IR: the per-slot student-notes read is now gated on a trustworthy
+// server-derived instructor actor via the canonical Actor DAL
+// (getCurrentInstructor). ridingSlotId stays a record selector only; no client
+// actor identity is accepted. A missing/invalid/inactive/wrong-audience session
+// (or a thrown actor resolution) fails closed to [] and NO Prisma/attendance
+// query runs - so an unauthenticated caller or a trainee/wrong-role actor can no
+// longer read per-trainee riding notes/ratings/horses/lesson-topics/taught-
+// trainees or the attendance-derived status/time/notes. Viewing is intentionally
+// NOT gated on canEditRidingNotes (edit-only flag). The attendance-derived data
+// is an internal operational business rule and is deliberately NOT governed by
+// the ATTENDANCE capability; StudentAttendance queries/semantics are unchanged,
+// and no slot-assignment ownership is added. For a valid active instructor the
+// returned DTO is exactly as before. The pure gate lives in
+// ./riding-slots-read-auth.
+export async function getRidingSlotStudentNotes(
+  ridingSlotId: string
+): Promise<RidingSlotStudentRow[]> {
+  return loadRidingSlotStudentNotesWithDeps(
+    { getCurrentInstructor, readNotes: buildRidingSlotStudentNotes },
+    ridingSlotId
+  );
 }
 
 export interface RidingLessonNoteInput {
@@ -1219,18 +1278,28 @@ export async function getStudentRidingHistoryForAdmin(
   return buildStudentRidingHistory(studentId);
 }
 
-// Unrestricted view - matches the existing "all instructors can view"
-// convention (attendance, riding slots). Never called from student-facing
-// code; students must not see notes/ratings at all. Used by
-// InstructorRidingSlotsSection.tsx's own "צפייה בחניכים" flow - left
-// completely unchanged (same unrestricted contract) rather than tightened,
-// since that existing caller relies on it; see
-// getStudentRidingHistoryForInstructorTraineeProgress below for the
-// authorized wrapper the trainee-progress detail view uses instead.
+// RS-SEC-1IR: instructor-view student riding history, now gated on a trustworthy
+// server-derived instructor actor via the canonical Actor DAL
+// (getCurrentInstructor). studentId is the TARGET record selector only, never
+// actor identity, and no client instructor identity is accepted. A missing/
+// invalid/inactive/wrong-audience session (or a thrown actor resolution) fails
+// closed to null (this reader's established empty result) and the history builder
+// is NEVER invoked - so an unauthenticated caller or a trainee/wrong-role actor
+// can no longer read a trainee's riding notes/ratings history. Viewing is
+// intentionally NOT gated on canEditRidingNotes; this does NOT route through the
+// trainee-progress permission reader and adds no permission/capability/assignment/
+// group/offering restriction. Students are still never shown notes/ratings (no
+// student-facing caller). Used by InstructorRidingSlotsSection.tsx's "צפייה
+// בחניכים" flow; the separate getStudentRidingHistoryForInstructorTraineeProgress
+// (its own permission gate) is unchanged. The pure gate lives in
+// ./riding-slots-read-auth.
 export async function getStudentRidingHistoryForInstructor(
   studentId: string
 ): Promise<StudentRidingHistoryResult | null> {
-  return buildStudentRidingHistory(studentId);
+  return loadStudentRidingHistoryForInstructorWithDeps(
+    { getCurrentInstructor, readHistory: buildStudentRidingHistory },
+    studentId
+  );
 }
 
 // Authorized counterpart used ONLY by the instructor trainee-progress

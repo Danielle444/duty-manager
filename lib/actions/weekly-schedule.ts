@@ -588,6 +588,10 @@ export interface CommitWeeklyScheduleResult {
 export async function commitWeeklySchedule(
   input: CommitWeeklyScheduleInput
 ): Promise<CommitWeeklyScheduleResult> {
+  // Fail-closed admin gate before any validation, Prisma read/write, or
+  // revalidation: this action can create a week and destructively replace all
+  // ScheduleItem rows for a client-supplied weeklyScheduleId.
+  await requireAdmin();
   if (!input.name.trim() || !input.startDate || !input.endDate) {
     return {
       success: false,
@@ -649,6 +653,9 @@ export async function commitWeeklySchedule(
 }
 
 export async function deleteWeeklySchedule(weeklyScheduleId: string): Promise<ActionResult> {
+  // Fail-closed admin gate before the delete: this cascades to the week's
+  // ScheduleItem rows and their riding/weekly-feedback descendants.
+  await requireAdmin();
   await prisma.weeklySchedule.delete({ where: { id: weeklyScheduleId } });
   revalidatePath("/admin/weekly-schedule");
   revalidatePath("/student");
@@ -768,6 +775,10 @@ export async function suggestDayPlanFromSchedule(
 export async function confirmDayPlanSuggestions(
   selections: DayPlanSuggestion[]
 ): Promise<ActionResult> {
+  // Defense in depth: gate here before delegating to setCourseDayPlan (which
+  // enforces its own gate too). Both are independently invocable Server Actions,
+  // so neither may rely on the other having checked.
+  await requireAdmin();
   for (const s of selections) {
     await setCourseDayPlan(s.dateKey, {
       firstMorningGroup: s.firstMorningGroup,

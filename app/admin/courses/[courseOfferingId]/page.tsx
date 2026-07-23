@@ -68,6 +68,7 @@ export default async function CourseDashboardPage({
   }
 
   const groupsHref = `/admin/courses/${encodeURIComponent(context.id)}/groups`;
+  const enrollmentsHref = `/admin/courses/${encodeURIComponent(context.id)}/enrollments`;
 
   // The rename affordance is shown only when a name change is permitted for this
   // offering's status (OFFERING_METADATA_UPDATE: PLANNED/ACTIVE, not ARCHIVED).
@@ -124,6 +125,16 @@ export default async function CourseDashboardPage({
         <h3 className="text-base font-semibold text-card-foreground">קבוצות</h3>
         <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
           מבנה הקבוצות והתת-קבוצות של הקורס, לקריאה בלבד.
+        </p>
+      </Link>
+
+      <Link
+        href={enrollmentsHref}
+        className="rounded-xl border border-border bg-card p-5 transition-colors hover:bg-muted"
+      >
+        <h3 className="text-base font-semibold text-card-foreground">חניכים בקורס</h3>
+        <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+          רישום חניך קיים אחד לקורס ושיוכו לתת־קבוצה, וצפייה בחניכים הרשומים.
         </p>
       </Link>
 

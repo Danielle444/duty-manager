@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { StudentsClient } from "@/app/admin/students/StudentsClient";
 import { requireAdmin } from "@/lib/auth/require-admin";
 import { dateKey } from "@/lib/dates";
+import { listStudentsWithCourseAffiliationsForAdmin } from "@/lib/course/trainee-affiliations";
 import { resolveCurrentCourseOffering } from "@/lib/course/current-offering";
 import { isKnownCurrentOfferingError } from "@/lib/course/create-trainee-enrollment-core";
 import {
@@ -18,10 +19,13 @@ const GROUP_CHANGE_UNAVAILABLE_MESSAGE =
 
 export default async function StudentsPage() {
   await requireAdmin();
+  // A2: the trainee list is now read through the committed A1 affiliation
+  // reader (Student -> CourseEnrollment -> CourseOffering), which is the single
+  // authoritative trainee-list read path. There is deliberately NO fallback to a
+  // bare prisma.student.findMany: a data-contract failure must surface, not be
+  // silently masked with an unscoped, affiliation-less list.
   const [students, presets, courseSettings] = await Promise.all([
-    prisma.student.findMany({
-      orderBy: [{ isActive: "desc" }, { fullName: "asc" }],
-    }),
+    listStudentsWithCourseAffiliationsForAdmin(),
     prisma.availabilityRangePreset.findMany({ orderBy: { startDate: "asc" } }),
     prisma.courseSettings.findUnique({ where: { id: 1 } }),
   ]);
@@ -73,6 +77,9 @@ export default async function StudentsPage() {
           identityNumber: s.identityNumber,
           phone: s.phone,
           isActive: s.isActive,
+          // A2: pass the derived affiliation summary straight through - the
+          // client renders the badges from it and never recomputes affiliation.
+          affiliation: s.affiliation,
         }))}
         presets={presets.map((p) => ({ id: p.id, name: p.name }))}
         courseRange={

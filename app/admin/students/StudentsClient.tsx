@@ -11,6 +11,8 @@ import {
   updateStudent,
 } from "@/lib/actions/students";
 import type { GroupChangeOption } from "@/lib/course/group-change-options";
+import type { TraineeAffiliationSummary } from "@/lib/course/trainee-affiliations";
+import { NO_COURSE_LABEL } from "@/lib/course/trainee-affiliations-core";
 import { validateCreateTraineeForm } from "@/lib/course/create-trainee-form";
 import { setStudentAvailabilityScheme } from "@/lib/actions/availability";
 import { maskIdentityNumber } from "@/lib/format";
@@ -28,6 +30,10 @@ interface StudentRow {
   identityNumber: string;
   phone: string | null;
   isActive: boolean;
+  // A2: the derived, read-only course-affiliation summary from the committed A1
+  // core. The badges render ONLY from this - the component never recomputes
+  // affiliation and never inspects groupName/subgroupNumber to derive a course.
+  affiliation: TraineeAffiliationSummary;
 }
 
 interface PresetOption {
@@ -117,6 +123,38 @@ function comparatorForSortMode(mode: SortMode): (a: StudentRow, b: StudentRow) =
   if (mode === "group-subgroup") return compareByGroupThenSubgroup;
   if (mode === "subgroup-name") return compareBySubgroupThenName;
   return compareByName;
+}
+
+// A2: compact, read-only course-affiliation badges for one trainee row. Renders
+// STRICTLY from the A1 affiliation summary: one `רמה N` pill per visible
+// affiliation (ACTIVE enrollment into a non-ARCHIVED offering, already filtered
+// and deduped by the reader/core), keyed by courseOfferingId, with the full
+// offering name in the title/tooltip. When there is no visible active course it
+// shows a single neutral `ללא קורס` pill - never an error, never hidden. This is
+// display-only: no editing control, no group/subgroup shown, no recomputation.
+function CourseAffiliationBadges({ affiliation }: { affiliation: TraineeAffiliationSummary }) {
+  return (
+    <div className="flex flex-wrap gap-1">
+      {affiliation.hasNoActiveCourse ? (
+        <span
+          className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
+          title="אין שיוך לקורס פעיל"
+        >
+          {NO_COURSE_LABEL}
+        </span>
+      ) : (
+        affiliation.visibleAffiliations.map((aff) => (
+          <span
+            key={aff.courseOfferingId}
+            title={aff.name}
+            className="rounded-full bg-secondary px-2 py-0.5 text-xs font-medium text-secondary-foreground"
+          >
+            רמה {aff.level}
+          </span>
+        ))
+      )}
+    </div>
+  );
 }
 
 export function StudentsClient({
@@ -385,6 +423,7 @@ export function StudentsClient({
               <th className="sticky top-0 z-10 bg-muted px-4 py-3 text-right font-medium">שם מלא</th>
               <th className="sticky top-0 z-10 bg-muted px-4 py-3 text-right font-medium">קבוצה</th>
               <th className="sticky top-0 z-10 bg-muted px-4 py-3 text-right font-medium">מס קבוצה</th>
+              <th className="sticky top-0 z-10 bg-muted px-4 py-3 text-right font-medium">קורסים</th>
               <th className="sticky top-0 z-10 bg-muted px-4 py-3 text-right font-medium">ת.ז.</th>
               <th className="sticky top-0 z-10 bg-muted px-4 py-3 text-right font-medium">טלפון</th>
               <th className="sticky top-0 z-10 bg-muted px-4 py-3 text-right font-medium">סטטוס</th>
@@ -402,6 +441,9 @@ export function StudentsClient({
                 </td>
                 <td className="px-4 py-3 text-muted-foreground">
                   {student.subgroupNumber ?? "-"}
+                </td>
+                <td className="px-4 py-3">
+                  <CourseAffiliationBadges affiliation={student.affiliation} />
                 </td>
                 <td className="px-4 py-3 font-mono text-muted-foreground">
                   {maskIdentityNumber(student.identityNumber)}
@@ -453,7 +495,7 @@ export function StudentsClient({
             ))}
             {filteredStudents.length === 0 && (
               <tr>
-                <td colSpan={7} className="px-4 py-8 text-center text-muted-foreground">
+                <td colSpan={8} className="px-4 py-8 text-center text-muted-foreground">
                   {students.length === 0 ? "אין חניכים עדיין" : "אין חניכים התואמים את הסינון הנוכחי"}
                 </td>
               </tr>

@@ -17,6 +17,8 @@ import {
   type AdminCourseContext,
 } from "@/lib/course/admin-course-context";
 import { setRememberedAdminCourseOfferingId } from "@/lib/course/admin-course-cookie";
+import { requireAdmin } from "@/lib/auth/require-admin";
+import { createCourseOffering } from "@/lib/course/create-offering";
 
 /**
  * Validate and remember an explicitly chosen CourseOffering, then redirect to its
@@ -61,4 +63,38 @@ export async function selectAdminCourseOffering(formData: FormData): Promise<voi
   // only) and redirect using the VALIDATED id - never the raw candidate.
   await setRememberedAdminCourseOfferingId(context.id);
   redirect(`/admin/courses/${encodeURIComponent(context.id)}`);
+}
+
+/**
+ * MULTI-COURSE W9A-2 - create exactly one PLANNED CourseOffering under an
+ * existing ActivityYear. Order (hard safety contract):
+ *   1. requireAdmin() FIRST - authorize before any read or write;
+ *   2. hand the raw FormData fields to the create-offering IO, which validates,
+ *      verifies the ActivityYear exists, and performs the single
+ *      prisma.courseOffering.create with status hard-coded "PLANNED" server-side
+ *      (offering status is never read from the client);
+ *   3. on failure, redirect to the safe static error state carrying only a
+ *      stable, non-PII error code (never the raw submitted values);
+ *   4. on success, redirect to the new course shell built from the VALIDATED
+ *      new id, which independently re-runs requireAdminCourseOffering(id).
+ * redirect() signals via NEXT_REDIRECT, so both branches sit outside any
+ * try/catch and propagate. This action creates NOTHING but one CourseOffering.
+ */
+export async function createCourseOfferingAction(formData: FormData): Promise<void> {
+  await requireAdmin();
+
+  const result = await createCourseOffering({
+    activityYearId: formData.get("activityYearId"),
+    name: formData.get("name"),
+    level: formData.get("level"),
+    startDate: formData.get("startDate"),
+    endDate: formData.get("endDate"),
+  });
+
+  if (!result.success) {
+    // Safe static error state; only a stable code is reflected, never raw input.
+    redirect(`/admin/courses?error=${encodeURIComponent(result.error)}`);
+  }
+
+  redirect(`/admin/courses/${encodeURIComponent(result.id)}`);
 }

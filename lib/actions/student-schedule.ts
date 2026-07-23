@@ -18,6 +18,13 @@ import {
   getPublishedComplexRidingPlansForStudentInternal,
   type PublishedComplexRidingPlanForStudent,
 } from "@/lib/actions/riding-slot-complex-publications";
+// LEVEL 2 SLICE S1A - server-derived trainee course context for the final read.
+import { resolveTraineeCourseOffering } from "@/lib/course/actor-course-offering";
+import { getEffectiveCapabilities } from "@/lib/course/capabilities/offering-capabilities";
+import {
+  authorizeTraineeWeekReadWithDeps,
+  TRAINEE_WEEK_META_SELECT,
+} from "@/lib/course/course-scoped-week-options-core";
 
 // Only the fields a student is allowed to see about their riding slot's
 // instructor/field/subgroup - never notes, ratings, sessionHorseName, or
@@ -110,7 +117,29 @@ export interface StudentScheduleResult {
 
 export type GroupFilter = "mine" | "both";
 
+// The single, uniform "you get nothing" result. Every denial - unknown student,
+// unresolvable course context, SCHEDULE not ENABLED, missing week, NULL-scoped
+// week, another course's week, unpublished week - returns exactly this, so none
+// of those cases is distinguishable to the caller and a week id can never be
+// probed across courses.
+function emptyStudentScheduleResult(): StudentScheduleResult {
+  return { hasSchedule: false, weekName: null, items: [] };
+}
+
 // dayKey: a specific date within the week, or "all" for the whole week.
+//
+// LEVEL 2 SLICE S1A - COURSE-SCOPED. The signature is deliberately UNCHANGED
+// (four parameters, no courseOfferingId): the trainee's course context is
+// resolved server-side from the signed session via the committed, no-argument
+// resolveTraineeCourseOffering(), so there is no parameter through which a
+// client could name a course, and no group/subgroup/name/level/date heuristic
+// and no Level 1 fallback is used.
+//
+// A raw weeklyScheduleId is NEVER authorization. This action is independently
+// invocable as a Server Action, so it must never assume the id came from the
+// filtered picker (getWeeklyScheduleSelectionForTrainee): the id is re-checked
+// here against the freshly resolved offering, and ScheduleItems are read ONLY
+// after that check passes.
 export async function getScheduleForStudent(
   studentId: string,
   weeklyScheduleId: string,
@@ -118,49 +147,60 @@ export async function getScheduleForStudent(
   groupFilter: GroupFilter
 ): Promise<StudentScheduleResult> {
   const student = await prisma.student.findUnique({ where: { id: studentId } });
-  if (!student) return { hasSchedule: false, weekName: null, items: [] };
+  if (!student) return emptyStudentScheduleResult();
 
-  const week = await prisma.weeklySchedule.findUnique({
-    where: { id: weeklyScheduleId },
+  // Course gate. Resolves the trainee offering INDEPENDENTLY of the week picker
+  // (nothing is carried over from that call, by prop or by argument), requires
+  // SCHEDULE === "ENABLED" for that exact offering, then fetches ONLY the week
+  // header and verifies: exists -> courseOfferingId non-NULL -> strictly equal
+  // to the resolved offering -> published. The pre-existing publication guard is
+  // preserved inside that predicate, not dropped. See the pure core for the
+  // full ordering contract and the fail-closed rules.
+  const authorization = await authorizeTraineeWeekReadWithDeps(weeklyScheduleId, {
+    resolveTraineeCourseOffering,
+    getEffectiveCapabilities,
+    fetchWeekMeta: (id) =>
+      prisma.weeklySchedule.findUnique({ where: { id }, select: TRAINEE_WEEK_META_SELECT }),
+  });
+  if (!authorization.authorized) return emptyStudentScheduleResult();
+  const week = authorization.week;
+
+  // Authorized only. The items read is a SEPARATE query issued after the gate -
+  // never a nested include on the header fetch above - so no ScheduleItem and no
+  // nested riding/complex-plan row is ever loaded for a week this trainee may
+  // not see. The include shape is unchanged from before S1A.
+  const weekItems = await prisma.scheduleItem.findMany({
+    where: { weeklyScheduleId },
+    orderBy: [{ date: "asc" }, { startTime: "asc" }],
     include: {
-      items: {
-        orderBy: [{ date: "asc" }, { startTime: "asc" }],
+      ridingSlotLink: {
         include: {
-          ridingSlotLink: {
+          ridingSlot: {
             include: {
-              ridingSlot: {
+              assignments: {
                 include: {
-                  assignments: {
-                    include: {
-                      instructor: true,
-                      instructors: { include: { instructor: true }, orderBy: { createdAt: "asc" } },
-                    },
-                  },
-                  // Relation presence only - the canonical complex signal. No
-                  // extra query: this rides along the existing week include,
-                  // and selecting just `id` keeps it to a presence check.
-                  complexPlan: { select: { id: true } },
+                  instructor: true,
+                  instructors: { include: { instructor: true }, orderBy: { createdAt: "asc" } },
                 },
               },
+              // Relation presence only - the canonical complex signal.
+              // Selecting just `id` keeps it to a presence check.
+              complexPlan: { select: { id: true } },
             },
           },
         },
       },
     },
   });
-  // Defense-in-depth: the student week picker already only offers published
-  // weeks (see getWeeklyScheduleSelectionForStudent), but a stale/tampered
-  // weeklyScheduleId must never leak an unpublished week's items either.
-  if (!week || !week.isPublished) return { hasSchedule: false, weekName: null, items: [] };
 
-  const items = week.items.filter((i) => {
+  const items = weekItems.filter((i) => {
     if (groupFilter === "mine" && i.groupName && i.groupName !== student.groupName) return false;
     if (dayKey !== "all" && dateKey(i.date) !== dayKey) return false;
     return true;
   });
 
   // RIDING-COMPLEX-PUBLICATION P7C - collected from the already-filtered
-  // `items` only (never the raw, unfiltered week.items), so a ridingSlotId
+  // `items` only (never the raw, unfiltered weekItems), so a ridingSlotId
   // this student shouldn't even see in "mine" scope is never sent onward
   // either. One batched call covers every riding-linked item in this
   // response, never one call per item - see

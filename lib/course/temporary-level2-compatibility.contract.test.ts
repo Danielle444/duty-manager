@@ -3,9 +3,15 @@
  * temporary compatibility module and the actor-aware resolvers.
  *
  * These assert structural properties the runtime tests cannot: that the
- * temporary ids live in exactly ONE module, that the temporary policy never
- * reaches a client component, and that this slice did not migrate any schedule,
- * contact, navigation or UI call site.
+ * temporary ids live in exactly ONE module, that the temporary policy and the
+ * actor-aware resolvers never reach a client component, and that the set of
+ * production modules consuming the actor-aware resolvers is EXACTLY the
+ * approved allow-list.
+ *
+ * That last assertion was originally "the resolvers are wired nowhere" (true
+ * only for L2-0). Migration is now deliberate and incremental, so the tripwire
+ * became an exact allow-list rather than being relaxed: an unapproved consumer
+ * still fails it, and so does a stale entry.
  *
  * Run with: npx tsx --test lib/course/temporary-level2-compatibility.contract.test.ts
  */
@@ -112,14 +118,50 @@ function importsModule(src: string, moduleName: string): boolean {
   return pattern.test(src);
 }
 
-test("this slice did not migrate schedule, contact, navigation or UI call sites", () => {
+/**
+ * The COMPLETE set of production modules approved to consume the actor-aware
+ * resolvers. This is an exact allow-list, not a floor: a module that appears
+ * here without approval, and a module missing from here that starts importing
+ * the resolvers, must BOTH fail the test below.
+ *
+ * Ownership of each entry:
+ *  - lib/actions/contacts.ts        - trainee instructor directory, separately
+ *                                     reviewed and committed in 19a4cf1;
+ *  - lib/actions/student-schedule.ts - trainee final schedule read, SLICE S1A;
+ *  - lib/actions/weekly-schedule.ts  - trainee course-scoped week picker
+ *                                     (getWeeklyScheduleSelectionForTrainee),
+ *                                     SLICE S1A.
+ *
+ * Kept sorted so the comparison is deterministic regardless of walk order.
+ */
+const APPROVED_ACTOR_RESOLVER_CONSUMERS: readonly string[] = [
+  "lib/actions/contacts.ts",
+  "lib/actions/student-schedule.ts",
+  "lib/actions/weekly-schedule.ts",
+];
+
+test("only the approved production modules consume the actor-aware resolvers", () => {
+  // The two exclusions below are structural, NOT convenience: the resolver
+  // modules themselves obviously reference their own name, and test files are
+  // not production call sites. No production source file is filtered out to
+  // make this pass - every one that imports the resolvers must be listed above.
   const consumers = SOURCES.filter(
     (s) =>
       importsModule(s.src, "actor-course-offering") &&
       !s.rel.startsWith("lib/course/actor-course-offering") &&
       !s.rel.endsWith(".test.ts"),
-  ).map((s) => s.rel);
-  assert.deepEqual(consumers, [], "the new resolvers must stay un-wired in L2-0");
+  )
+    .map((s) => s.rel)
+    .sort();
+
+  // EXACT equality, never a subset check: a new consumer (approved or not) has
+  // to come back through review and be added here explicitly, and a module
+  // dropping the resolver must not silently leave a stale entry behind.
+  assert.deepEqual(
+    consumers,
+    [...APPROVED_ACTOR_RESOLVER_CONSUMERS].sort(),
+    "every actor-aware resolver consumer must be explicitly approved and listed",
+  );
 });
 
 test("the legacy resolver still exposes its unchanged no-argument contract", () => {

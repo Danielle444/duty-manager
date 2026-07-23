@@ -8,6 +8,15 @@ import { dateKey, parseDateKey, todayDateKey } from "@/lib/dates";
 import { setCourseDayPlan } from "@/lib/actions/course-day-plan";
 import type { ActionResult } from "@/lib/actions/students";
 import { cleanScheduleTitle } from "@/lib/schedule-title";
+// LEVEL 2 SLICE S1A - the trainee course-scoped selection reader below. The
+// legacy admin/instructor/student option readers in this file are deliberately
+// untouched by that slice.
+import { resolveTraineeCourseOffering } from "@/lib/course/actor-course-offering";
+import { getEffectiveCapabilities } from "@/lib/course/capabilities/offering-capabilities";
+import {
+  loadTraineeWeeklyScheduleSelectionWithDeps,
+  pickDefaultWeekId,
+} from "@/lib/course/course-scoped-week-options-core";
 
 // The real-world weekly schedule Excel files this needs to tolerate don't
 // necessarily have a single clean header row in row 1 - see the three-phase
@@ -832,32 +841,11 @@ export async function listPublishedWeeklyScheduleOptions(): Promise<WeeklySchedu
   }));
 }
 
-function daysBetweenKeys(a: string, b: string): number {
-  return Math.abs(parseDateKey(a).getTime() - parseDateKey(b).getTime()) / 86_400_000;
-}
-
-// Picks the week containing today, or - if none uploaded covers today - the
-// uploaded week whose range is closest to today (so students/instructors
-// land somewhere useful instead of an empty "no week selected" state).
-function pickDefaultWeekId(weeks: WeeklyScheduleOption[], todayKey: string): string | null {
-  if (weeks.length === 0) return null;
-  const current = weeks.find((w) => w.startDate <= todayKey && todayKey <= w.endDate);
-  if (current) return current.id;
-
-  let best = weeks[0];
-  let bestDist = Infinity;
-  for (const w of weeks) {
-    const dist =
-      todayKey < w.startDate
-        ? daysBetweenKeys(todayKey, w.startDate)
-        : daysBetweenKeys(w.endDate, todayKey);
-    if (dist < bestDist) {
-      bestDist = dist;
-      best = w;
-    }
-  }
-  return best.id;
-}
+// LEVEL 2 SLICE S1A: pickDefaultWeekId (and its daysBetweenKeys helper) MOVED
+// verbatim to @/lib/course/course-scoped-week-options-core so the trainee
+// course-scoped reader and the legacy readers below share ONE implementation
+// instead of a drifting copy. Behaviour is unchanged, it still receives an
+// already-filtered list, and it deliberately gained no offering parameter.
 
 export interface WeeklyScheduleSelection {
   weeks: WeeklyScheduleOption[];
@@ -876,4 +864,36 @@ export async function getWeeklyScheduleSelectionForStudent(): Promise<WeeklySche
   const weeks = await listPublishedWeeklyScheduleOptions();
   const defaultWeekId = pickDefaultWeekId(weeks, todayDateKey());
   return { weeks, defaultWeekId };
+}
+
+// LEVEL 2 SLICE S1A - the COURSE-SCOPED trainee week picker, and the only week
+// option reader a חניך/ה may use. It supersedes
+// getWeeklyScheduleSelectionForStudent above for the trainee app (that one is
+// left in place unchanged, still globally scoped, and must not be called from a
+// trainee surface).
+//
+// Takes NO arguments at all: neither a student id nor a courseOfferingId, so
+// there is no parameter through which a client could name a course. The
+// offering comes only from the committed, no-argument
+// resolveTraineeCourseOffering() (derived from the signed session and that
+// trainee's single ACTIVE enrollment into an ACTIVE offering) - never the legacy
+// singleton current-offering resolver, never a group/subgroup/name/level/date
+// heuristic, and never a Level 1 fallback.
+//
+// This is a THIN binding by design: the order of the gates, the exact query
+// shape, the option mapping and the default-week pick all live in the pure core
+// (@/lib/course/course-scoped-week-options-core), which is where the DB-free
+// tests exercise them. This file only supplies the real resolver, the real
+// capability reader, the real Prisma query and the real clock.
+//
+// The returned WeeklyScheduleSelection shape is unchanged, so the trainee client
+// needs no shape edits; an unresolvable course context or a SCHEDULE capability
+// that is not ENABLED yields the uniform empty selection.
+export async function getWeeklyScheduleSelectionForTrainee(): Promise<WeeklyScheduleSelection> {
+  return loadTraineeWeeklyScheduleSelectionWithDeps({
+    resolveTraineeCourseOffering,
+    getEffectiveCapabilities,
+    fetchPublishedWeekRows: (query) => prisma.weeklySchedule.findMany(query),
+    todayDateKey,
+  });
 }

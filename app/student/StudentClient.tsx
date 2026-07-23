@@ -14,7 +14,7 @@ import {
   type StudentProfile,
   type StudentSearchResult,
 } from "@/lib/actions/auth";
-import { getWeeklyScheduleSelectionForStudent } from "@/lib/actions/weekly-schedule";
+import { getWeeklyScheduleSelectionForTrainee } from "@/lib/actions/weekly-schedule";
 import { updateOwnPrivateHorseName } from "@/lib/actions/horses";
 import { ScheduleSection } from "@/app/student/ScheduleSection";
 import { DutiesSection } from "@/app/student/DutiesSection";
@@ -307,7 +307,13 @@ export function StudentClient() {
   useEffect(() => {
     if (!session) return;
     let cancelled = false;
-    getWeeklyScheduleSelectionForStudent().then((sel) => {
+    // LEVEL 2 SLICE S1A: the COURSE-SCOPED trainee week picker. Takes no
+    // arguments - the offering is derived server-side from the signed session,
+    // never sent from here. The returned shape, the `weeks === null` loading
+    // state and the empty-state behaviour are unchanged; an unresolvable course
+    // context or a SCHEDULE capability that is not ENABLED simply yields an
+    // empty week list.
+    getWeeklyScheduleSelectionForTrainee().then((sel) => {
       if (cancelled) return;
       setWeeks(sel.weeks);
       setSelectedWeekId(sel.defaultWeekId);

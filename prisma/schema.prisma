@@ -410,10 +410,25 @@ model WeeklySchedule {
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
-  items        ScheduleItem[]
-  feedbackForm WeeklyFeedbackForm?
+  // MULTI-COURSE Schedule Slice S1 - additive, nullable offering scope. Every
+  // existing WeeklySchedule predates the CourseOffering spine, so this is
+  // NULLABLE for now and left un-backfilled: existing rows stay valid with
+  // courseOfferingId = NULL until an explicit, evidence-based backfill assigns
+  // them (all four current prod weeks are confirmed Level 1). Deliberately NOT
+  // required and NOT part of any unique key yet - the future
+  // @@unique([courseOfferingId, startDate]) and NOT NULL are separate later
+  // slices. onDelete: Restrict (NOT Cascade, matching every other CourseOffering
+  // child FK): deleting a CourseOffering must never silently delete a week or
+  // its large ScheduleItem/riding/feedback descendant tree - once weeks are
+  // scoped, the delete is blocked while any week still references the offering.
+  courseOfferingId String?
+
+  items          ScheduleItem[]
+  feedbackForm   WeeklyFeedbackForm?
+  courseOffering CourseOffering? @relation(fields: [courseOfferingId], references: [id], onDelete: Restrict)
 
   @@index([startDate, endDate])
+  @@index([courseOfferingId])
   @@map("weekly_schedules")
 }
 
@@ -2012,6 +2027,10 @@ model CourseOffering {
   // Sparse: an offering with no rows here has NO capabilities enabled. Nothing
   // reads this relation at this stage.
   capabilities CourseOfferingCapability[]
+  // MULTI-COURSE Schedule Slice S1 - inverse of WeeklySchedule.courseOffering
+  // (nullable FK, onDelete: Restrict). Sparse for now: no week is scoped until a
+  // later backfill slice. Nothing reads this relation at this stage.
+  weeklySchedules WeeklySchedule[]
 
   @@unique([activityYearId, name])
   @@index([activityYearId])

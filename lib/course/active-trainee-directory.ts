@@ -28,8 +28,8 @@
  * This file is server-only library code, NOT a Server Action: it has no "use
  * server" directive and no import-time side effects.
  *
- * NOTE (W5C0 scope): NOT wired into any runtime consumer yet. The two pages are
- * wired only in W5C1, after the production parity result is reviewed.
+ * NOTE: getActiveTraineeDirectory IS wired into its two runtime consumers -
+ * app/admin/availability/page.tsx and app/admin/daily-tracking/page.tsx.
  */
 import { resolveCurrentCourseOffering } from "./current-offering";
 import { getCurrentCourseEnrollmentRoster } from "./current-enrollments";

@@ -23,6 +23,11 @@ import {
   type CourseOfferingRow,
   type CurrentCourseOffering,
 } from "./current-offering-core";
+import { selectLegacyCompatibleActiveRows } from "./legacy-offering-compatibility-core";
+import {
+  LEVEL_1_COURSE_OFFERING_ID,
+  LEVEL_2_COURSE_OFFERING_ID,
+} from "./temporary-level2-compatibility";
 
 export {
   NoCurrentCourseOfferingError,
@@ -34,8 +39,15 @@ export {
 
 /**
  * The exact query the operational resolver issues, constructed once and passed
- * to the injected fetcher: at most two rows, filtered to ACTIVE only. Its shape
- * is what a DB-free test asserts to prove PLANNED/ARCHIVED are excluded.
+ * to the injected fetcher: at most THREE rows, filtered to ACTIVE only. Its
+ * shape is what a DB-free test asserts to prove PLANNED/ARCHIVED are excluded.
+ *
+ * L2-0: take was raised 2 -> 3. Two rows can no longer settle the decision: the
+ * resolver must be able to tell the KNOWN {Level 1, Level 2} two-ACTIVE state
+ * apart from that pair plus an unknown third ACTIVE offering. Fetching one extra
+ * row makes a third offering visible, so an unknown multi-offering state still
+ * fails closed instead of being silently rewritten to Level 1. This does not
+ * change behavior for zero or one ACTIVE offering.
  */
 export interface CurrentOfferingQuery {
   readonly take: number;
@@ -54,21 +66,34 @@ export interface CurrentCourseOfferingDeps {
 }
 
 /**
- * Resolve the current ACTIVE CourseOffering. Constructs the ACTIVE-only, take:2
- * query, hands it to the injected fetcher, and lets the pure core decide:
+ * Resolve the current ACTIVE CourseOffering. Constructs the ACTIVE-only, take:3
+ * query, hands it to the injected fetcher, applies the TEMPORARY Level 1
+ * compatibility filter, and lets the unchanged pure core decide:
  *  - 0 ACTIVE rows   -> throws NoCurrentCourseOfferingError
  *  - 1 ACTIVE row    -> returns the stable CurrentCourseOffering view
  *                       (or IncompleteCourseOfferingError if it lacks dates)
- *  - >=2 ACTIVE rows -> throws AmbiguousCourseOfferingError (never picks one)
+ *  - EXACTLY the known {Level 1, Level 2} ACTIVE pair -> returns the Level 1
+ *    offering, so the un-migrated legacy Level-1-only callers keep working while
+ *    Level 2 is ACTIVE (L2-0 compatibility; see
+ *    legacy-offering-compatibility-core.ts and temporary-level2-compatibility.ts)
+ *  - any OTHER multi-offering ACTIVE state -> throws AmbiguousCourseOfferingError
+ *    (never picks one; no name/level/date/status-order inference)
+ *
+ * This function stays the LEGACY resolver. It is deliberately NOT actor-aware:
+ * actor-scoped course context lives in actor-course-offering.ts.
  */
 export async function resolveCurrentCourseOfferingWithDeps(
   deps: CurrentCourseOfferingDeps,
 ): Promise<CurrentCourseOffering> {
   const rows = await deps.fetchCurrentOfferingRows({
-    take: 2,
+    take: 3,
     where: { status: "ACTIVE" },
   });
-  return resolveCurrentCourseOfferingFromRows(rows);
+  const compatibleRows = selectLegacyCompatibleActiveRows(rows, {
+    level1OfferingId: LEVEL_1_COURSE_OFFERING_ID,
+    level2OfferingId: LEVEL_2_COURSE_OFFERING_ID,
+  });
+  return resolveCurrentCourseOfferingFromRows(compatibleRows);
 }
 
 /**

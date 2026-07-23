@@ -24,6 +24,10 @@ import {
   type CurrentCourseOfferingDeps,
   type CurrentOfferingQuery,
 } from "./current-offering";
+import {
+  LEVEL_1_COURSE_OFFERING_ID,
+  LEVEL_2_COURSE_OFFERING_ID,
+} from "./temporary-level2-compatibility";
 
 function row(id: string, overrides: Partial<CourseOfferingRow> = {}): CourseOfferingRow {
   return {
@@ -116,13 +120,16 @@ function recordingDeps(rows: readonly CourseOfferingRow[]): {
   return { queries, deps };
 }
 
-test("operational resolver requests ONLY ACTIVE offerings, take 2 (PLANNED/ARCHIVED excluded)", async () => {
+test("operational resolver requests ONLY ACTIVE offerings, take 3 (PLANNED/ARCHIVED excluded)", async () => {
   // The status filter is the sole mechanism that excludes PLANNED and ARCHIVED
   // offerings, so asserting the exact query proves both are ignored.
+  // L2-0: take is 3, not 2 - the resolver must be able to see a THIRD ACTIVE
+  // offering so the known Level 1 + Level 2 pair can never be confused with that
+  // pair plus an unknown extra.
   const { queries, deps } = recordingDeps([row("active-1", { status: "ACTIVE" })]);
   await resolveCurrentCourseOfferingWithDeps(deps);
   assert.equal(queries.length, 1);
-  assert.deepEqual(queries[0], { take: 2, where: { status: "ACTIVE" } });
+  assert.deepEqual(queries[0], { take: 3, where: { status: "ACTIVE" } });
 });
 
 test("exactly one ACTIVE offering resolves to the stable view", async () => {
@@ -164,4 +171,112 @@ test("single incomplete ACTIVE offering rejects with IncompleteCourseOfferingErr
     resolveCurrentCourseOfferingWithDeps(deps),
     IncompleteCourseOfferingError,
   );
+});
+
+// ---------------------------------------------------------------------------
+// L2-0: TEMPORARY Level 1 compatibility for the one known two-ACTIVE state.
+//
+// These pin the LEGACY resolver's behaviour once the Level 2 offering can be
+// ACTIVE alongside Level 1. Everything outside that exact state must keep
+// failing closed - the compatibility branch is not a general multi-offering
+// tie-breaker.
+// ---------------------------------------------------------------------------
+
+test("the known Level 1 + Level 2 ACTIVE pair resolves to the Level 1 offering", async () => {
+  const { deps } = recordingDeps([
+    row(LEVEL_1_COURSE_OFFERING_ID, { status: "ACTIVE", level: 1 }),
+    row(LEVEL_2_COURSE_OFFERING_ID, { status: "ACTIVE", level: 2 }),
+  ]);
+  const result = await resolveCurrentCourseOfferingWithDeps(deps);
+  assert.equal(result.id, LEVEL_1_COURSE_OFFERING_ID);
+  assert.equal(result.level, 1);
+});
+
+test("the known pair resolves to Level 1 regardless of row order (no positional pick)", async () => {
+  const { deps } = recordingDeps([
+    row(LEVEL_2_COURSE_OFFERING_ID, { status: "ACTIVE", level: 2 }),
+    row(LEVEL_1_COURSE_OFFERING_ID, { status: "ACTIVE", level: 1 }),
+  ]);
+  const result = await resolveCurrentCourseOfferingWithDeps(deps);
+  assert.equal(result.id, LEVEL_1_COURSE_OFFERING_ID);
+});
+
+test("Level 2 ACTIVE ALONE still resolves to Level 2 (not rewritten to Level 1)", async () => {
+  const { deps } = recordingDeps([
+    row(LEVEL_2_COURSE_OFFERING_ID, { status: "ACTIVE", level: 2 }),
+  ]);
+  const result = await resolveCurrentCourseOfferingWithDeps(deps);
+  assert.equal(result.id, LEVEL_2_COURSE_OFFERING_ID);
+  assert.equal(result.level, 2);
+});
+
+test("Level 1 ACTIVE alone is unchanged by the compatibility branch", async () => {
+  const { deps } = recordingDeps([
+    row(LEVEL_1_COURSE_OFFERING_ID, { status: "ACTIVE", level: 1 }),
+  ]);
+  const result = await resolveCurrentCourseOfferingWithDeps(deps);
+  assert.equal(result.id, LEVEL_1_COURSE_OFFERING_ID);
+});
+
+test("the known pair PLUS an unknown third ACTIVE offering stays ambiguous", async () => {
+  const { deps } = recordingDeps([
+    row(LEVEL_1_COURSE_OFFERING_ID, { status: "ACTIVE", level: 1 }),
+    row(LEVEL_2_COURSE_OFFERING_ID, { status: "ACTIVE", level: 2 }),
+    row("offer-unknown", { status: "ACTIVE", level: 3 }),
+  ]);
+  await assert.rejects(
+    resolveCurrentCourseOfferingWithDeps(deps),
+    AmbiguousCourseOfferingError,
+  );
+});
+
+test("Level 1 paired with an UNKNOWN offering stays ambiguous", async () => {
+  const { deps } = recordingDeps([
+    row(LEVEL_1_COURSE_OFFERING_ID, { status: "ACTIVE", level: 1 }),
+    row("offer-unknown", { status: "ACTIVE" }),
+  ]);
+  await assert.rejects(
+    resolveCurrentCourseOfferingWithDeps(deps),
+    AmbiguousCourseOfferingError,
+  );
+});
+
+test("two UNKNOWN ACTIVE offerings stay ambiguous", async () => {
+  const { deps } = recordingDeps([
+    row("offer-a", { status: "ACTIVE" }),
+    row("offer-b", { status: "ACTIVE" }),
+  ]);
+  await assert.rejects(
+    resolveCurrentCourseOfferingWithDeps(deps),
+    AmbiguousCourseOfferingError,
+  );
+});
+
+test("no name/level/date inference can produce the Level 1 compatibility result", async () => {
+  // Two Level-1/Level-2-looking rows with UNKNOWN ids must still be ambiguous:
+  // only the exact verified ids enable the compatibility branch.
+  const { deps } = recordingDeps([
+    row("decoy-1", { status: "ACTIVE", level: 1, name: "קורס מדריכים ומאמנים – רמה 1" }),
+    row("decoy-2", {
+      status: "ACTIVE",
+      level: 2,
+      name: "קורס מדריכים ומאמנים – רמה 2",
+      startDate: new Date("2030-01-01T00:00:00.000Z"),
+    }),
+  ]);
+  await assert.rejects(
+    resolveCurrentCourseOfferingWithDeps(deps),
+    AmbiguousCourseOfferingError,
+  );
+});
+
+test("the compatibility branch does not mutate offering status", async () => {
+  const l2 = row(LEVEL_2_COURSE_OFFERING_ID, { status: "ACTIVE", level: 2 });
+  const { deps } = recordingDeps([
+    row(LEVEL_1_COURSE_OFFERING_ID, { status: "ACTIVE", level: 1 }),
+    l2,
+  ]);
+  const result = await resolveCurrentCourseOfferingWithDeps(deps);
+  assert.equal(result.status, "ACTIVE");
+  assert.equal(l2.status, "ACTIVE", "the Level 2 row is left untouched");
 });

@@ -3,6 +3,7 @@
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
+import { requireAdmin } from "@/lib/auth/require-admin";
 import type { ActionResult } from "@/lib/actions/students";
 
 const dutyTypeSchema = z.object({
@@ -13,6 +14,12 @@ const dutyTypeSchema = z.object({
 });
 
 export async function createDutyType(formData: FormData): Promise<ActionResult> {
+  // ADMIN-WRITE-A2: admin authorization is the FIRST operation - before any
+  // validation, read or write - so a non-admin caller of this "use server"
+  // endpoint can neither create a duty type nor learn anything from the
+  // validation errors.
+  await requireAdmin();
+
   const parsed = dutyTypeSchema.safeParse({
     name: formData.get("name"),
     description: formData.get("description") || undefined,
@@ -41,6 +48,11 @@ export async function updateDutyType(
   dutyTypeId: string,
   formData: FormData
 ): Promise<ActionResult> {
+  // ADMIN-WRITE-A2: authorization precedes validation and the update, so an
+  // unauthorized caller cannot mutate a duty type nor probe whether dutyTypeId
+  // exists (the Prisma update is the only thing that would reveal that).
+  await requireAdmin();
+
   const parsed = dutyTypeSchema.safeParse({
     name: formData.get("name"),
     description: formData.get("description") || undefined,
@@ -69,6 +81,10 @@ export async function setDutyTypeActive(
   dutyTypeId: string,
   isActive: boolean
 ): Promise<ActionResult> {
+  // ADMIN-WRITE-A2: deactivation is authorized before the update that would
+  // otherwise disclose whether dutyTypeId exists.
+  await requireAdmin();
+
   await prisma.dutyType.update({ where: { id: dutyTypeId }, data: { isActive } });
   revalidatePath("/admin/duties");
   revalidatePath("/admin");

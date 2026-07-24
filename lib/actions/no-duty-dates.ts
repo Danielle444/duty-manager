@@ -2,6 +2,7 @@
 
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
+import { requireAdmin } from "@/lib/auth/require-admin";
 import { dateKey, enumerateDateKeys, parseDateKey } from "@/lib/dates";
 import type { ActionResult } from "@/lib/actions/students";
 
@@ -45,6 +46,11 @@ export async function getNoDutyStatusForRange(
 // Marking/unmarking never touches DutyAssignment rows - only the scheduler's
 // generation step (lib/scheduler.ts) reads this to decide what to skip.
 export async function markNoDutyDate(dateKeyStr: string, reason?: string): Promise<ActionResult> {
+  // ADMIN-WRITE-A2: admin authorization is the FIRST operation - before the
+  // date is even parsed - so a non-admin caller of this "use server" endpoint
+  // can neither mark a day as no-duty nor probe dates through parse errors.
+  await requireAdmin();
+
   const date = parseDateKey(dateKeyStr);
   await prisma.noDutyDate.upsert({
     where: { date },
@@ -57,6 +63,11 @@ export async function markNoDutyDate(dateKeyStr: string, reason?: string): Promi
 }
 
 export async function unmarkNoDutyDate(dateKeyStr: string): Promise<ActionResult> {
+  // ADMIN-WRITE-A2: authorization precedes parsing and the deleteMany, so an
+  // unauthorized caller can neither clear a no-duty marking nor probe which
+  // dates are marked.
+  await requireAdmin();
+
   const date = parseDateKey(dateKeyStr);
   await prisma.noDutyDate.deleteMany({ where: { date } });
 

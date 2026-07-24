@@ -6,6 +6,18 @@ import { revalidatePath } from "next/cache";
 import { requireAdmin } from "@/lib/auth/require-admin";
 import type { ActionResult } from "@/lib/actions/students";
 import { sendNewMessagePushToStudents } from "@/lib/actions/push";
+// SECURITY / LEVEL 2 SLICE L2-C3 - server-derived trainee identity + course
+// context for the trainee-facing message/task surface at the bottom of this
+// file. Nothing above it (admin creation/fan-out, instructor view) changes.
+import { requireCurrentTrainee } from "@/lib/auth/actor";
+import { resolveTraineeCourseOffering } from "@/lib/course/actor-course-offering";
+import { getEffectiveCapabilities } from "@/lib/course/capabilities/offering-capabilities";
+import type { CapabilityKey } from "@/lib/course/capabilities/capability-keys";
+import {
+  authorizeTraineeModuleWithDeps,
+  loadAuthorizedTraineeModuleRowsWithDeps,
+  type TraineeModuleContextDeps,
+} from "@/lib/course/trainee-module-containment-core";
 
 const messageTaskTypeSchema = z.enum(["MESSAGE", "TASK"]);
 const messageAudienceSchema = z.enum(["ALL", "GROUP", "SPECIFIC"]);
@@ -320,43 +332,121 @@ export interface StudentMessageItem {
   archivedAt: string | null;
 }
 
-// Read-only, no permission gate - same convention as getStudentProfile /
-// getHorseAssignments, since students have no NextAuth session in this app.
+// ---------------------------------------------------------------------------
+// TRAINEE-FACING MESSAGE / TASK SURFACE - SECURITY / LEVEL 2 SLICE L2-C3
+// ---------------------------------------------------------------------------
+//
+// Everything below is CONTAINED: identity comes from the signed trainee
+// session, the course context is server-resolved from that trainee's own
+// enrollment, and the resolved offering's MESSAGES capability must be
+// positively ENABLED before a single MessageTaskRecipient row is read or
+// written.
+//
+// This closes an ANONYMOUS exposure. These actions previously "authenticated" a
+// caller by trusting the client-supplied studentId argument outright (the
+// reader) or by re-reading the recipient row and comparing it to that same
+// client-supplied id (the writers) - which authorizes nothing, because
+// searchStudents() is unauthenticated by design (it powers the login screen)
+// and returns real student ids. Any caller, including an anonymous one, could
+// therefore read another trainee's messages and tasks and mark them
+// read/completed/archived.
+//
+// The studentId parameters are RETAINED for caller compatibility in this slice
+// and are deliberately discarded; they are NEVER identity. The session-derived
+// trainee id is the only one that reaches a query filter or an ownership
+// comparison.
+
+/**
+ * The single capability that authorizes the trainee message/task module. It is
+ * an EXISTING canonical key (capability-keys.ts) - this slice invents no key -
+ * and the CapabilityKey annotation makes a typo a compile error.
+ */
+const TRAINEE_MESSAGES_CAPABILITY_KEY: CapabilityKey = "MESSAGES";
+
+// The containment binding shared by every trainee action below. It supplies
+// ONLY real, server-owned dependencies: the trainee id from the signed session
+// via the canonical Actor DAL (requireCurrentTrainee rejects anonymous,
+// expired, wrong-audience and INACTIVE sessions), the offering from the
+// committed no-argument resolveTraineeCourseOffering(), and the capabilities of
+// that exact resolved offering. There is deliberately no courseOfferingId
+// parameter anywhere in this file, no legacy singleton offering resolver, no
+// Level 1 fallback, and no group/name/level/date inference. All ordering and every
+// allow/deny decision live in the pure core.
+const TRAINEE_MESSAGES_DEPS: TraineeModuleContextDeps = {
+  requireTraineeId: async () => (await requireCurrentTrainee()).id,
+  resolveTraineeCourseOffering,
+  getEffectiveCapabilities,
+};
+
+/**
+ * The write-side gate: the session-derived trainee id, or null when the caller
+ * is not an authorized MESSAGES trainee. Every denial - anonymous, expired,
+ * wrong audience, inactive trainee, no/ambiguous offering, capability row
+ * absent (the Level 2 state), DISABLED, READ_ONLY, malformed - is the same
+ * null, and no MessageTaskRecipient row is read before it returns. Real
+ * infrastructure/programming failures propagate out of the core unchanged.
+ */
+async function authorizedTraineeMessagesId(): Promise<string | null> {
+  const authorization = await authorizeTraineeModuleWithDeps(
+    TRAINEE_MESSAGES_CAPABILITY_KEY,
+    TRAINEE_MESSAGES_DEPS
+  );
+  return authorization.authorized ? authorization.context.traineeId : null;
+}
+
 // Items admin has archived (MessageTask.isArchived, a separate global
 // concept - see archiveMessageTask) are always excluded here. archivedAt is
 // this trainee's own per-recipient archive instead - still returned so the
 // component can split active/history/archived itself, rather than this
 // function returning three different shapes.
 export async function getStudentMessages(studentId: string): Promise<StudentMessageItem[]> {
-  const recipients = await prisma.messageTaskRecipient.findMany({
-    where: { studentId, messageTask: { isArchived: false } },
-    include: { messageTask: true },
-    orderBy: { createdAt: "desc" },
-  });
+  // L2-C3: accepted for caller compatibility and deliberately DISCARDED. It is
+  // a client-supplied value and therefore never identity; see the header above.
+  void studentId;
+  return loadAuthorizedTraineeModuleRowsWithDeps(
+    TRAINEE_MESSAGES_CAPABILITY_KEY,
+    TRAINEE_MESSAGES_DEPS,
+    async ({ traineeId }) => {
+      const recipients = await prisma.messageTaskRecipient.findMany({
+        where: { studentId: traineeId, messageTask: { isArchived: false } },
+        include: { messageTask: true },
+        orderBy: { createdAt: "desc" },
+      });
 
-  return recipients.map((r) => ({
-    recipientId: r.id,
-    messageTaskId: r.messageTaskId,
-    type: r.messageTask.type,
-    title: r.messageTask.title,
-    body: r.messageTask.body,
-    createdByName: r.messageTask.createdByName,
-    createdAt: r.messageTask.createdAt.toISOString(),
-    readAt: r.readAt ? r.readAt.toISOString() : null,
-    completedAt: r.completedAt ? r.completedAt.toISOString() : null,
-    archivedAt: r.archivedAt ? r.archivedAt.toISOString() : null,
-  }));
+      return recipients.map((r) => ({
+        recipientId: r.id,
+        messageTaskId: r.messageTaskId,
+        type: r.messageTask.type,
+        title: r.messageTask.title,
+        body: r.messageTask.body,
+        createdByName: r.messageTask.createdByName,
+        createdAt: r.messageTask.createdAt.toISOString(),
+        readAt: r.readAt ? r.readAt.toISOString() : null,
+        completedAt: r.completedAt ? r.completedAt.toISOString() : null,
+        archivedAt: r.archivedAt ? r.archivedAt.toISOString() : null,
+      }));
+    }
+  );
 }
 
-// Students have no NextAuth session in this app (see requireAdmin), so
-// ownership is verified by re-reading the recipient row and comparing
-// studentId - the same convention already established by markDutyCompleted.
+// Ownership is verified by re-reading the recipient row and comparing it to the
+// SESSION-derived trainee id (never the client-supplied argument). An
+// unauthorized caller gets the same "not found" failure as a genuinely missing
+// row, so a recipient id can never be probed for existence, and nothing is
+// mutated.
 export async function markMessageRead(
   recipientId: string,
   studentId: string
 ): Promise<ActionResult> {
+  // L2-C3: accepted for caller compatibility and deliberately DISCARDED.
+  void studentId;
+  const traineeId = await authorizedTraineeMessagesId();
+  if (!traineeId) {
+    return { success: false, error: "ההודעה לא נמצאה" };
+  }
+
   const recipient = await prisma.messageTaskRecipient.findUnique({ where: { id: recipientId } });
-  if (!recipient || recipient.studentId !== studentId) {
+  if (!recipient || recipient.studentId !== traineeId) {
     return { success: false, error: "ההודעה לא נמצאה" };
   }
   if (recipient.readAt) {
@@ -377,8 +467,15 @@ export async function setTaskCompleted(
   studentId: string,
   isCompleted: boolean
 ): Promise<ActionResult> {
+  // L2-C3: accepted for caller compatibility and deliberately DISCARDED.
+  void studentId;
+  const traineeId = await authorizedTraineeMessagesId();
+  if (!traineeId) {
+    return { success: false, error: "המשימה לא נמצאה" };
+  }
+
   const recipient = await prisma.messageTaskRecipient.findUnique({ where: { id: recipientId } });
-  if (!recipient || recipient.studentId !== studentId) {
+  if (!recipient || recipient.studentId !== traineeId) {
     return { success: false, error: "המשימה לא נמצאה" };
   }
 
@@ -401,11 +498,18 @@ export async function archiveMessageTaskForStudent(
   recipientId: string,
   studentId: string
 ): Promise<ActionResult> {
+  // L2-C3: accepted for caller compatibility and deliberately DISCARDED.
+  void studentId;
+  const traineeId = await authorizedTraineeMessagesId();
+  if (!traineeId) {
+    return { success: false, error: "ההודעה לא נמצאה" };
+  }
+
   const recipient = await prisma.messageTaskRecipient.findUnique({
     where: { id: recipientId },
     include: { messageTask: { select: { type: true } } },
   });
-  if (!recipient || recipient.studentId !== studentId) {
+  if (!recipient || recipient.studentId !== traineeId) {
     return { success: false, error: "ההודעה לא נמצאה" };
   }
 
@@ -438,8 +542,15 @@ export async function unarchiveMessageTaskForStudent(
   recipientId: string,
   studentId: string
 ): Promise<ActionResult> {
+  // L2-C3: accepted for caller compatibility and deliberately DISCARDED.
+  void studentId;
+  const traineeId = await authorizedTraineeMessagesId();
+  if (!traineeId) {
+    return { success: false, error: "ההודעה לא נמצאה" };
+  }
+
   const recipient = await prisma.messageTaskRecipient.findUnique({ where: { id: recipientId } });
-  if (!recipient || recipient.studentId !== studentId) {
+  if (!recipient || recipient.studentId !== traineeId) {
     return { success: false, error: "ההודעה לא נמצאה" };
   }
   if (!recipient.archivedAt) {

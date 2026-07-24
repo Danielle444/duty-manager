@@ -125,9 +125,19 @@ function importsModule(src: string, moduleName: string): boolean {
  * the resolvers, must BOTH fail the test below.
  *
  * Ownership of each entry:
+ *  - lib/actions/completion.ts      - L2-C3 trainee duty completion
+ *                                     (markDutyCompleted); adminSetCompletion in
+ *                                     the same file keeps its requireAdmin gate
+ *                                     and consumes no resolver;
  *  - lib/actions/contacts.ts        - trainee instructor directory, separately
  *                                     reviewed and committed in 19a4cf1;
- *  - lib/actions/student-schedule.ts - trainee final schedule read, SLICE S1A;
+ *  - lib/actions/messages.ts        - L2-C3 trainee message/task containment;
+ *                                     the admin creation/fan-out and instructor
+ *                                     actions in the same file are untouched
+ *                                     and consume no resolver;
+ *  - lib/actions/student-schedule.ts - trainee final schedule read, SLICE S1A,
+ *                                     plus the L2-C3 trainee duty reader
+ *                                     (getStudentDutiesForRange);
  *  - lib/actions/teaching-practice-student.ts - L2-C1 trainee Teaching Practice
  *                                     containment;
  *  - lib/actions/weekly-schedule.ts  - trainee course-scoped week picker
@@ -137,7 +147,9 @@ function importsModule(src: string, moduleName: string): boolean {
  * Kept sorted so the comparison is deterministic regardless of walk order.
  */
 const APPROVED_ACTOR_RESOLVER_CONSUMERS: readonly string[] = [
+  "lib/actions/completion.ts",
   "lib/actions/contacts.ts",
+  "lib/actions/messages.ts",
   "lib/actions/student-schedule.ts",
   "lib/actions/teaching-practice-student.ts",
   "lib/actions/weekly-schedule.ts",

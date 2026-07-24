@@ -25,6 +25,15 @@ import {
   authorizeTraineeWeekReadWithDeps,
   TRAINEE_WEEK_META_SELECT,
 } from "@/lib/course/course-scoped-week-options-core";
+// SECURITY / LEVEL 2 SLICE L2-C3 - server-derived trainee identity + DUTIES
+// capability gate for getStudentDutiesForRange at the bottom of this file. The
+// S1A schedule reader above is deliberately untouched.
+import { requireCurrentTrainee } from "@/lib/auth/actor";
+import type { CapabilityKey } from "@/lib/course/capabilities/capability-keys";
+import {
+  loadAuthorizedTraineeModuleRowsWithDeps,
+  type TraineeModuleContextDeps,
+} from "@/lib/course/trainee-module-containment-core";
 
 // Only the fields a student is allowed to see about their riding slot's
 // instructor/field/subgroup - never notes, ratings, sessionHorseName, or
@@ -281,20 +290,65 @@ export interface StudentDutyDayInfo {
   status: "has-duty" | "no-duty" | "not-published" | "no-duty-day";
 }
 
+/**
+ * The single capability that authorizes the trainee duty module (L2-C3). An
+ * EXISTING canonical key (capability-keys.ts) - this slice invents no key - and
+ * the CapabilityKey annotation makes a typo a compile error.
+ */
+const TRAINEE_DUTIES_CAPABILITY_KEY: CapabilityKey = "DUTIES";
+
+// The L2-C3 containment binding for the duty reader below. Real, server-owned
+// dependencies only: the trainee id from the signed session via the canonical
+// Actor DAL (requireCurrentTrainee rejects anonymous, expired, wrong-audience
+// and INACTIVE sessions - which is why the old Student.isActive re-read is gone
+// rather than merely moved), the offering from the committed no-argument
+// resolveTraineeCourseOffering(), and that exact offering's capabilities. No
+// courseOfferingId parameter, no legacy singleton offering resolver, no Level 1
+// fallback, no group/name/level/date inference.
+const TRAINEE_DUTIES_DEPS: TraineeModuleContextDeps = {
+  requireTraineeId: async () => (await requireCurrentTrainee()).id,
+  resolveTraineeCourseOffering,
+  getEffectiveCapabilities,
+};
+
+// SECURITY / LEVEL 2 SLICE L2-C3 - CONTAINED. This reader previously trusted
+// the client-supplied studentId outright and "authorized" it with nothing but
+// the GLOBAL Student.isActive flag, so any caller - including an anonymous one,
+// using an id from the unauthenticated login-screen search - could read another
+// trainee's duty schedule plus every teammate's name for the range. Identity is
+// now session-derived and the resolved offering's DUTIES capability must be
+// positively ENABLED; a denial returns the SAME empty array as "nothing
+// scheduled", and no DutyAssignment / NoDutyDate row is read before the gate
+// passes.
 export async function getStudentDutiesForRange(
   studentId: string,
   startDateKey: string,
   endDateKey: string
 ): Promise<StudentDutyDayInfo[]> {
-  const student = await prisma.student.findUnique({ where: { id: studentId } });
-  if (!student || !student.isActive) return [];
+  // L2-C3: accepted for caller compatibility and deliberately DISCARDED. It is
+  // a client-supplied value and therefore never identity.
+  void studentId;
+  return loadAuthorizedTraineeModuleRowsWithDeps(
+    TRAINEE_DUTIES_CAPABILITY_KEY,
+    TRAINEE_DUTIES_DEPS,
+    async ({ traineeId }) => loadDutiesForTraineeRange(traineeId, startDateKey, endDateKey)
+  );
+}
 
+// Authorized only - unreachable unless the gate above passed, and it receives
+// the SESSION-derived trainee id, so every self-specific filter and the
+// "exclude me from the teammate list" comparison below are driven by it.
+async function loadDutiesForTraineeRange(
+  traineeId: string,
+  startDateKey: string,
+  endDateKey: string
+): Promise<StudentDutyDayInfo[]> {
   const start = parseDateKey(startDateKey);
   const end = parseDateKey(endDateKey);
 
   const [mine, publishedAll, noDutyDates] = await Promise.all([
     prisma.dutyAssignment.findMany({
-      where: { studentId, date: { gte: start, lte: end }, isPublished: true },
+      where: { studentId: traineeId, date: { gte: start, lte: end }, isPublished: true },
       include: { dutyType: true },
     }),
     // Only published assignments, and only the fields needed to group
@@ -317,7 +371,7 @@ export async function getStudentDutiesForRange(
 
   const teammatesByDateAndDuty = new Map<string, string[]>();
   for (const a of publishedAll) {
-    if (a.studentId === studentId) continue;
+    if (a.studentId === traineeId) continue;
     const key = `${dateKey(a.date)}|${a.dutyTypeId}`;
     if (!teammatesByDateAndDuty.has(key)) teammatesByDateAndDuty.set(key, []);
     teammatesByDateAndDuty.get(key)!.push(a.student.fullName);

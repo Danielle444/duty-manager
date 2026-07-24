@@ -616,3 +616,60 @@ test("the course selector is mounted ONLY on the schedule and contacts screens",
     );
   }
 });
+
+// ---------------------------------------------------------------------------
+// The "use server" action wrapper re-exports TraineeCourseOptionView as a
+// COMPILE-TIME type only. Regression guard for the /student runtime crash
+// `ReferenceError: TraineeCourseOptionView is not defined`.
+//
+// Root cause: inside a "use server" file, Turbopack's server-action transform
+// treated a BARE local type re-export `export type { TraineeCourseOptionView };`
+// (of an `import type` binding) as a runtime server-action export, emitting
+// `ensureServerEntryExports([..., TraineeCourseOptionView])` and
+// `registerServerReference(TraineeCourseOptionView, ...)` against an identifier
+// that only ever existed as a type -> the trainee action module threw at
+// evaluation and every /student action module failed to load. The `from`-clause
+// re-export form is erased at build time and does not regress.
+// ---------------------------------------------------------------------------
+
+test("the trainee action re-exports the option view type WITH a from-clause, never bare", () => {
+  const src = readSource("../actions/trainee-course-selection.ts");
+
+  // Inspect CODE only - the source deliberately mentions the crashing construct in
+  // a warning comment, and this guard must not trip on its own documentation.
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+
+  // The exact crashing construct: a brace re-export that terminates in `;` with no
+  // intervening `from`. `export type Foo = ...;` (no braces) is unaffected, and the
+  // safe `export type { X } from "..."` form ends in `from "..."`, not `};`.
+  const bareBraceReExport = /export\s+type\s*\{[^}]*\}\s*;/;
+  assert.ok(
+    !bareBraceReExport.test(code),
+    "a bare `export type { ... };` in a \"use server\" file is mis-emitted by " +
+      "Turbopack as a runtime server reference and crashes /student at module eval",
+  );
+
+  // ...and the option view type is still exported (so the trainee client keeps
+  // importing it from the action module unchanged), via the erased from-clause form.
+  assert.match(
+    src,
+    /export\s+type\s*\{\s*TraineeCourseOptionView\s*\}\s*from\s*["']@\/lib\/course\/trainee-course-selection-core["']/,
+    "TraineeCourseOptionView must be re-exported with an erased `from`-clause re-export",
+  );
+});
+
+test("the trainee action wrapper is unchanged: delegates and swallows ONLY the two typed course errors", () => {
+  const src = readSource("../actions/trainee-course-selection.ts");
+
+  // Behavior preservation (shape + fail-closed): still the thin delegate to the
+  // internal reader, returning [] for exactly the two trainee course-context errors
+  // and re-throwing everything else (a session fault is never laundered into "[]").
+  assert.match(
+    src,
+    /return\s+await\s+listTraineeCourseOptionsInternal\(\)/,
+    "must still delegate to the internal course-options reader",
+  );
+  assert.match(src, /instanceof\s+NoTraineeCourseOfferingError/);
+  assert.match(src, /instanceof\s+AmbiguousTraineeCourseOfferingError/);
+  assert.match(src, /throw\s+error;/, "any other error must still propagate");
+});

@@ -7,7 +7,14 @@ import {
 } from "@/lib/course/actor-course-offering-core";
 import type { TraineeCourseOptionView } from "@/lib/course/trainee-course-selection-core";
 
-export type { TraineeCourseOptionView };
+// Re-export the option view type for the trainee client. This MUST be a direct
+// `export type { ... } from "<module>"` re-export, NOT a bare `export type { X };`
+// of the local `import type` binding above: inside a "use server" file Turbopack's
+// server-action transform treats a bare local type re-export as a runtime export
+// and emits `registerServerReference(TraineeCourseOptionView, ...)`, crashing every
+// trainee action module at evaluation with "TraineeCourseOptionView is not defined".
+// The `from`-clause form is erased at build time (see instructor-course-options.ts).
+export type { TraineeCourseOptionView } from "@/lib/course/trainee-course-selection-core";
 
 /**
  * LEVEL 2 SLICE L2-DUAL - the courses the authenticated trainee may ask for on the

@@ -3,6 +3,7 @@
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
+import { requireAdmin } from "@/lib/auth/require-admin";
 import { parseDateKey } from "@/lib/dates";
 import type { ActionResult } from "@/lib/actions/students";
 
@@ -17,6 +18,12 @@ const settingsSchema = z
   });
 
 export async function updateCourseSettings(formData: FormData): Promise<ActionResult> {
+  // ADMIN-WRITE-A1: admin authorization is the FIRST operation - before any
+  // validation, read or write - so a non-admin caller of this "use server"
+  // endpoint can neither mutate the course window nor learn anything from the
+  // validation errors.
+  await requireAdmin();
+
   const parsed = settingsSchema.safeParse({
     startDate: formData.get("startDate"),
     endDate: formData.get("endDate"),

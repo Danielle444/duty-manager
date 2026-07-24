@@ -2,6 +2,7 @@
 
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
+import { requireAdmin } from "@/lib/auth/require-admin";
 import { getSupabaseClient, COURSE_BOOKLET_BUCKET } from "@/lib/supabase";
 import type { ActionResult } from "@/lib/actions/students";
 
@@ -43,12 +44,17 @@ export async function getBookletAccess(): Promise<CourseBookletAccess | null> {
   };
 }
 
-// --- Admin-only below (the /admin/course-booklet page gates access, same
-// convention as every other admin action in this app). Uploading the PDF
-// itself is handled by app/api/admin/course-booklet/upload/route.ts, not a
-// Server Action - see that file for why.
+// --- Admin-only below. Page-level gating on /admin/course-booklet is NOT the
+// authorization boundary: a "use server" export is reachable directly, so the
+// action enforces requireAdmin() itself. Uploading the PDF itself is handled by
+// app/api/admin/course-booklet/upload/route.ts, not a Server Action - see that
+// file for why.
 
 export async function removeCourseBooklet(): Promise<ActionResult> {
+  // ADMIN-WRITE-A1: authorize before reading the booklet row, before the
+  // Supabase Storage object delete, and before the database row delete.
+  await requireAdmin();
+
   const row = await prisma.courseBooklet.findUnique({ where: { id: 1 } });
   if (!row) return { success: true };
 

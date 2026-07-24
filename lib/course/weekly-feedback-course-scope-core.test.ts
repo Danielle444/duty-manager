@@ -22,15 +22,25 @@ import {
 } from "./actor-course-offering-core";
 import { UnauthenticatedActorError } from "@/lib/auth/actor-types";
 import {
+  acceptWeeklyFeedbackFormOfferingId,
   authorizeTraineeWeeklyFeedbackSubmissionWithDeps,
   buildTraineeWeeklyFeedbackFormQuery,
   buildTraineeWeeklyFeedbackSubmissionFormQuery,
+  buildWeeklyFeedbackRosterCountQuery,
+  buildWeeklyFeedbackRosterQuery,
   classifyWeeklyFeedbackSubmissionWindow,
+  collectWeeklyFeedbackOfferingIds,
+  countWeeklyFeedbackRosterByOffering,
   emptyWeeklyFeedbackForStudent,
   isTraineeCourseContextDenial,
   isWeeklyFeedbackFormCurrentlyOpen,
   isWeeklyFeedbackFormOwnedByOffering,
   loadTraineeWeeklyFeedbackWithDeps,
+  selectNotSubmittedRosterMembers,
+  selectSubmittedRosterMembers,
+  summarizeWeeklyFeedbackDenominator,
+  toWeeklyFeedbackRosterMembers,
+  weeklyFeedbackDenominatorForForm,
   type TraineeWeeklyFeedbackFormQuery,
   type TraineeWeeklyFeedbackFormRow,
   type TraineeWeeklyFeedbackSubmissionFormQuery,
@@ -571,9 +581,347 @@ test("every admin action keeps its requireAdmin gate", () => {
     assert.equal(
       body.includes("requireCurrentTrainee"),
       false,
-      `${action} must not consume the trainee actor (L2-F1b is a separate slice)`,
+      `${action} must not consume the trainee actor - admin identity is requireAdmin()`,
     );
   }
-  // The admin denominator is deliberately still global in this slice.
-  assert.ok(ACTION_SRC.includes("prisma.student.count({ where: { isActive: true } })"));
+});
+
+// ===========================================================================
+// ADMIN DENOMINATOR SCOPING - SECURITY / LEVEL 2 SLICE L2-F1B
+// ===========================================================================
+//
+// L2-F1A stopped a Level 2 trainee from READING or ANSWERING a Level 1 form.
+// These tests cover the other half: a Level 2 trainee must not distort Level 1
+// numbers merely by EXISTING. The defect was a global
+// `Student.isActive = true` population used as every form's denominator and as
+// the entire missing-response list.
+
+const OTHER = "cmrother0000offering0id00";
+
+/** An enrollment row as the results roster query projects it. */
+function rosterRow(studentId: string, fullName = `name-${studentId}`) {
+  return { studentId, student: { fullName } };
+}
+
+// --- strict ownership acceptance -------------------------------------------
+
+test("form offering acceptance is strict and fails closed", () => {
+  assert.equal(acceptWeeklyFeedbackFormOfferingId(L1), L1);
+  for (const bad of [null, undefined, "", 0, false, {}, []]) {
+    assert.equal(
+      acceptWeeklyFeedbackFormOfferingId(bad as unknown as string | null),
+      null,
+      `${JSON.stringify(bad)} must not be accepted as an offering id`,
+    );
+  }
+  // Verbatim: no trimming, no case folding, no prefix matching.
+  assert.equal(acceptWeeklyFeedbackFormOfferingId(` ${L1} `), ` ${L1} `);
+});
+
+test("distinct offering ids are collected once, in order, dropping unscoped weeks", () => {
+  assert.deepEqual(
+    collectWeeklyFeedbackOfferingIds([L1, L2, L1, null, undefined, "", L2, OTHER]),
+    [L1, L2, OTHER],
+  );
+  assert.deepEqual(collectWeeklyFeedbackOfferingIds([null, undefined, ""]), []);
+  assert.deepEqual(collectWeeklyFeedbackOfferingIds([]), []);
+});
+
+// --- roster query shapes ----------------------------------------------------
+
+test("the roster query pins offering, enrollment status and student activity", () => {
+  assert.deepEqual(buildWeeklyFeedbackRosterQuery(L1), {
+    where: { courseOfferingId: L1, status: "ACTIVE", student: { isActive: true } },
+    orderBy: { student: { fullName: "asc" } },
+  });
+  assert.deepEqual(buildWeeklyFeedbackRosterCountQuery([L1, L2]), {
+    where: { courseOfferingId: { in: [L1, L2] }, status: "ACTIVE", student: { isActive: true } },
+  });
+  // An empty list is a query that matches NOTHING - never "no filter".
+  assert.deepEqual(buildWeeklyFeedbackRosterCountQuery([]).where.courseOfferingId, { in: [] });
+});
+
+test("a blank offering id throws rather than widening the roster to every course", () => {
+  for (const blank of ["", null, undefined]) {
+    assert.throws(
+      () => buildWeeklyFeedbackRosterQuery(blank as unknown as string),
+      /non-empty courseOfferingId/,
+    );
+    assert.throws(
+      () => buildWeeklyFeedbackRosterCountQuery([L1, blank as unknown as string]),
+      /non-empty courseOfferingId/,
+    );
+  }
+});
+
+test("the batch roster query snapshots its id list", () => {
+  const ids = [L1];
+  const query = buildWeeklyFeedbackRosterCountQuery(ids);
+  ids.push(L2);
+  assert.deepEqual(
+    query.where.courseOfferingId.in,
+    [L1],
+    "a later mutation of the caller's array must not widen an already-built query",
+  );
+});
+
+// --- roster projection / dedupe --------------------------------------------
+
+test("roster members are deduped by student id, first occurrence winning", () => {
+  const members = toWeeklyFeedbackRosterMembers([
+    rosterRow("s1", "אבי"),
+    rosterRow("s2", "בני"),
+    rosterRow("s1", "אבי (duplicate row)"),
+  ]);
+  assert.deepEqual(members, [
+    { id: "s1", fullName: "אבי" },
+    { id: "s2", fullName: "בני" },
+  ]);
+});
+
+test("the roster projection exposes only id and fullName", () => {
+  const [member] = toWeeklyFeedbackRosterMembers([
+    {
+      studentId: "s1",
+      student: { fullName: "אבי", groupName: "א", subgroupNumber: 2, phone: "050" },
+    } as unknown as { studentId: string; student: { fullName: string } },
+  ]);
+  assert.deepEqual(Object.keys(member).sort(), ["fullName", "id"]);
+});
+
+test("per-offering counts dedupe by (offering, student) and count a dual enrollment once each", () => {
+  const counts = countWeeklyFeedbackRosterByOffering([
+    { courseOfferingId: L1, studentId: "s1" },
+    { courseOfferingId: L1, studentId: "s2" },
+    { courseOfferingId: L1, studentId: "s1" }, // defensive duplicate
+    { courseOfferingId: L2, studentId: "s2" }, // dual-enrolled trainee
+    { courseOfferingId: L2, studentId: "s3" },
+  ]);
+  assert.equal(counts.get(L1), 2);
+  assert.equal(counts.get(L2), 2, "a dual-enrolled trainee counts once per offering, never twice in one");
+  assert.equal(counts.get(OTHER), undefined);
+});
+
+// --- denominator ------------------------------------------------------------
+
+test("a NULL-scoped form gets denominator 0 and never falls back", () => {
+  const counts = countWeeklyFeedbackRosterByOffering([
+    { courseOfferingId: L1, studentId: "s1" },
+    { courseOfferingId: L2, studentId: "s2" },
+  ]);
+  for (const unscoped of [null, undefined, ""]) {
+    assert.equal(weeklyFeedbackDenominatorForForm(unscoped, counts), 0);
+  }
+  // An offering with no active roster is 0 too - no distinction, no fallback.
+  assert.equal(weeklyFeedbackDenominatorForForm(OTHER, counts), 0);
+  assert.equal(weeklyFeedbackDenominatorForForm(L1, counts), 1);
+});
+
+test("an active Level 2 trainee never enters a Level 1 form's denominator", () => {
+  // The roster query returns ONLY Level 1 enrollments: the Level 2 trainee's
+  // enrollment cannot satisfy courseOfferingId = L1.
+  const counts = countWeeklyFeedbackRosterByOffering([
+    { courseOfferingId: L1, studentId: "l1-a" },
+    { courseOfferingId: L1, studentId: "l1-b" },
+    { courseOfferingId: L2, studentId: "l2-only" },
+  ]);
+  assert.equal(weeklyFeedbackDenominatorForForm(L1, counts), 2);
+  assert.equal(weeklyFeedbackDenominatorForForm(L2, counts), 1);
+});
+
+// --- submitted / not-submitted split ---------------------------------------
+
+test("the summary splits the scoped roster and always sums back to it", () => {
+  const roster = toWeeklyFeedbackRosterMembers([rosterRow("s1"), rosterRow("s2"), rosterRow("s3")]);
+  const summary = summarizeWeeklyFeedbackDenominator(roster, new Set(["s1", "s3"]));
+  assert.deepEqual(summary, { activeTraineeCount: 3, submittedCount: 2, notSubmittedCount: 1 });
+  assert.equal(summary.submittedCount + summary.notSubmittedCount, summary.activeTraineeCount);
+});
+
+test("an off-roster response does not decrement the missing count or list", () => {
+  const roster = toWeeklyFeedbackRosterMembers([rosterRow("active-1"), rosterRow("active-2")]);
+  // "gone" submitted while enrolled and was later deactivated; "l2-only" belongs
+  // to another course entirely. Neither is on this form's roster.
+  const submitted = new Set(["active-1", "gone", "l2-only"]);
+
+  const summary = summarizeWeeklyFeedbackDenominator(roster, submitted);
+  assert.deepEqual(summary, { activeTraineeCount: 2, submittedCount: 1, notSubmittedCount: 1 });
+  assert.deepEqual(
+    selectNotSubmittedRosterMembers(roster, submitted).map((m) => m.id),
+    ["active-2"],
+  );
+  assert.deepEqual(
+    selectSubmittedRosterMembers(roster, submitted).map((m) => m.id),
+    ["active-1"],
+    "only roster members are counted as submitters",
+  );
+});
+
+test("notSubmitted never goes negative when responses outnumber the roster", () => {
+  const roster = toWeeklyFeedbackRosterMembers([rosterRow("active-1")]);
+  const summary = summarizeWeeklyFeedbackDenominator(
+    roster,
+    new Set(["active-1", "gone-1", "gone-2", "gone-3"]),
+  );
+  assert.deepEqual(summary, { activeTraineeCount: 1, submittedCount: 1, notSubmittedCount: 0 });
+});
+
+test("an empty (NULL-scoped or unenrolled) roster yields an all-zero summary and no missing list", () => {
+  const summary = summarizeWeeklyFeedbackDenominator([], new Set(["someone", "another"]));
+  assert.deepEqual(summary, { activeTraineeCount: 0, submittedCount: 0, notSubmittedCount: 0 });
+  assert.deepEqual(selectNotSubmittedRosterMembers([], new Set(["someone"])), []);
+});
+
+test("the roster split does not mutate its inputs", () => {
+  const roster = toWeeklyFeedbackRosterMembers([rosterRow("s1"), rosterRow("s2")]);
+  const submitted = new Set(["s1"]);
+  selectSubmittedRosterMembers(roster, submitted);
+  selectNotSubmittedRosterMembers(roster, submitted);
+  summarizeWeeklyFeedbackDenominator(roster, submitted);
+  assert.deepEqual(roster.map((m) => m.id), ["s1", "s2"]);
+  assert.deepEqual([...submitted], ["s1"]);
+});
+
+// ---------------------------------------------------------------------------
+// Source-level contract over the two wired ADMIN actions
+// ---------------------------------------------------------------------------
+
+/** The executable body of one exported action, up to the next top-level export. */
+function actionBody(name: string): string {
+  const at = ACTION_CODE.indexOf(`export async function ${name}(`);
+  assert.notEqual(at, -1, `${name} must still exist`);
+  const rest = ACTION_CODE.slice(at + 1);
+  const end = rest.indexOf("\nexport ");
+  return end === -1 ? rest : rest.slice(0, end);
+}
+
+test("no global active-student count or read remains anywhere in the module", () => {
+  assert.equal(
+    ACTION_CODE.includes("prisma.student.count"),
+    false,
+    "the global active-student count is the exact defect L2-F1B removes",
+  );
+  assert.equal(
+    ACTION_CODE.includes("prisma.student.findMany"),
+    false,
+    "the global active-student read is the exact defect L2-F1B removes",
+  );
+  assert.equal(
+    /where:\s*\{\s*isActive:\s*true\s*\}/.test(ACTION_CODE),
+    false,
+    "no unscoped isActive-only where clause may remain",
+  );
+});
+
+test("both scoped admin actions derive the denominator from the enrollment roster", () => {
+  for (const action of ["listWeeklyFeedbackForms", "getWeeklyFeedbackResults"]) {
+    const body = actionBody(action);
+    assert.ok(
+      body.includes("prisma.courseEnrollment.findMany"),
+      `${action} must read the enrollment-backed roster`,
+    );
+    assert.ok(
+      body.includes("weeklySchedule.courseOfferingId"),
+      `${action} must derive ownership from the form's own week`,
+    );
+  }
+});
+
+test("the admin roster where-clause is built only by the core", () => {
+  // The action may PROJECT courseOfferingId (`courseOfferingId: true`) but must
+  // never assemble a roster predicate itself - same rule as the trainee path.
+  const withoutProjections = ACTION_CODE.replace(/courseOfferingId:\s*true/g, "");
+  assert.equal(
+    /courseOfferingId\s*[:=]/.test(withoutProjections),
+    false,
+    "the action must never bind an offering id value",
+  );
+  assert.equal(
+    /status:\s*"ACTIVE"/.test(ACTION_CODE),
+    false,
+    "the enrollment-status predicate belongs to the core",
+  );
+  // `isActive: true` still appears as a legitimate SELECT projection on a
+  // response's student (submittedTrainees[].isActive). What must not appear is
+  // the relation-filter form `student: { isActive: ... }` - the roster
+  // predicate itself.
+  assert.equal(
+    /student:\s*\{\s*isActive/.test(ACTION_CODE),
+    false,
+    "the student-activity predicate belongs to the core",
+  );
+  for (const builder of [
+    "acceptWeeklyFeedbackFormOfferingId",
+    "buildWeeklyFeedbackRosterQuery",
+    "buildWeeklyFeedbackRosterCountQuery",
+  ]) {
+    assert.ok(ACTION_CODE.includes(builder), `the action must go through ${builder}`);
+  }
+});
+
+test("the admin scoping uses no resolver fallback and no offering constant", () => {
+  // Re-asserted for the admin half specifically, now that admin code also
+  // handles offering ids.
+  assert.equal(ACTION_CODE.includes("resolveCurrentCourseOffering"), false);
+  assert.equal(CORE_CODE.includes("resolveCurrentCourseOffering"), false);
+  for (const id of [L1, L2, OTHER]) {
+    assert.equal(ACTION_CODE.includes(id), false, "no offering-id literal may appear in the action");
+    assert.equal(CORE_CODE.includes(id), false, "no offering-id literal may appear in the core");
+  }
+});
+
+test("historical responses stay sourced from the form, not the roster", () => {
+  const body = actionBody("getWeeklyFeedbackResults");
+  // submittedTrainees / traineeResponses / question answers all iterate
+  // form.responses, so a since-deactivated or off-roster respondent is still
+  // shown. Only the missing list is roster-derived.
+  assert.ok(
+    /const submittedTrainees[\s\S]*?form\.responses/.test(body),
+    "submittedTrainees must still come from the form's own responses",
+  );
+  assert.ok(
+    /const traineeResponses[\s\S]*?form\.responses\.map/.test(body),
+    "traineeResponses must still come from the form's own responses",
+  );
+  assert.ok(
+    body.includes("selectNotSubmittedRosterMembers"),
+    "the missing list must be roster-derived",
+  );
+  assert.equal(
+    /notSubmittedCount:/.test(body),
+    false,
+    "notSubmitted must never be recomputed in the action - the core owns the arithmetic",
+  );
+});
+
+test("the trainee actions are untouched by the admin slice", () => {
+  for (const action of ["getOpenWeeklyFeedbackForStudent", "submitWeeklyFeedback"]) {
+    const body = actionBody(action);
+    assert.ok(body.includes("void studentId;"), `${action} must still discard its studentId`);
+    assert.ok(body.includes("requireCurrentTrainee"), `${action} must still use the session actor`);
+    assert.equal(body.includes("requireAdmin"), false, `${action} must not acquire an admin gate`);
+    for (const adminOnly of [
+      "prisma.courseEnrollment",
+      "buildWeeklyFeedbackRosterQuery",
+      "buildWeeklyFeedbackRosterCountQuery",
+      "summarizeWeeklyFeedbackDenominator",
+      "selectNotSubmittedRosterMembers",
+      "toWeeklyFeedbackRosterMembers",
+    ]) {
+      assert.equal(
+        body.includes(adminOnly),
+        false,
+        `${action} must not gain the admin-only ${adminOnly}`,
+      );
+    }
+  }
+  // The L2-F1A trainee containment wiring is intact and still exclusive.
+  assert.equal((ACTION_SRC.match(/void studentId;/g) ?? []).length, 2);
+  assert.equal((ACTION_SRC.match(/requireCurrentTrainee\(\)/g) ?? []).length, 2);
+});
+
+test("the core stays pure after the admin additions", () => {
+  for (const forbidden of ["@/lib/prisma", "PrismaClient", "prisma.", "use server"]) {
+    assert.equal(CORE_CODE.includes(forbidden), false, `core must not reference ${forbidden}`);
+  }
 });

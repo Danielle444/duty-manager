@@ -81,7 +81,10 @@ test("8/9. weekly feedback resolves group at the feedback week's startDate", () 
   assert.ok(usesHelper(WEEKLY));
   assert.ok(/weekStart = form\.weeklySchedule\.startDate/.test(WEEKLY), "week start selected");
   assert.ok(/groupAt\(r\.studentId,\s*weekStart\)/.test(WEEKLY), "submitted keyed by week start");
-  assert.ok(/groupAt\(s\.id,\s*weekStart\)/.test(WEEKLY), "not-submitted keyed by week start");
+  // L2-F1B renamed the not-submitted source from the global active-student rows
+  // (`s`) to the form's own course roster members (`member`). The historical
+  // contract is unchanged: whoever is listed is still keyed at the week start.
+  assert.ok(/groupAt\(member\.id,\s*weekStart\)/.test(WEEKLY), "not-submitted keyed by week start");
   assert.ok(!/groupName:\s*r\.student\.groupName/.test(WEEKLY), "no current-mirror group output");
 });
 

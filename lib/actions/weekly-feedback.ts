@@ -8,14 +8,24 @@ import { loadHistoricalTraineeState } from "@/lib/course/historical-trainee-stat
 import type { ActionResult } from "@/lib/actions/students";
 // SECURITY / LEVEL 2 SLICE L2-F1A - server-derived trainee identity + course
 // context for the two trainee-facing actions at the bottom of this file.
-// Nothing else in this module changes: every requireAdmin() action above, and
-// getWeeklyFeedbackResults below, are untouched by this slice.
+// SECURITY / LEVEL 2 SLICE L2-F1B - course-scoped denominators for the two
+// admin readers (listWeeklyFeedbackForms, getWeeklyFeedbackResults). Every
+// other action in this module is untouched by both slices.
 import { requireCurrentTrainee } from "@/lib/auth/actor";
 import { resolveTraineeCourseOffering } from "@/lib/course/actor-course-offering";
 import {
+  acceptWeeklyFeedbackFormOfferingId,
   authorizeTraineeWeeklyFeedbackSubmissionWithDeps,
+  buildWeeklyFeedbackRosterCountQuery,
+  buildWeeklyFeedbackRosterQuery,
   classifyWeeklyFeedbackSubmissionWindow,
+  collectWeeklyFeedbackOfferingIds,
+  countWeeklyFeedbackRosterByOffering,
   loadTraineeWeeklyFeedbackWithDeps,
+  selectNotSubmittedRosterMembers,
+  summarizeWeeklyFeedbackDenominator,
+  toWeeklyFeedbackRosterMembers,
+  weeklyFeedbackDenominatorForForm,
   type TraineeWeeklyFeedbackFormRow,
   type WeeklyFeedbackSubmissionWindowState,
 } from "@/lib/course/weekly-feedback-course-scope-core";
@@ -110,22 +120,49 @@ export interface WeeklyFeedbackFormListItem {
   weekEndDate: string;
   questionCount: number;
   responseCount: number;
+  // L2-F1B: the roster size of the offering that owns THIS form's week, not the
+  // global active-student population. Two forms from two courses in the same
+  // list therefore report two different denominators. Field name and type are
+  // unchanged, so the admin list UI needs no edit.
   activeStudentCount: number;
 }
+
+// L2-F1B: the enrollment columns the batch roster count projects. Only the
+// offering + student pair is read - no name, phone or identity field is
+// fetched merely to produce a count.
+const ROSTER_COUNT_SELECT = { courseOfferingId: true, studentId: true } as const;
 
 export async function listWeeklyFeedbackForms(): Promise<WeeklyFeedbackFormListItem[]> {
   await requireAdmin();
 
-  const [forms, activeStudentCount] = await Promise.all([
-    prisma.weeklyFeedbackForm.findMany({
-      orderBy: { createdAt: "desc" },
-      include: {
-        weeklySchedule: { select: { name: true, startDate: true, endDate: true } },
-        _count: { select: { questions: true, responses: true } },
+  const forms = await prisma.weeklyFeedbackForm.findMany({
+    orderBy: { createdAt: "desc" },
+    include: {
+      // courseOfferingId is the AUTHORITATIVE ownership edge (the week owns the
+      // form, and WeeklyFeedbackForm.weeklyScheduleId is @unique) - it is the
+      // only thing the denominator is derived from.
+      weeklySchedule: {
+        select: { name: true, startDate: true, endDate: true, courseOfferingId: true },
       },
-    }),
-    prisma.student.count({ where: { isActive: true } }),
-  ]);
+      _count: { select: { questions: true, responses: true } },
+    },
+  });
+
+  // ONE roster query for the whole list: forms are grouped by their distinct
+  // owning offerings first, so a 30-form list over 2 courses issues 1 roster
+  // query, not 30. Unscoped (NULL) weeks contribute no id and resolve to 0
+  // below - they never widen this query.
+  const offeringIds = collectWeeklyFeedbackOfferingIds(
+    forms.map((form) => form.weeklySchedule.courseOfferingId),
+  );
+  const rosterCountRows =
+    offeringIds.length === 0
+      ? []
+      : await prisma.courseEnrollment.findMany({
+          where: buildWeeklyFeedbackRosterCountQuery(offeringIds).where,
+          select: ROSTER_COUNT_SELECT,
+        });
+  const rosterCountsByOffering = countWeeklyFeedbackRosterByOffering(rosterCountRows);
 
   return forms.map((form) => ({
     id: form.id,
@@ -143,7 +180,12 @@ export async function listWeeklyFeedbackForms(): Promise<WeeklyFeedbackFormListI
     weekEndDate: dateKey(form.weeklySchedule.endDate),
     questionCount: form._count.questions,
     responseCount: form._count.responses,
-    activeStudentCount,
+    // Fails closed to 0 for a NULL-scoped week and for an offering with no
+    // active roster; never falls back to a global count.
+    activeStudentCount: weeklyFeedbackDenominatorForForm(
+      form.weeklySchedule.courseOfferingId,
+      rosterCountsByOffering,
+    ),
   }));
 }
 
@@ -941,6 +983,15 @@ export interface WeeklyFeedbackResultsSummary {
   notSubmittedCount: number;
 }
 
+// L2-F1B: the enrollment columns the results roster projects. groupName /
+// subgroupNumber are deliberately NOT read here - the group shown for a past
+// feedback week is resolved effective-dated via loadHistoricalTraineeState
+// below, and the current Student mirror must not creep back in as a fallback.
+const ROSTER_MEMBER_SELECT = {
+  studentId: true,
+  student: { select: { fullName: true } },
+} as const;
+
 export interface WeeklyFeedbackSubmittedTrainee {
   studentId: string;
   fullName: string;
@@ -1010,18 +1061,31 @@ export interface WeeklyFeedbackResults {
   traineeResponses: WeeklyFeedbackTraineeResponse[];
 }
 
-// Active trainees are the denominator for the summary/not-submitted list -
-// a trainee who submitted and was later deactivated still shows up in
-// submittedTrainees/traineeResponses (their answer is real historical data),
-// but doesn't count toward activeTraineeCount/submittedCount so the "X מתוך
-// Y" figure always reflects the currently-active roster.
+// The denominator and the missing-response list are the form's OWN COURSE
+// roster - L2-F1B. Ownership comes only from the form's week
+// (weeklySchedule.courseOfferingId), the roster is enrollment-backed (ACTIVE
+// enrollment into that exact offering AND a globally active Student), and a
+// NULL-scoped week fails closed to an empty roster. A trainee enrolled in a
+// DIFFERENT offering therefore cannot inflate this form's denominator or be
+// listed as owing it a response.
+//
+// Responses are untouched by the roster: a trainee who submitted and was later
+// deactivated (or whose enrollment ended) still appears in
+// submittedTrainees/traineeResponses and in every question's answers, because
+// that is real historical data. They simply do not count toward
+// activeTraineeCount/submittedCount, and - since notSubmitted is derived FROM
+// the roster rather than as (denominator - responses) - they cannot decrement
+// the missing count either.
 export async function getWeeklyFeedbackResults(formId: string): Promise<WeeklyFeedbackResults | null> {
   await requireAdmin();
 
   const form = await prisma.weeklyFeedbackForm.findUnique({
     where: { id: formId },
     include: {
-      weeklySchedule: { select: { name: true, startDate: true, endDate: true } },
+      // courseOfferingId is the AUTHORITATIVE ownership edge for this form.
+      weeklySchedule: {
+        select: { name: true, startDate: true, endDate: true, courseOfferingId: true },
+      },
       questions: { orderBy: { sortOrder: "asc" } },
       responses: {
         orderBy: { submittedAt: "asc" },
@@ -1036,20 +1100,30 @@ export async function getWeeklyFeedbackResults(formId: string): Promise<WeeklyFe
   });
   if (!form) return null;
 
-  const activeStudents = await prisma.student.findMany({
-    where: { isActive: true },
-    select: { id: true, fullName: true, groupName: true, subgroupNumber: true },
-    orderBy: { fullName: "asc" },
-  });
+  // Fail closed BEFORE the roster query: an unscoped week yields no query at
+  // all, and therefore an empty roster - never a global read.
+  const ownerOfferingId = acceptWeeklyFeedbackFormOfferingId(form.weeklySchedule.courseOfferingId);
+  const rosterQuery = ownerOfferingId === null ? null : buildWeeklyFeedbackRosterQuery(ownerOfferingId);
+  const rosterEnrollments =
+    rosterQuery === null
+      ? []
+      : await prisma.courseEnrollment.findMany({
+          // Offering, enrollment status and student activity are all predicates
+          // INSIDE the where clause, so another course's trainees are never
+          // fetched and then filtered out.
+          where: rosterQuery.where,
+          select: ROSTER_MEMBER_SELECT,
+          orderBy: rosterQuery.orderBy,
+        });
+  // Defensive dedupe: one row per trainee even if a future query change joins
+  // more than one enrollment row per student.
+  const roster = toWeeklyFeedbackRosterMembers(rosterEnrollments);
 
   const submittedStudentIds = new Set(form.responses.map((r) => r.studentId));
-  const activeSubmittedCount = activeStudents.filter((s) => submittedStudentIds.has(s.id)).length;
-
-  const summary: WeeklyFeedbackResultsSummary = {
-    activeTraineeCount: activeStudents.length,
-    submittedCount: activeSubmittedCount,
-    notSubmittedCount: activeStudents.length - activeSubmittedCount,
-  };
+  const summary: WeeklyFeedbackResultsSummary = summarizeWeeklyFeedbackDenominator(
+    roster,
+    submittedStudentIds,
+  );
 
   // W6D3-HOTFIX: group/subgroup for this past week must reflect the group each
   // trainee was in DURING THE FEEDBACK WEEK, not the current Student mirror. The
@@ -1059,7 +1133,7 @@ export async function getWeeklyFeedbackResults(formId: string): Promise<WeeklyFe
   const weekStart = form.weeklySchedule.startDate;
   const historical = await loadHistoricalTraineeState([
     ...form.responses.map((r) => r.studentId),
-    ...activeStudents.map((s) => s.id),
+    ...roster.map((member) => member.id),
   ]);
 
   const submittedTrainees: WeeklyFeedbackSubmittedTrainee[] = form.responses
@@ -1076,17 +1150,21 @@ export async function getWeeklyFeedbackResults(formId: string): Promise<WeeklyFe
     })
     .sort((a, b) => a.fullName.localeCompare(b.fullName, "he"));
 
-  const notSubmittedTrainees: WeeklyFeedbackNotSubmittedTrainee[] = activeStudents
-    .filter((s) => !submittedStudentIds.has(s.id))
-    .map((s) => {
-      const group = historical.groupAt(s.id, weekStart);
-      return {
-        studentId: s.id,
-        fullName: s.fullName,
-        groupName: group.ok ? group.value.groupName : null,
-        subgroupNumber: group.ok ? group.value.subgroupNumber : null,
-      };
-    });
+  // Drawn ONLY from the form's own scoped roster, so no trainee from another
+  // offering can ever be listed here, and an off-roster response cannot remove
+  // anyone from it.
+  const notSubmittedTrainees: WeeklyFeedbackNotSubmittedTrainee[] = selectNotSubmittedRosterMembers(
+    roster,
+    submittedStudentIds,
+  ).map((member) => {
+    const group = historical.groupAt(member.id, weekStart);
+    return {
+      studentId: member.id,
+      fullName: member.fullName,
+      groupName: group.ok ? group.value.groupName : null,
+      subgroupNumber: group.ok ? group.value.subgroupNumber : null,
+    };
+  });
 
   const answersByQuestionId = new Map<string, { response: (typeof form.responses)[number]; answer: (typeof form.responses)[number]["answers"][number] }[]>();
   for (const response of form.responses) {

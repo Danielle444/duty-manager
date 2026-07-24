@@ -249,3 +249,39 @@ test("the list client still names no offering id (scope stays server-owned)", ()
     assert.ok(!listClientSrc.includes(forbidden), `list client must not reference ${forbidden}`);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Combined Participation Slice 1: tri-state field wired through page + editor
+// ---------------------------------------------------------------------------
+
+test("the page reads combinedParticipation and forwards it into the view", () => {
+  assert.ok(
+    pageSrc.includes("combinedParticipation: true"),
+    "the item select projection must read combinedParticipation",
+  );
+  assert.ok(
+    pageSrc.includes("combinedParticipation: item.combinedParticipation"),
+    "the view mapping must pass combinedParticipation through",
+  );
+});
+
+test("the editor exposes a tri-state משולב control (כן / לא / default)", () => {
+  // Present in the empty form default (null) and hydrated on edit.
+  assert.ok(clientSrc.includes("combinedParticipation: null"), "empty form defaults to null");
+  assert.ok(
+    clientSrc.includes("combinedParticipation: item.combinedParticipation ?? null"),
+    "editing hydrates from the existing row value",
+  );
+  // A real <select> with the three tri-state options.
+  assert.ok(clientSrc.includes("ברירת מחדל (ללא הגבלה)"), "default option label");
+  assert.ok(clientSrc.includes("selectValueToCombined"), "onChange maps the select value back to the tri-state");
+});
+
+test("the editor forwards the item form (incl. combinedParticipation) unchanged to the bound actions", () => {
+  // The submit handler passes itemForm straight to the create/update actions, and
+  // every field edit spreads the current form, so combinedParticipation is
+  // preserved when other fields change.
+  assert.ok(clientSrc.includes("updateItemAction(itemModal.id, itemForm)"));
+  assert.ok(clientSrc.includes("createItemAction(itemForm)"));
+  assert.ok(clientSrc.includes("setItemForm((f) => ({"), "field edits preserve the rest of the form");
+});

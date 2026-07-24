@@ -93,6 +93,7 @@ export default async function CourseWeekEditorPage({
           groupName: true,
           instructorName: true,
           location: true,
+          combinedParticipation: true,
         },
       },
     },
@@ -119,6 +120,7 @@ export default async function CourseWeekEditorPage({
       groupName: item.groupName,
       instructorName: item.instructorName,
       location: item.location,
+      combinedParticipation: item.combinedParticipation,
     })),
   };
 

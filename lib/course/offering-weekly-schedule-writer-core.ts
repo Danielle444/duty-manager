@@ -51,7 +51,8 @@ export type OfferingWeekValidationErrorCode =
   | "name_required"
   | "dates_required"
   | "invalid_date"
-  | "invalid_items";
+  | "invalid_items"
+  | "invalid_combined";
 
 // ---------------------------------------------------------------------------
 // Raw input
@@ -73,6 +74,8 @@ export interface RawScheduleImportItem {
   readonly instructorName?: unknown;
   readonly location?: unknown;
   readonly rawText?: unknown;
+  readonly combinedParticipation?: unknown;
+  readonly combinedParticipationMalformed?: unknown;
 }
 
 /**
@@ -140,6 +143,26 @@ export function isValidDateKey(value: unknown): value is string {
 }
 
 // ---------------------------------------------------------------------------
+// Combined-participation malformed gate
+// ---------------------------------------------------------------------------
+
+/**
+ * True iff ANY raw row carries an unresolved malformed "משולב" value (a
+ * non-empty cell that was neither כן nor לא, flagged by the Excel parser as
+ * `combinedParticipationMalformed === true`).
+ *
+ * This is the AUTHORITATIVE server predicate the offering writer's pre-commit
+ * validation uses to reject BEFORE its transaction runs - it never trusts the
+ * client to have blocked the value. Strict `=== true`, so a missing/false/other
+ * marker never gates.
+ */
+export function hasMalformedCombinedParticipation(
+  items: readonly RawScheduleImportItem[],
+): boolean {
+  return items.some((item) => item?.combinedParticipationMalformed === true);
+}
+
+// ---------------------------------------------------------------------------
 // Input validation
 // ---------------------------------------------------------------------------
 
@@ -183,6 +206,14 @@ export function validateOfferingWeekInput(
 
   if (!Array.isArray(input.items)) {
     return { ok: false, error: "invalid_items" };
+  }
+
+  // Reject malformed "משולב" values HERE, in the pure pre-commit validation step
+  // (before the offering resolver, the ownership proof and the transaction), so a
+  // malformed re-import performs ZERO deleteMany/createMany. The IO orchestrator
+  // forwards this code untouched, so no edit to the writer's transaction is needed.
+  if (hasMalformedCombinedParticipation(input.items as readonly RawScheduleImportItem[])) {
+    return { ok: false, error: "invalid_combined" };
   }
 
   return {
@@ -334,6 +365,9 @@ export interface NormalizedScheduleItem {
   readonly instructorName: string | null;
   readonly location: string | null;
   readonly rawText: string | null;
+  // Tri-state "משולב": true/false/null. The malformed MARKER is deliberately NOT
+  // here - it is a preview-only signal and must never reach a createMany row.
+  readonly combinedParticipation: boolean | null;
 }
 
 /** A row ready for insertion, i.e. a normalized item bound to its week. */
@@ -389,6 +423,14 @@ export function selectImportableItems(
       instructorName: optionalText(item.instructorName),
       location: optionalText(item.location),
       rawText: optionalText(item.rawText),
+      // Explicit tri-state coercion (never truthiness): a real `false` stays
+      // `false`, only genuinely absent/other becomes null. The marker is dropped.
+      combinedParticipation:
+        item.combinedParticipation === true
+          ? true
+          : item.combinedParticipation === false
+            ? false
+            : null,
     });
   }
 

@@ -471,6 +471,10 @@ model ScheduleItem {
   instructorName   String?
   location         String?
   rawText          String?
+  // Imported from the Excel "משולב" column. true = include combined (dual-course)
+  // trainees / false = exclude them / null = legacy, no restriction. DATA-ONLY in
+  // this slice: stored and editable, but not yet read by any visibility/filter.
+  combinedParticipation Boolean? @map("combined_participation")
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 

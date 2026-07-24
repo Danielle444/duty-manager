@@ -92,7 +92,25 @@ const EMPTY_ITEM_FORM: ScheduleItemInput = {
   instructorName: "",
   location: "",
   description: "",
+  combinedParticipation: null,
 };
+
+// Tri-state "משולב" <-> <select> string value. null = default/no restriction.
+const COMBINED_DEFAULT = "default";
+const COMBINED_YES = "yes";
+const COMBINED_NO = "no";
+
+function combinedToSelectValue(value: boolean | null | undefined): string {
+  if (value === true) return COMBINED_YES;
+  if (value === false) return COMBINED_NO;
+  return COMBINED_DEFAULT;
+}
+
+function selectValueToCombined(value: string): boolean | null {
+  if (value === COMBINED_YES) return true;
+  if (value === COMBINED_NO) return false;
+  return null;
+}
 
 export function OfferingWeekEditorClient({
   week,
@@ -186,6 +204,7 @@ export function OfferingWeekEditorClient({
       instructorName: item.instructorName ?? "",
       location: item.location ?? "",
       description: item.description ?? "",
+      combinedParticipation: item.combinedParticipation ?? null,
     });
     setItemError(null);
   }
@@ -455,6 +474,24 @@ export function OfferingWeekEditorClient({
               placeholder="א / ב"
               className="rounded-lg border border-border px-3 py-2 text-sm"
             />
+          </label>
+
+          <label className="flex flex-col gap-1 text-sm">
+            משולב
+            <select
+              value={combinedToSelectValue(itemForm.combinedParticipation)}
+              onChange={(e) =>
+                setItemForm((f) => ({
+                  ...f,
+                  combinedParticipation: selectValueToCombined(e.target.value),
+                }))
+              }
+              className="rounded-lg border border-border px-3 py-2 text-sm"
+            >
+              <option value={COMBINED_DEFAULT}>ברירת מחדל (ללא הגבלה)</option>
+              <option value={COMBINED_YES}>כן</option>
+              <option value={COMBINED_NO}>לא</option>
+            </select>
           </label>
 
           <label className="flex flex-col gap-1 text-sm">

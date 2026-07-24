@@ -54,7 +54,7 @@ const MODE_LABELS: Record<GenerateMode, string> = {
 
 // Which input a given issue should visually highlight - lets the preview UI
 // point at the specific field, not just the whole row.
-type IssueField = "date" | "startTime" | "endTime" | "group" | "title";
+type IssueField = "date" | "startTime" | "endTime" | "group" | "title" | "combined";
 
 interface RowIssue {
   key: string;
@@ -121,6 +121,15 @@ function computeBlockingErrors(items: ScheduleImportItem[]): RowIssue[] {
     }
     if (!item.title.trim()) {
       errors.push({ key: item.key, field: "title", message: "שורה ללא כותרת פעילות" });
+    }
+    // A non-empty "משולב" value that was neither כן nor לא blocks saving, using
+    // the SAME row-validation UI + commit gate as the other blocking errors.
+    if (item.combinedParticipationMalformed) {
+      errors.push({
+        key: item.key,
+        field: "combined",
+        message: "יש להזין בעמודת משולב רק כן, לא, או להשאיר ריק.",
+      });
     }
   }
   return errors;
@@ -309,6 +318,8 @@ export function WeeklyScheduleClient({
         location: "",
         rawText: "",
         needsReview: true,
+        combinedParticipation: null,
+        combinedParticipationMalformed: false,
       },
     ]);
   }

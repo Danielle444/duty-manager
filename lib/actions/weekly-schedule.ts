@@ -8,6 +8,8 @@ import { dateKey, parseDateKey, todayDateKey } from "@/lib/dates";
 import { setCourseDayPlan } from "@/lib/actions/course-day-plan";
 import type { ActionResult } from "@/lib/actions/students";
 import { cleanScheduleTitle } from "@/lib/schedule-title";
+import { parseHebrewYesNo } from "@/lib/course/parse-hebrew-yes-no";
+import { hasUnresolvedMalformedCombinedParticipation } from "@/lib/course/combined-participation-import-validation";
 // LEVEL 2 SLICE S1A - the trainee course-scoped selection reader below. The
 // legacy admin/instructor/student option readers in this file are deliberately
 // untouched by that slice.
@@ -34,6 +36,7 @@ const TITLE_SYNONYMS = ["נושא", "פעילות", "כותרת", "title"];
 const INSTRUCTOR_SYNONYMS = ["מדריך", "מדריכה", "מדריך/ה", "מאמנים", "מאמן", "instructor"];
 const LOCATION_SYNONYMS = ["מיקום", "location"];
 const DESCRIPTION_SYNONYMS = ["הערות", "תיאור"];
+const COMBINED_SYNONYMS = ["משולב"];
 
 const DATE_PATTERN = /(\d{1,2})[./](\d{1,2})[./](\d{2,4})/;
 const TIME_PATTERN = /(\d{1,2}):(\d{2})/g;
@@ -138,7 +141,8 @@ type ColumnKind =
   | "groupValue"
   | "instructor"
   | "location"
-  | "description";
+  | "description"
+  | "combined";
 
 interface ColumnClassification {
   col: number;
@@ -159,6 +163,8 @@ function classifyHeaderCell(rawText: string): ColumnClassification | null {
     return { col: 0, kind: "location" };
   if (DESCRIPTION_SYNONYMS.some((s) => normalizeHeader(s) === normalized))
     return { col: 0, kind: "description" };
+  if (COMBINED_SYNONYMS.some((s) => normalizeHeader(s) === normalized))
+    return { col: 0, kind: "combined" };
   if (TITLE_SYNONYMS.some((s) => normalizeHeader(s) === normalized)) return { col: 0, kind: "title" };
   // "קבוצה" alone = a column whose cell VALUES are group labels (e.g. "א"/"ב").
   // "קבוצה א" / "קבוצה ב" = the group is baked into the header itself, and
@@ -206,6 +212,7 @@ interface ScheduleBlock {
   instructorCol: number | null;
   locationCol: number | null;
   descriptionCol: number | null;
+  combinedCol: number | null;
 }
 
 function buildBlocks(classifications: ColumnClassification[]): ScheduleBlock[] {
@@ -227,6 +234,7 @@ function buildBlocks(classifications: ColumnClassification[]): ScheduleBlock[] {
       instructorCol: inBlock.find((c) => c.kind === "instructor")?.col ?? null,
       locationCol: inBlock.find((c) => c.kind === "location")?.col ?? null,
       descriptionCol: inBlock.find((c) => c.kind === "description")?.col ?? null,
+      combinedCol: inBlock.find((c) => c.kind === "combined")?.col ?? null,
     };
   });
 }
@@ -292,6 +300,11 @@ function parseStructuredTable(
     const instructorName = block.instructorCol ? cellText(row, block.instructorCol) : "";
     const location = block.locationCol ? cellText(row, block.locationCol) : "";
     const description = block.descriptionCol ? cellText(row, block.descriptionCol) : "";
+    // Row-level "משולב" cell (applies to every item this row produces). When the
+    // block has no combined column, the field is absent (null) and not malformed.
+    const combined = block.combinedCol
+      ? parseHebrewYesNo(cellText(row, block.combinedCol))
+      : { value: null, malformed: false };
 
     const groupTitleCols = block.titleCols.filter((c) => c.kind === "groupTitle");
     const groupTitleEntries = groupTitleCols.map((c) => {
@@ -359,6 +372,8 @@ function parseStructuredTable(
         location,
         rawText,
         needsReview: !effectiveDateKey,
+        combinedParticipation: combined.value,
+        combinedParticipationMalformed: combined.malformed,
       });
     }
   }
@@ -418,6 +433,8 @@ function parseTransposedTable(worksheet: Worksheet): ScheduleImportItem[] {
         location: "",
         rawText,
         needsReview: false,
+        combinedParticipation: null,
+        combinedParticipationMalformed: false,
       });
     }
   }
@@ -475,6 +492,8 @@ function parseFreeform(worksheet: Worksheet): ScheduleImportItem[] {
       location: "",
       rawText,
       needsReview: true,
+      combinedParticipation: null,
+      combinedParticipationMalformed: false,
     });
   }
 
@@ -493,6 +512,11 @@ export interface ScheduleImportItem {
   location: string;
   rawText: string;
   needsReview: boolean;
+  // Imported "משולב" tri-state: true=כן, false=לא, null=blank/no-restriction.
+  combinedParticipation: boolean | null;
+  // UX-only marker: the "משולב" cell had a non-empty value that was neither
+  // כן nor לא. Blocks committing on both server write paths; never persisted.
+  combinedParticipationMalformed: boolean;
 }
 
 export interface ParseWeeklyScheduleResult {
@@ -614,6 +638,19 @@ export async function commitWeeklySchedule(
     };
   }
 
+  // Authoritative "משולב" gate: reject BEFORE any update/deleteMany/createMany, so
+  // a malformed value performs ZERO writes. The preview client disables save on
+  // the same condition, but this server check is the real control (never trust
+  // the client gate).
+  if (hasUnresolvedMalformedCombinedParticipation(input.items)) {
+    return {
+      success: false,
+      error: "יש לתקן את הערכים הלא תקינים בעמודת משולב לפני השמירה.",
+      savedCount: 0,
+      skippedCount: 0,
+    };
+  }
+
   const validItems = input.items.filter((i) => i.dateKey);
   const skippedCount = input.items.length - validItems.length;
 
@@ -655,6 +692,14 @@ export async function commitWeeklySchedule(
         instructorName: i.instructorName || null,
         location: i.location || null,
         rawText: i.rawText || null,
+        // Explicit tri-state map (never `x || null`, which would coerce a real
+        // `false` to null). The malformed marker is never included here.
+        combinedParticipation:
+          i.combinedParticipation === true
+            ? true
+            : i.combinedParticipation === false
+              ? false
+              : null,
       })),
     });
   }

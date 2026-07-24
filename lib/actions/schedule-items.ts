@@ -16,6 +16,7 @@ const scheduleItemSchema = z.object({
   instructorName: z.string().trim().optional(),
   location: z.string().trim().optional(),
   description: z.string().trim().optional(),
+  combinedParticipation: z.boolean().nullable().optional(),
 });
 
 export type ScheduleItemInput = z.infer<typeof scheduleItemSchema>;
@@ -30,6 +31,9 @@ export interface ScheduleItemRow {
   groupName: string | null;
   instructorName: string | null;
   location: string | null;
+  // Optional so existing callers that build ScheduleItemRow without this
+  // data-only field keep compiling; the offering editor reads it when present.
+  combinedParticipation?: boolean | null;
 }
 
 export interface ScheduleItemActionResult extends ActionResult {
@@ -56,6 +60,7 @@ function toRow(item: {
   groupName: string | null;
   instructorName: string | null;
   location: string | null;
+  combinedParticipation: boolean | null;
 }): ScheduleItemRow {
   return {
     id: item.id,
@@ -67,6 +72,7 @@ function toRow(item: {
     groupName: item.groupName,
     instructorName: item.instructorName,
     location: item.location,
+    combinedParticipation: item.combinedParticipation,
   };
 }
 
@@ -110,6 +116,9 @@ export async function updateScheduleItem(
       groupName: input.groupName || null,
       instructorName: input.instructorName || null,
       location: input.location || null,
+      // `?? null` preserves an explicit `false` (false is not nullish); only
+      // null/undefined collapse to null. Data-only; not read by any filter yet.
+      combinedParticipation: input.combinedParticipation ?? null,
     },
   });
 
@@ -223,6 +232,9 @@ export async function createScheduleItem(
       groupName: input.groupName || null,
       instructorName: input.instructorName || null,
       location: input.location || null,
+      // `?? null` preserves an explicit `false` (false is not nullish); only
+      // null/undefined collapse to null. Data-only; not read by any filter yet.
+      combinedParticipation: input.combinedParticipation ?? null,
     },
   });
 

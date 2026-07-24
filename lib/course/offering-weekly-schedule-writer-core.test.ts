@@ -15,6 +15,7 @@ import {
   buildScheduleItemRows,
   buildWeekCreateData,
   buildWeekUpdateData,
+  hasMalformedCombinedParticipation,
   isValidDateKey,
   isWeekOwnedByOffering,
   selectImportableItems,
@@ -363,6 +364,8 @@ test("column mapping matches the existing importer: '' collapses to null", () =>
     instructorName: null,
     location: "אולם",
     rawText: null,
+    // Slice 1: the item() helper sets no combinedParticipation -> null.
+    combinedParticipation: null,
   });
   assert.equal("weeklyScheduleId" in row, false);
 });
@@ -427,4 +430,71 @@ test("no built row can carry an isPublished or courseOfferingId key", () => {
     assert.equal("isPublished" in row, false);
     assert.equal("courseOfferingId" in row, false);
   }
+});
+
+// ===========================================================================
+// Combined Participation Slice 1 - combinedParticipation coercion + malformed
+// ===========================================================================
+
+test("selectImportableItems keeps false as false and null as null (no truthiness)", () => {
+  const { importable } = selectImportableItems([
+    item({ combinedParticipation: true }),
+    item({ combinedParticipation: false }),
+    item({ combinedParticipation: null }),
+    item({ combinedParticipation: undefined }),
+    item({}), // absent
+  ]);
+  assert.equal(importable.length, 5);
+  assert.deepEqual(
+    importable.map((r) => r.combinedParticipation),
+    [true, false, null, null, null],
+    "a real `false` must survive; only absent/other becomes null",
+  );
+});
+
+test("the malformed MARKER never appears on a NormalizedScheduleItem / createMany row", () => {
+  const { importable } = selectImportableItems([
+    item({ combinedParticipation: false, combinedParticipationMalformed: true }),
+  ]);
+  for (const row of importable) {
+    assert.equal("combinedParticipationMalformed" in row, false);
+    // The tri-state value is still present and correctly preserved.
+    assert.equal(row.combinedParticipation, false);
+  }
+  const built = buildScheduleItemRows(
+    [item({ combinedParticipation: true, combinedParticipationMalformed: true })],
+    WEEK_ID,
+  );
+  for (const row of built.rows) {
+    assert.equal("combinedParticipationMalformed" in row, false);
+  }
+});
+
+test("hasMalformedCombinedParticipation is true iff any row has the strict marker", () => {
+  assert.equal(hasMalformedCombinedParticipation([item(), item()]), false);
+  assert.equal(
+    hasMalformedCombinedParticipation([item(), item({ combinedParticipationMalformed: true })]),
+    true,
+  );
+  // Only a strict `true` gates.
+  assert.equal(
+    hasMalformedCombinedParticipation([item({ combinedParticipationMalformed: "true" as unknown })]),
+    false,
+  );
+});
+
+test("validateOfferingWeekInput rejects a malformed משולב row with invalid_combined", () => {
+  const result = validateOfferingWeekInput(
+    rawInput({ items: [item(), item({ combinedParticipationMalformed: true })] }),
+  );
+  assert.deepEqual(result, { ok: false, error: "invalid_combined" });
+});
+
+test("validateOfferingWeekInput accepts blank and explicit false משולב values", () => {
+  const result = validateOfferingWeekInput(
+    rawInput({
+      items: [item({ combinedParticipation: false }), item({ combinedParticipation: null })],
+    }),
+  );
+  assert.equal(result.ok, true);
 });

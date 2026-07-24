@@ -33,6 +33,10 @@ import {
   parseWeeklyScheduleExcel,
   type ScheduleImportItem,
 } from "@/lib/actions/weekly-schedule";
+import {
+  hasUnresolvedMalformedCombinedParticipation,
+  isCombinedParticipationMalformed,
+} from "@/lib/course/combined-participation-import-validation";
 import { formatHebrewDate, parseDateKey } from "@/lib/dates";
 import type { OfferingWeekClientInput } from "./actions";
 
@@ -66,6 +70,7 @@ const SAVE_ERROR_MESSAGES: Record<string, string> = {
   dates_required: "יש להזין תאריך התחלה ותאריך סיום.",
   invalid_date: "אחד התאריכים אינו תקין.",
   invalid_items: "נתוני הלוז אינם תקינים. יש לפענח את הקובץ מחדש.",
+  invalid_combined: "יש להזין בעמודת משולב רק כן, לא, או להשאיר ריק.",
   offering_not_found: "הקורס אינו זמין. יש לרענן את הדף.",
   operation_not_allowed: "לא ניתן לערוך לוז בקורס במצב זה.",
   week_not_found: "השבוע המבוקש אינו שייך לקורס זה. יש לרענן את הדף.",
@@ -143,6 +148,13 @@ export function OfferingScheduleClient({
 
   const importableCount = useMemo(
     () => (parsedItems ? parsedItems.filter(isImportableRow).length : 0),
+    [parsedItems],
+  );
+
+  // Any row whose "משולב" cell held a non-empty value that is neither כן nor לא.
+  // Blocks saving here (the server re-validates and rejects authoritatively too).
+  const hasMalformedCombined = useMemo(
+    () => (parsedItems ? hasUnresolvedMalformedCombinedParticipation(parsedItems) : false),
     [parsedItems],
   );
 
@@ -317,6 +329,11 @@ export function OfferingScheduleClient({
                   {parseWarning}
                 </div>
               )}
+              {hasMalformedCombined && (
+                <div className="shrink-0 rounded-lg border border-danger bg-danger-muted p-3 text-sm text-danger">
+                  יש להזין בעמודת משולב רק כן, לא, או להשאיר ריק.
+                </div>
+              )}
 
               <div className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-border">
                 {groupedParsedItems.map(([groupKey, rowsForDate]) => (
@@ -327,20 +344,30 @@ export function OfferingScheduleClient({
                         : formatHebrewDate(parseDateKey(groupKey))}
                     </div>
                     <ul className="flex flex-col gap-1 p-3">
-                      {rowsForDate.map((item) => (
-                        <li
-                          key={item.key}
-                          className="rounded border border-border px-2 py-1.5 text-xs text-card-foreground"
-                        >
-                          <span className="font-medium">
-                            {item.startTime || "--:--"}-{item.endTime || "--:--"}
-                          </span>{" "}
-                          · {item.groupName.trim() ? `קבוצה ${item.groupName}` : "כל הקבוצות"} ·{" "}
-                          {item.title || "ללא כותרת"}
-                          {item.instructorName ? ` · ${item.instructorName}` : ""}
-                          {item.location ? ` · ${item.location}` : ""}
-                        </li>
-                      ))}
+                      {rowsForDate.map((item) => {
+                        const malformed = isCombinedParticipationMalformed(item);
+                        return (
+                          <li
+                            key={item.key}
+                            className={`rounded border px-2 py-1.5 text-xs text-card-foreground ${
+                              malformed ? "border-danger bg-danger-muted" : "border-border"
+                            }`}
+                          >
+                            <span className="font-medium">
+                              {item.startTime || "--:--"}-{item.endTime || "--:--"}
+                            </span>{" "}
+                            · {item.groupName.trim() ? `קבוצה ${item.groupName}` : "כל הקבוצות"} ·{" "}
+                            {item.title || "ללא כותרת"}
+                            {item.instructorName ? ` · ${item.instructorName}` : ""}
+                            {item.location ? ` · ${item.location}` : ""}
+                            {malformed && (
+                              <span className="mt-1 block text-danger">
+                                יש להזין בעמודת משולב רק כן, לא, או להשאיר ריק.
+                              </span>
+                            )}
+                          </li>
+                        );
+                      })}
                     </ul>
                   </div>
                 ))}
@@ -361,7 +388,11 @@ export function OfferingScheduleClient({
               >
                 ביטול
               </Button>
-              <Button type="button" onClick={handleSave} disabled={isPending}>
+              <Button
+                type="button"
+                onClick={handleSave}
+                disabled={isPending || hasMalformedCombined}
+              >
                 {isPending ? "שומר..." : uploadTarget ? "שמירת הייבוא מחדש" : "יצירת השבוע"}
               </Button>
             </div>

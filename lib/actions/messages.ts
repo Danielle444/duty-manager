@@ -6,6 +6,16 @@ import { revalidatePath } from "next/cache";
 import { requireAdmin } from "@/lib/auth/require-admin";
 import type { ActionResult } from "@/lib/actions/students";
 import { sendNewMessagePushToStudents } from "@/lib/actions/push";
+// SECURITY / L2-FANOUT-AUTH - server-derived instructor identity for the two
+// instructor-facing message surfaces (the send action and the read view). The
+// canonical Actor DAL is the ONLY identity source for both; the pure gates live
+// in ./instructor-messages-auth so they are unit-testable without a session or
+// database. Nothing else in this file changes.
+import { getCurrentInstructor } from "@/lib/auth/actor";
+import {
+  sendInstructorMessageTaskWithDeps,
+  loadInstructorMessageTaskViewWithDeps,
+} from "@/lib/actions/instructor-messages-auth";
 // SECURITY / LEVEL 2 SLICE L2-C3 - server-derived trainee identity + course
 // context for the trainee-facing message/task surface at the bottom of this
 // file. Nothing above it (admin creation/fan-out, instructor view) changes.
@@ -128,18 +138,34 @@ export async function createMessageTask(input: CreateMessageTaskInput): Promise<
   return createMessageTaskInternal(input, "מנהלת");
 }
 
-// Instructors have no NextAuth session in this app (see requireAdmin), so
-// this re-reads canSendMessages from the DB by instructorId on every call -
-// it never trusts a client-supplied boolean.
+// L2-FANOUT-AUTH: the sender is the SIGNED-IN instructor, never the caller's
+// claim. This previously re-read the Instructor row by the client-supplied
+// instructorId and evaluated isActive/canSendMessages on it - which validates
+// the ROW, not the CALLER. searchInstructors() is unauthenticated by design (it
+// powers the instructor login screen) and returns real instructor ids, so any
+// caller, including an anonymous one, could borrow an active sending
+// instructor's id, broadcast to every active trainee under that instructor's
+// real name, and trigger the push fanout.
+//
+// Identity now comes solely from the canonical Actor DAL, which returns null for
+// every untrustworthy case (no cookie, invalid/expired/tampered token, missing
+// or weak SESSION_SECRET, trainee session, deleted instructor row,
+// isActive=false, subject/row mismatch) and makes no DB call at all when there
+// is no valid session. getCurrentInstructor (not requireCurrentInstructor) is
+// used deliberately: the gate must produce the existing failure result, not
+// throw across the action boundary.
 export async function createMessageTaskAsInstructor(
   instructorId: string,
   input: CreateMessageTaskInput
 ): Promise<ActionResult> {
-  const instructor = await prisma.instructor.findUnique({ where: { id: instructorId } });
-  if (!instructor || !instructor.isActive || !instructor.canSendMessages) {
-    return { success: false, error: "אין הרשאה לשליחת הודעות ומשימות" };
-  }
-  return createMessageTaskInternal(input, instructor.fullName);
+  // L2-FANOUT-AUTH: accepted for caller compatibility and deliberately
+  // DISCARDED. It is a client-supplied value and therefore never identity; it
+  // reaches no query filter, no permission check and no authorship field.
+  void instructorId;
+  return sendInstructorMessageTaskWithDeps(
+    { getCurrentInstructor, createMessageTask: createMessageTaskInternal },
+    input
+  );
 }
 
 const updateSchema = z.object({
@@ -284,12 +310,11 @@ export interface InstructorMessageTaskView {
   recipientNames: string[];
 }
 
-// Read-only, no permission gate - same convention as getHorseAssignments,
-// since instructors have no NextAuth session in this app. Every instructor
-// can see this list regardless of canSendMessages - it's content-only, no
-// per-recipient read/completed status is exposed here (that stays
-// admin-only via getMessageTaskRecipients).
-export async function getMessageTasksForInstructorView(): Promise<InstructorMessageTaskView[]> {
+// The unchanged reader, moved verbatim out of the exported action below so the
+// L2-FANOUT-AUTH gate provably precedes it. Private and non-exported: it is not
+// a Server Action and is never reachable from a client. It performs NO
+// authorization of its own - it runs only after the actor gate has passed.
+async function readMessageTasksForInstructorView(): Promise<InstructorMessageTaskView[]> {
   const items = await prisma.messageTask.findMany({
     where: { isArchived: false },
     orderBy: { createdAt: "desc" },
@@ -317,6 +342,25 @@ export async function getMessageTasksForInstructorView(): Promise<InstructorMess
     createdAt: m.createdAt.toISOString(),
     recipientNames: m.recipients.map((r) => r.student.fullName),
   }));
+}
+
+// L2-FANOUT-AUTH: this view previously had NO authentication gate whatsoever.
+// It takes no arguments, so an anonymous caller needed to guess nothing: it
+// returned every non-archived message's full title/body/audience/sender plus the
+// real full names of the trainees each was sent to. It now requires a trustworthy
+// server-derived instructor actor before a single MessageTask or recipient row is
+// read; an anonymous / invalid / expired / wrong-audience / inactive caller gets
+// the same empty list the clients already render as "no messages yet".
+//
+// The boundary is IDENTITY-ONLY, exactly as before: every authenticated ACTIVE
+// instructor sees this list regardless of canSendMessages (that flag gates
+// sending only), it stays content-only, and no per-recipient read/completed
+// status is exposed here (that stays admin-only via getMessageTaskRecipients).
+export async function getMessageTasksForInstructorView(): Promise<InstructorMessageTaskView[]> {
+  return loadInstructorMessageTaskViewWithDeps({
+    getCurrentInstructor,
+    readItems: readMessageTasksForInstructorView,
+  });
 }
 
 export interface StudentMessageItem {

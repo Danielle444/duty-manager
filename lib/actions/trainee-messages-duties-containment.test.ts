@@ -714,19 +714,40 @@ test("admin message/completion actions keep their requireAdmin() gate", () => {
   );
 });
 
-test("the instructor message actions are unchanged by this slice", () => {
-  const src = readSource(MESSAGES_FILE);
+// L2-FANOUT-AUTH retargeted this test. It previously asserted that
+// createMessageTaskAsInstructor still contained a prisma.instructor.findUnique
+// lookup - an expectation that pinned the vulnerability, since that lookup was
+// keyed on the CLIENT-supplied instructorId and therefore validated the row, not
+// the caller. Both instructor actions are now bound to the signed instructor
+// session; what this test still guards for L2-C3 is unchanged: the instructor
+// path must not be routed through the TRAINEE capability gate.
+test("the instructor message actions are session-bound and outside the trainee gate", () => {
+  const src = readCode(MESSAGES_FILE);
   const asInstructor = functionSource(src, "createMessageTaskAsInstructor");
   assert.ok(
-    asInstructor.includes("prisma.instructor.findUnique"),
-    "instructor send permission must still be re-read from the DB",
+    asInstructor.includes("getCurrentInstructor"),
+    "instructor send identity must come from the signed session, not a client id",
+  );
+  assert.ok(
+    asInstructor.includes("void instructorId;"),
+    "the client-supplied instructorId must be explicitly discarded",
+  );
+  assert.ok(
+    !asInstructor.includes("prisma.instructor.findUnique"),
+    "the client-id actor lookup must be gone - it authorized nothing",
   );
   assert.ok(
     !asInstructor.includes("TRAINEE_MESSAGES_CAPABILITY_KEY"),
     "the instructor path must not be routed through the trainee gate",
   );
+
+  const instructorView = functionSource(src, "getMessageTasksForInstructorView");
   assert.ok(
-    !functionSource(src, "getMessageTasksForInstructorView").includes("TRAINEE_MESSAGES_CAPABILITY_KEY"),
+    instructorView.includes("getCurrentInstructor"),
+    "the instructor view must require a signed instructor session",
+  );
+  assert.ok(
+    !instructorView.includes("TRAINEE_MESSAGES_CAPABILITY_KEY"),
     "the instructor view must not be routed through the trainee gate",
   );
 });
